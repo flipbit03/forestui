@@ -128,12 +128,12 @@ Currently no test suite. When adding tests:
 
 ## Versioning
 
-Version is defined in `forestui/__init__.py`:
+Version is defined in **both** `forestui/__init__.py` and `pyproject.toml`:
 ```python
 __version__ = "0.1.0"
 ```
 
-Update this when releasing new versions. The `--self-update` command uses this to detect updates.
+**IMPORTANT:** Every commit to `main` must include a version bump in both files. This is required for `--self-update` to work correctly - it compares the local version against the remote to detect updates. If you forget to bump the version, users won't see the update.
 
 ## Git Commits
 
