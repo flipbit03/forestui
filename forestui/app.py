@@ -86,6 +86,12 @@ class ForestApp(App[None]):
                 yield EmptyState()
         yield Footer()
 
+    async def on_mount(self) -> None:
+        """Handle app mount - auto-select first repo if nothing selected."""
+        if not self._state.selection.repository_id and self._state.repositories:
+            self._state.select_repository(self._state.repositories[0].id)
+            await self._refresh_detail_pane()
+
     def _refresh_sidebar(self) -> None:
         """Refresh the sidebar with current state."""
         sidebar = self.query_one(Sidebar)
