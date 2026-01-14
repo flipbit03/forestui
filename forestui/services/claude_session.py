@@ -81,6 +81,9 @@ class ClaudeSessionService:
                             ts = datetime.fromisoformat(
                                 data["timestamp"].replace("Z", "+00:00")
                             )
+                            # Ensure timezone-aware (assume UTC if naive)
+                            if ts.tzinfo is None:
+                                ts = ts.replace(tzinfo=UTC)
                             if ts > last_timestamp:
                                 last_timestamp = ts
                         except (ValueError, AttributeError):
