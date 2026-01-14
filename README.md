@@ -4,7 +4,7 @@
 
 forestui brings the power of Git worktree management to the terminal with a beautiful TUI interface built on [Textual](https://textual.textualize.io/).
 
-![forestui screenshot](doc/screenshot.png)
+![forestui screenshot](doc/screenshot_small.png)
 
 ## Features
 
