@@ -90,6 +90,8 @@ fi
 info "Installing forestui with uv tool install..."
 uv tool install . --force
 
+# "forestui" is now available in your $PATH
+
 echo ""
 info "Installation complete!"
 echo ""
