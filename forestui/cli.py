@@ -124,6 +124,15 @@ def self_update() -> None:
         sys.exit(1)
 
 
+def rename_tmux_window(name: str) -> None:
+    """Rename the current tmux window."""
+    if os.environ.get("TMUX"):
+        subprocess.run(
+            ["tmux", "rename-window", name],
+            capture_output=True,
+        )
+
+
 def ensure_tmux(forest_path: str | None) -> None:
     """Ensure forestui is running inside tmux, or exec into tmux."""
     # Already inside tmux - good to go
@@ -173,6 +182,7 @@ def main(forest_path: str | None, do_self_update: bool) -> None:
         return
 
     ensure_tmux(forest_path)
+    rename_tmux_window("forestui")
 
     # Import here to avoid circular imports and speed up --help/--version
     from forestui.app import run_app
