@@ -646,13 +646,19 @@ def run_app() -> None:
     """Run the forestui application."""
     import sys
     import traceback
+    from pathlib import Path
 
     try:
         app = ForestApp()
         app.run()
     except Exception as e:
-        traceback.print_exc()
+        error_log = Path.home() / ".forestui-error.log"
+        tb = traceback.format_exc()
+        error_log.write_text(tb)
+        print(tb, file=sys.stderr)
         print(f"\nError: {e}", file=sys.stderr)
+        print(f"\nError log written to: {error_log}", file=sys.stderr)
+        input("Press Enter to exit...")
         sys.exit(1)
 
 
