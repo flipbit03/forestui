@@ -2,7 +2,7 @@
 
 import json
 import shutil
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from forestui.models import ClaudeSession
@@ -56,9 +56,10 @@ class ClaudeSessionService:
 
     def _parse_session_file(self, file_path: Path) -> ClaudeSession | None:
         """Parse a session JSONL file."""
+
         session_id = file_path.stem
         title = ""
-        last_timestamp = datetime.min
+        last_timestamp = datetime.min.replace(tzinfo=UTC)
         message_count = 0
         git_branches: list[str] = []
 
@@ -126,8 +127,8 @@ class ClaudeSessionService:
         if message_count == 0:
             return None
 
-        if last_timestamp == datetime.min:
-            last_timestamp = datetime.fromtimestamp(file_path.stat().st_mtime)
+        if last_timestamp == datetime.min.replace(tzinfo=UTC):
+            last_timestamp = datetime.fromtimestamp(file_path.stat().st_mtime, tz=UTC)
 
         return ClaudeSession(
             id=session_id,
