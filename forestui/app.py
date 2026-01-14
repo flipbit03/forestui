@@ -644,8 +644,16 @@ class ForestApp(App[None]):
 
 def run_app() -> None:
     """Run the forestui application."""
-    app = ForestApp()
-    app.run()
+    import sys
+    import traceback
+
+    try:
+        app = ForestApp()
+        app.run()
+    except Exception as e:
+        traceback.print_exc()
+        print(f"\nError: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 # Entry point for CLI
