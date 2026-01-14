@@ -7,6 +7,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Button, Label, Static, Tree
+from textual.widgets._tree import TreeNode
 
 from forestui.models import Repository, Worktree
 
@@ -181,7 +182,24 @@ class Sidebar(Static):
         self, event: Tree.NodeSelected[RepoNode | WorktreeNode | ArchivedNode]
     ) -> None:
         """Handle tree node selection."""
-        node = event.node
+        self._handle_node_selection(event.node)
+
+    def on_tree_node_expanded(
+        self, event: Tree.NodeExpanded[RepoNode | WorktreeNode | ArchivedNode]
+    ) -> None:
+        """Handle tree node expansion - also select the node."""
+        self._handle_node_selection(event.node)
+
+    def on_tree_node_collapsed(
+        self, event: Tree.NodeCollapsed[RepoNode | WorktreeNode | ArchivedNode]
+    ) -> None:
+        """Handle tree node collapse - also select the node."""
+        self._handle_node_selection(event.node)
+
+    def _handle_node_selection(
+        self, node: TreeNode[RepoNode | WorktreeNode | ArchivedNode]
+    ) -> None:
+        """Handle selection of a tree node."""
         if node.data is None:
             return
 
