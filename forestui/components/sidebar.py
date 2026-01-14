@@ -7,7 +7,6 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Button, Label, Static, Tree
-from textual.widgets._tree import TreeNode
 
 from forestui.models import Repository, Worktree
 
@@ -181,32 +180,28 @@ class Sidebar(Static):
     def on_tree_node_selected(
         self, event: Tree.NodeSelected[RepoNode | WorktreeNode | ArchivedNode]
     ) -> None:
-        """Handle tree node selection."""
-        self._handle_node_selection(event.node)
+        """Handle tree node selection (Enter key or click)."""
+        self._select_node(event.node)
 
-    def on_tree_node_expanded(
-        self, event: Tree.NodeExpanded[RepoNode | WorktreeNode | ArchivedNode]
+    def on_tree_node_highlighted(
+        self, event: Tree.NodeHighlighted[RepoNode | WorktreeNode | ArchivedNode]
     ) -> None:
-        """Handle tree node expansion - also select the node."""
-        self._handle_node_selection(event.node)
+        """Handle tree node highlight (keyboard navigation)."""
+        self._select_node(event.node)
 
-    def on_tree_node_collapsed(
-        self, event: Tree.NodeCollapsed[RepoNode | WorktreeNode | ArchivedNode]
-    ) -> None:
-        """Handle tree node collapse - also select the node."""
-        self._handle_node_selection(event.node)
-
-    def _handle_node_selection(
-        self, node: TreeNode[RepoNode | WorktreeNode | ArchivedNode]
-    ) -> None:
-        """Handle selection of a tree node."""
-        if node.data is None:
+    def _select_node(self, node: object) -> None:
+        """Select a node and post the appropriate message."""
+        if node is None:
             return
 
-        if isinstance(node.data, RepoNode):
-            self.post_message(self.RepositorySelected(node.data.id))
-        elif isinstance(node.data, WorktreeNode):
-            self.post_message(self.WorktreeSelected(node.data.repo_id, node.data.id))
+        data = getattr(node, "data", None)
+        if data is None:
+            return
+
+        if isinstance(data, RepoNode):
+            self.post_message(self.RepositorySelected(data.id))
+        elif isinstance(data, WorktreeNode):
+            self.post_message(self.WorktreeSelected(data.repo_id, data.id))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses."""
