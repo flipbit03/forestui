@@ -131,6 +131,16 @@ def rename_tmux_window(name: str) -> None:
     get_tmux_service().rename_window(name)
 
 
+def slugify(text: str) -> str:
+    """Convert text to a safe slug for tmux session names."""
+    import re
+
+    # Convert to lowercase and replace spaces/special chars with dashes
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", text.lower())
+    # Remove leading/trailing dashes
+    return slug.strip("-")
+
+
 def ensure_tmux(forest_path: str | None, debug_mode: bool = False) -> None:
     """Ensure forestui is running inside tmux, or exec into tmux."""
     # Already inside tmux - good to go
@@ -148,6 +158,14 @@ def ensure_tmux(forest_path: str | None, debug_mode: bool = False) -> None:
         click.echo("  Fedora: sudo dnf install tmux", err=True)
         sys.exit(1)
 
+    # Determine forest folder name for session naming
+    if forest_path:
+        forest_folder = Path(forest_path).expanduser().resolve().name
+    else:
+        forest_folder = "forest"  # default ~/forest
+
+    session_name = f"forestui-{slugify(forest_folder)}"
+
     # Build the forestui command with arguments
     forestui_cmd = "forestui"
     if debug_mode:
@@ -157,8 +175,8 @@ def ensure_tmux(forest_path: str | None, debug_mode: bool = False) -> None:
 
     # Exec into tmux with forestui
     # -A: attach to existing session or create new one
-    # -s forestui: session name
-    os.execvp("tmux", ["tmux", "new-session", "-A", "-s", "forestui", forestui_cmd])
+    # -s: session name based on forest folder
+    os.execvp("tmux", ["tmux", "new-session", "-A", "-s", session_name, forestui_cmd])
 
 
 @click.command()
