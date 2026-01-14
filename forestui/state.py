@@ -1,7 +1,7 @@
 """Application state management for forestui."""
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -206,7 +206,7 @@ class AppState:
 
     def refresh_worktree_timestamp(self, worktree_id: UUID) -> None:
         """Update a worktree's last modified timestamp."""
-        self.update_worktree(worktree_id, last_modified=datetime.now().isoformat())
+        self.update_worktree(worktree_id, last_modified=datetime.now(UTC).isoformat())
 
 
 # Global app state instance

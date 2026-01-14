@@ -1,6 +1,6 @@
 """Data models for forestui."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Self
 from uuid import UUID, uuid4
@@ -17,7 +17,7 @@ class Worktree(BaseModel):
     path: str
     is_archived: bool = False
     sort_order: int | None = None
-    last_modified: datetime = Field(default_factory=datetime.now)
+    last_modified: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     def get_path(self) -> Path:
         """Get the worktree path as a Path object."""
@@ -72,7 +72,7 @@ class ClaudeSession(BaseModel):
     @property
     def relative_time(self) -> str:
         """Get a human-readable relative time string."""
-        now = datetime.now()
+        now = datetime.now(UTC)
         diff = now - self.last_timestamp
         seconds = diff.total_seconds()
 
