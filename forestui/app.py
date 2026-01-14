@@ -12,6 +12,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Label, Static
 
+from forestui import __version__
 from forestui.components.modals import (
     AddRepositoryModal,
     AddWorktreeModal,
@@ -46,7 +47,7 @@ class EmptyState(Static):
 class ForestApp(App[None]):
     """Main forestui application."""
 
-    TITLE = "forestui"
+    TITLE = f"forestui v{__version__}"
     CSS = APP_CSS
 
     BINDINGS = [
