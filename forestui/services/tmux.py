@@ -156,6 +156,54 @@ class TmuxService:
         except LibTmuxException:
             return False
 
+    def create_claude_window(
+        self,
+        name: str,
+        path: str,
+        resume_session_id: str | None = None,
+    ) -> bool:
+        """Create a tmux window with Claude Code.
+
+        Args:
+            name: Name for the window (e.g., worktree name)
+            path: Working directory path
+            resume_session_id: Optional session ID to resume
+
+        Returns:
+            True if window was created/selected successfully, False otherwise
+        """
+        if self.session is None:
+            return False
+
+        window_name = f"claude:{name}"
+
+        try:
+            # Check if window already exists
+            existing_window = self.find_window(window_name)
+            if existing_window is not None:
+                existing_window.select()
+                return True
+
+            # Create new window
+            window = self.session.new_window(
+                window_name=window_name,
+                start_directory=path,
+                attach=True,
+            )
+
+            # Send claude command
+            pane = window.active_pane
+            if pane is not None:
+                if resume_session_id:
+                    pane.send_keys(f"claude -r {resume_session_id}")
+                else:
+                    pane.send_keys("claude")
+
+            return True
+
+        except LibTmuxException:
+            return False
+
 
 def get_tmux_service() -> TmuxService:
     """Get the singleton TmuxService instance."""

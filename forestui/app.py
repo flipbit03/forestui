@@ -604,15 +604,22 @@ class ForestApp(App[None]):
             self.notify(f"Failed to open file manager: {e}", severity="error")
 
     def _start_claude_session(self, path: str) -> None:
-        """Start a new Claude session."""
-        self._open_in_terminal(path)
-        # The user will need to run 'claude' manually in the terminal
-        self.notify("Start Claude with 'claude' in the terminal")
+        """Start a new Claude session in a tmux window."""
+        name = self._get_name_for_path(path) or "session"
+        if self._tmux_service.create_claude_window(name, path):
+            self.notify(f"Started Claude in tmux window claude:{name}")
+        else:
+            self.notify("Failed to create Claude window", severity="error")
 
     def _continue_claude_session(self, session_id: str, path: str) -> None:
-        """Continue an existing Claude session."""
-        self._open_in_terminal(path)
-        self.notify(f"Run 'claude -r {session_id}' to continue session")
+        """Continue an existing Claude session in a tmux window."""
+        name = self._get_name_for_path(path) or "session"
+        if self._tmux_service.create_claude_window(
+            name, path, resume_session_id=session_id
+        ):
+            self.notify(f"Resuming Claude session in tmux window claude:{name}")
+        else:
+            self.notify("Failed to create Claude window", severity="error")
 
     async def _import_existing_worktrees(self, repo: Repository) -> None:
         """Import existing worktrees from a repository."""
