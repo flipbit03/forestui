@@ -1,9 +1,33 @@
 """Settings service for managing application configuration."""
 
+from __future__ import annotations
+
 import json
 from pathlib import Path
 
 from forestui.models import Settings
+
+# Default forest directory
+DEFAULT_FOREST_PATH = Path.home() / "forest"
+
+# Runtime forest path (set at startup via CLI argument)
+_forest_path: Path | None = None
+
+
+def set_forest_path(path: Path | str | None) -> None:
+    """Set the runtime forest path."""
+    global _forest_path
+    if path is None:
+        _forest_path = DEFAULT_FOREST_PATH
+    else:
+        _forest_path = Path(path).expanduser().resolve()
+
+
+def get_forest_path() -> Path:
+    """Get the current forest path."""
+    if _forest_path is None:
+        return DEFAULT_FOREST_PATH
+    return _forest_path
 
 
 class SettingsService:
@@ -53,10 +77,6 @@ class SettingsService:
         current.update(kwargs)
         new_settings = Settings.model_validate(current)
         self.save_settings(new_settings)
-
-    def get_forest_path(self) -> Path:
-        """Get the forest directory path."""
-        return self.settings.get_forest_path()
 
 
 def get_settings_service() -> SettingsService:

@@ -100,15 +100,10 @@ class ClaudeSession(BaseModel):
 class Settings(BaseModel):
     """Application settings."""
 
-    forest_directory: str = "~/forest"
     default_editor: str = "code"
     default_terminal: str = ""
     branch_prefix: str = "feat/"
     theme: str = "system"
-
-    def get_forest_path(self) -> Path:
-        """Get the forest directory as a Path object."""
-        return Path(self.forest_directory).expanduser()
 
     @classmethod
     def default(cls) -> Self:

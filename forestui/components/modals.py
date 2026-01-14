@@ -314,11 +314,14 @@ class SettingsModal(ModalScreen[Settings | None]):
     EDITORS = [
         ("VS Code", "code"),
         ("Cursor", "cursor"),
+        ("Neovim (tmux)", "nvim"),
+        ("Vim (tmux)", "vim"),
+        ("Helix (tmux)", "hx"),
+        ("Emacs TUI (tmux)", "emacs -nw"),
         ("PyCharm", "pycharm"),
         ("Sublime Text", "subl"),
-        ("Vim", "vim"),
-        ("Neovim", "nvim"),
-        ("Emacs", "emacs"),
+        ("Nano (tmux)", "nano"),
+        ("Micro (tmux)", "micro"),
     ]
 
     THEMES = [
@@ -335,12 +338,6 @@ class SettingsModal(ModalScreen[Settings | None]):
         """Compose the modal UI."""
         with Vertical(classes="modal-container"):
             yield Label(" Settings", classes="modal-title")
-
-            yield Label("FOREST DIRECTORY", classes="section-header")
-            yield Input(
-                value=self._settings.forest_directory,
-                id="input-forest-dir",
-            )
 
             yield Label("DEFAULT EDITOR", classes="section-header")
             yield Select(
@@ -376,7 +373,6 @@ class SettingsModal(ModalScreen[Settings | None]):
 
     def _save_settings(self) -> None:
         """Save the settings."""
-        forest_dir = self.query_one("#input-forest-dir", Input).value
         editor_select = self.query_one("#select-editor", Select)
         editor = str(editor_select.value) if editor_select.value else "code"
         branch_prefix = self.query_one("#input-branch-prefix", Input).value
@@ -384,7 +380,6 @@ class SettingsModal(ModalScreen[Settings | None]):
         theme = str(theme_select.value) if theme_select.value else "system"
 
         new_settings = Settings(
-            forest_directory=forest_dir,
             default_editor=editor,
             branch_prefix=branch_prefix,
             theme=theme,

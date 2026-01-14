@@ -26,7 +26,8 @@ from forestui.components.worktree_detail import WorktreeDetail
 from forestui.models import Repository, Worktree
 from forestui.services.claude_session import get_claude_session_service
 from forestui.services.git import GitError, get_git_service
-from forestui.services.settings import get_settings_service
+from forestui.services.settings import get_forest_path, get_settings_service
+from forestui.services.tmux import get_tmux_service
 from forestui.state import get_app_state
 from forestui.theme import APP_CSS
 
@@ -71,6 +72,7 @@ class ForestApp(App[None]):
         self._settings_service = get_settings_service()
         self._git_service = get_git_service()
         self._claude_service = get_claude_session_service()
+        self._tmux_service = get_tmux_service()
 
     def compose(self) -> ComposeResult:
         """Compose the application UI."""
@@ -357,8 +359,7 @@ class ForestApp(App[None]):
         if not repo:
             return
 
-        settings = self._settings_service.settings
-        forest_dir = settings.get_forest_path()
+        forest_dir = get_forest_path()
         worktree_path = forest_dir / repo.name / event.name
 
         try:
@@ -405,7 +406,7 @@ class ForestApp(App[None]):
             AddWorktreeModal(
                 repo,
                 branches,
-                settings.get_forest_path(),
+                get_forest_path(),
                 settings.branch_prefix,
             )
         )
@@ -518,16 +519,42 @@ class ForestApp(App[None]):
                 return repo.source_path
         return None
 
+    def _get_name_for_path(self, path: str) -> str | None:
+        """Get the worktree or repository name for a given path."""
+        # First check worktrees
+        for repo in self._state.repositories:
+            for worktree in repo.worktrees:
+                if worktree.path == path:
+                    return worktree.name
+            # Check if it's the repository source path
+            if repo.source_path == path:
+                return repo.name
+        return None
+
     def _open_in_editor(self, path: str) -> None:
         """Open path in configured editor."""
         editor = self._settings_service.settings.default_editor
+
+        # If inside tmux and editor is TUI-based, use tmux window
+        if self._tmux_service.is_inside_tmux and self._tmux_service.is_tui_editor(
+            editor
+        ):
+            # Find the name for this path (worktree name or repo name)
+            name = self._get_name_for_path(path)
+            if name and self._tmux_service.create_editor_window(name, path, editor):
+                self.notify(f"Opened {editor} in tmux window")
+                return
+
+        # GUI editor or not in tmux - spawn normally
         try:
+            # Handle editors with arguments (e.g., "emacs -nw")
+            editor_parts = editor.split()
             subprocess.Popen(
-                [editor, path],
+                [*editor_parts, path],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            self.notify(f"Opened in {editor}")
+            self.notify(f"Opened in {editor_parts[0]}")
         except FileNotFoundError:
             self.notify(f"Editor '{editor}' not found", severity="error")
 
@@ -591,8 +618,7 @@ class ForestApp(App[None]):
         """Import existing worktrees from a repository."""
         try:
             worktrees = await self._git_service.list_worktrees(repo.source_path)
-            settings = self._settings_service.settings
-            forest_dir = settings.get_forest_path()
+            forest_dir = get_forest_path()
 
             for wt_info in worktrees:
                 # Skip the main worktree (same as source_path)
@@ -616,10 +642,18 @@ class ForestApp(App[None]):
             self.notify(f"Failed to import worktrees: {e}", severity="error")
 
 
-def main() -> None:
+def run_app() -> None:
     """Run the forestui application."""
     app = ForestApp()
     app.run()
+
+
+# Entry point for CLI
+def main() -> None:
+    """CLI entry point - delegates to cli module."""
+    from forestui.cli import main as cli_main
+
+    cli_main()
 
 
 if __name__ == "__main__":

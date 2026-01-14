@@ -8,7 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from forestui.models import Repository, Selection, Worktree
-from forestui.services.settings import get_settings_service
+from forestui.services.settings import get_forest_path
 
 
 class AppStateData(BaseModel):
@@ -28,10 +28,9 @@ class AppState:
 
     def _get_config_path(self) -> Path:
         """Get the config file path."""
-        settings = get_settings_service()
-        forest_dir = settings.get_forest_path()
+        forest_dir = get_forest_path()
         forest_dir.mkdir(parents=True, exist_ok=True)
-        return forest_dir / ".forest-config.json"
+        return forest_dir / ".forestui-config.json"
 
     def _load_state(self) -> None:
         """Load state from config file."""
