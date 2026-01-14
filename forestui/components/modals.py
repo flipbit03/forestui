@@ -44,8 +44,7 @@ class AddRepositoryModal(ModalScreen[str | None]):
                 id="input-path",
             )
 
-            yield Label("", id="label-error", classes="label-destructive")
-            yield Label("", id="label-name", classes="label-secondary")
+            yield Label("", id="label-status", classes="label-secondary")
 
             yield Checkbox("Import existing worktrees", id="checkbox-import")
 
@@ -66,35 +65,39 @@ class AddRepositoryModal(ModalScreen[str | None]):
 
     def _validate_path(self) -> None:
         """Validate the entered path."""
-        error_label = self.query_one("#label-error", Label)
-        name_label = self.query_one("#label-name", Label)
+        status_label = self.query_one("#label-status", Label)
 
         if not self._path:
-            error_label.update("")
-            name_label.update("")
+            status_label.update("")
+            status_label.remove_class("label-destructive")
+            status_label.add_class("label-secondary")
             return
 
         path = Path(self._path).expanduser()
 
         if not path.exists():
-            error_label.update(" Path does not exist")
-            name_label.update("")
+            status_label.update("Path does not exist")
+            status_label.remove_class("label-secondary")
+            status_label.add_class("label-destructive")
             return
 
         if not path.is_dir():
-            error_label.update(" Path is not a directory")
-            name_label.update("")
+            status_label.update("Path is not a directory")
+            status_label.remove_class("label-secondary")
+            status_label.add_class("label-destructive")
             return
 
         # Check if it's a git repository
         git_dir = path / ".git"
         if not git_dir.exists():
-            error_label.update(" Not a git repository")
-            name_label.update("")
+            status_label.update("Not a git repository")
+            status_label.remove_class("label-secondary")
+            status_label.add_class("label-destructive")
             return
 
-        error_label.update("")
-        name_label.update(f"Repository: {path.name}")
+        status_label.update(f"Repository: {path.name}")
+        status_label.remove_class("label-destructive")
+        status_label.add_class("label-secondary")
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         """Handle checkbox changes."""
