@@ -35,7 +35,7 @@ class SettingsService:
 
     _instance: SettingsService | None = None
     _settings: Settings | None = None
-    _config_path: Path = Path.home() / ".config" / "forest-tui" / "settings.json"
+    _config_path: Path = Path.home() / ".config" / "forestui" / "settings.json"
 
     def __new__(cls) -> SettingsService:
         if cls._instance is None:

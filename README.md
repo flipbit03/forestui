@@ -72,11 +72,11 @@ forestui ~/work      # Uses ~/work/.forestui-config.json
 forestui ~/personal  # Uses ~/personal/.forestui-config.json
 ```
 
-User preferences (editor, theme, branch prefix) are stored globally in `~/.config/forest-tui/settings.json`.
+User preferences (editor, theme, branch prefix) are stored globally in `~/.config/forestui/settings.json`.
 
 ## Configuration
 
-Settings are stored in `~/.config/forest-tui/settings.json`:
+Settings are stored in `~/.config/forestui/settings.json`:
 
 ```json
 {

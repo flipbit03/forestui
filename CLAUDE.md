@@ -117,7 +117,7 @@ Each forest has its own `.forestui-config.json` state file.
 ### Modifying Settings
 1. Update `Settings` model in `models.py`
 2. Update `SettingsModal` in `components/modals.py`
-3. Settings are auto-persisted to `~/.config/forest-tui/settings.json`
+3. Settings are auto-persisted to `~/.config/forestui/settings.json`
 
 ## Testing
 
