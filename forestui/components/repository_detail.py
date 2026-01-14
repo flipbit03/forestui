@@ -5,12 +5,13 @@ from uuid import UUID
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
-from textual.widgets import Button, Label, Rule, Static
+from textual.widget import Widget
+from textual.widgets import Button, Label, Rule
 
 from forestui.models import ClaudeSession, Repository
 
 
-class RepositoryDetail(Static):
+class RepositoryDetail(Widget):
     """Detail view for a selected repository."""
 
     class OpenInEditor(Message):
@@ -41,8 +42,23 @@ class RepositoryDetail(Static):
             self.path = path
             super().__init__()
 
+    class StartClaudeYoloSession(Message):
+        """Request to start a Claude YOLO session."""
+
+        def __init__(self, path: str) -> None:
+            self.path = path
+            super().__init__()
+
     class ContinueClaudeSession(Message):
         """Request to continue an existing Claude session."""
+
+        def __init__(self, session_id: str, path: str) -> None:
+            self.session_id = session_id
+            self.path = path
+            super().__init__()
+
+    class ContinueClaudeYoloSession(Message):
+        """Request to continue an existing Claude session in YOLO mode."""
 
         def __init__(self, session_id: str, path: str) -> None:
             self.session_id = session_id
@@ -77,16 +93,17 @@ class RepositoryDetail(Static):
     def compose(self) -> ComposeResult:
         """Compose the repository detail view."""
         with Vertical(classes="detail-content"):
-            # Header
+            # Header - Main Repository
             with Vertical(classes="detail-header"):
+                yield Label("MAIN REPOSITORY", classes="section-header")
                 yield Label(
-                    f"  {self._repository.name}",
+                    f"Repository: {self._repository.name}",
                     classes="detail-title",
                 )
                 if self._current_branch:
                     yield Label(
-                        f"   {self._current_branch}",
-                        classes="detail-subtitle label-accent",
+                        f"Branch:     {self._current_branch}",
+                        classes="label-accent",
                     )
 
             yield Rule()
@@ -94,7 +111,7 @@ class RepositoryDetail(Static):
             # Location section
             yield Label("LOCATION", classes="section-header")
             yield Label(
-                f" {self._repository.source_path}",
+                self._repository.source_path,
                 classes="path-display label-secondary",
             )
 
@@ -112,23 +129,40 @@ class RepositoryDetail(Static):
             # Claude section
             yield Label("CLAUDE", classes="section-header")
             with Horizontal(classes="action-row"):
-                yield Button("󰚩 New Session", id="btn-claude-new", variant="primary")
+                yield Button("New Session", id="btn-claude-new", variant="primary")
+                yield Button(
+                    "New Session: YOLO",
+                    id="btn-claude-yolo",
+                    variant="error",
+                    classes="-destructive",
+                )
                 yield Button(" Add Worktree", id="btn-add-worktree", variant="default")
 
             # Sessions list
             if self._sessions:
                 yield Label("RECENT SESSIONS", classes="section-header")
                 for session in self._sessions[:5]:
-                    with Vertical(classes="session-item", id=f"session-{session.id}"):
-                        yield Label(
-                            session.title[:50]
-                            + ("..." if len(session.title) > 50 else ""),
-                            classes="session-title",
+                    with Horizontal(classes="session-item"):
+                        with Vertical(classes="session-info"):
+                            yield Label(
+                                session.title[:40]
+                                + ("..." if len(session.title) > 40 else ""),
+                                classes="session-title",
+                            )
+                            meta = f"{session.relative_time} • {session.message_count} msgs"
+                            yield Label(meta, classes="session-meta label-muted")
+                        yield Button(
+                            "Resume",
+                            id=f"btn-resume-{session.id}",
+                            variant="default",
+                            classes="session-btn",
                         )
-                        meta = f"{session.relative_time} • {session.message_count} messages"
-                        if session.primary_branch:
-                            meta += f" •  {session.primary_branch}"
-                        yield Label(meta, classes="session-meta label-muted")
+                        yield Button(
+                            "YOLO",
+                            id=f"btn-yolo-{session.id}",
+                            variant="error",
+                            classes="session-btn -destructive",
+                        )
 
             yield Rule()
 
@@ -145,8 +179,9 @@ class RepositoryDetail(Static):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses."""
         path = self._repository.source_path
+        btn_id = event.button.id or ""
 
-        match event.button.id:
+        match btn_id:
             case "btn-editor":
                 self.post_message(self.OpenInEditor(path))
             case "btn-terminal":
@@ -155,23 +190,15 @@ class RepositoryDetail(Static):
                 self.post_message(self.OpenInFileManager(path))
             case "btn-claude-new":
                 self.post_message(self.StartClaudeSession(path))
+            case "btn-claude-yolo":
+                self.post_message(self.StartClaudeYoloSession(path))
             case "btn-add-worktree":
                 self.post_message(self.AddWorktreeRequested(self._repository.id))
             case "btn-remove-repo":
                 self.post_message(self.RemoveRepositoryRequested(self._repository.id))
-            case s if s and s.startswith("btn-session-"):
-                session_id = s.replace("btn-session-", "")
+            case _ if btn_id.startswith("btn-resume-"):
+                session_id = btn_id.replace("btn-resume-", "")
                 self.post_message(self.ContinueClaudeSession(session_id, path))
-
-    def on_click(self, event: object) -> None:
-        """Handle clicks on session items."""
-        # Check if click was on a session item
-        widget = getattr(event, "widget", None)
-        while widget:
-            if hasattr(widget, "id") and widget.id and widget.id.startswith("session-"):
-                session_id = widget.id.replace("session-", "")
-                self.post_message(
-                    self.ContinueClaudeSession(session_id, self._repository.source_path)
-                )
-                return
-            widget = widget.parent
+            case _ if btn_id.startswith("btn-yolo-"):
+                session_id = btn_id.replace("btn-yolo-", "")
+                self.post_message(self.ContinueClaudeYoloSession(session_id, path))

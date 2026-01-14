@@ -131,7 +131,7 @@ def rename_tmux_window(name: str) -> None:
     get_tmux_service().rename_window(name)
 
 
-def ensure_tmux(forest_path: str | None) -> None:
+def ensure_tmux(forest_path: str | None, debug_mode: bool = False) -> None:
     """Ensure forestui is running inside tmux, or exec into tmux."""
     # Already inside tmux - good to go
     if os.environ.get("TMUX"):
@@ -148,10 +148,12 @@ def ensure_tmux(forest_path: str | None) -> None:
         click.echo("  Fedora: sudo dnf install tmux", err=True)
         sys.exit(1)
 
-    # Build the forestui command with optional path argument
+    # Build the forestui command with arguments
     forestui_cmd = "forestui"
+    if debug_mode:
+        forestui_cmd += " --debug"
     if forest_path:
-        forestui_cmd = f"forestui {forest_path}"
+        forestui_cmd += f" {forest_path}"
 
     # Exec into tmux with forestui
     # -A: attach to existing session or create new one
@@ -167,8 +169,14 @@ def ensure_tmux(forest_path: str | None) -> None:
     is_flag=True,
     help="Update forestui to the latest version",
 )
+@click.option(
+    "--debug",
+    "debug_mode",
+    is_flag=True,
+    help="Run with Textual devtools enabled",
+)
 @click.version_option(version=__version__, prog_name="forestui")
-def main(forest_path: str | None, do_self_update: bool) -> None:
+def main(forest_path: str | None, do_self_update: bool, debug_mode: bool) -> None:
     """forestui - Git Worktree Manager
 
     A terminal UI for managing Git worktrees, inspired by forest for macOS.
@@ -179,7 +187,11 @@ def main(forest_path: str | None, do_self_update: bool) -> None:
         self_update()
         return
 
-    ensure_tmux(forest_path)
+    ensure_tmux(forest_path, debug_mode)
+
+    if debug_mode:
+        os.environ["TEXTUAL"] = "devtools"
+
     rename_tmux_window("forestui")
 
     # Import here to avoid circular imports and speed up --help/--version

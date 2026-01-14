@@ -4,7 +4,7 @@ from uuid import UUID
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal
 from textual.message import Message
 from textual.widgets import Button, Label, Static, Tree
 
@@ -105,7 +105,7 @@ class Sidebar(Static):
         selected_worktree_id: UUID | None = None,
         show_archived: bool = False,
     ) -> None:
-        super().__init__()
+        super().__init__(id="sidebar")  # Apply sidebar ID to the widget itself
         self._repositories = repositories
         self._selected_repo_id = selected_repo_id
         self._selected_worktree_id = selected_worktree_id
@@ -113,19 +113,18 @@ class Sidebar(Static):
 
     def compose(self) -> ComposeResult:
         """Compose the sidebar UI."""
-        with Vertical(id="sidebar"):
-            # Header
-            with Horizontal(classes="sidebar-header"):
-                yield Label(" Worktrees", classes="label-primary")
-                with Horizontal(classes="header-buttons"):
-                    yield Button("+", id="btn-add-repo", variant="default")
-            # Tree view
-            tree: Tree[RepoNode | WorktreeNode | ArchivedNode] = Tree(
-                "Repositories", id="repo-tree"
-            )
-            tree.show_root = False
-            tree.guide_depth = 2
-            yield tree
+        # Header
+        with Horizontal(classes="sidebar-header"):
+            yield Label(" Worktrees", classes="label-primary")
+            with Horizontal(classes="header-buttons"):
+                yield Button("+", id="btn-add-repo", variant="default")
+        # Tree view
+        tree: Tree[RepoNode | WorktreeNode | ArchivedNode] = Tree(
+            "Repositories", id="repo-tree"
+        )
+        tree.show_root = False
+        tree.guide_depth = 2
+        yield tree
 
     def on_mount(self) -> None:
         """Populate the tree when mounted."""

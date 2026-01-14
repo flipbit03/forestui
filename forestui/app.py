@@ -1,7 +1,6 @@
 """Main forestui application."""
 
 import contextlib
-import platform
 import subprocess
 from pathlib import Path
 from uuid import UUID
@@ -9,8 +8,9 @@ from uuid import UUID
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.widgets import Footer, Header, Label, Static
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.widget import Widget
+from textual.widgets import Footer, Header, Label
 
 from forestui import __version__
 from forestui.components.modals import (
@@ -31,7 +31,7 @@ from forestui.state import get_app_state
 from forestui.theme import APP_CSS
 
 
-class EmptyState(Static):
+class EmptyState(Widget):
     """Empty state when nothing is selected."""
 
     def compose(self) -> ComposeResult:
@@ -58,6 +58,7 @@ class ForestApp(App[None]):
         Binding("t", "open_terminal", "Terminal", show=True),
         Binding("o", "open_files", "Files", show=True),
         Binding("n", "start_claude", "Claude", show=True),
+        Binding("y", "start_claude_yolo", "ClaudeYOLO", show=True),
         Binding("h", "toggle_archive", "Archive", show=True),
         Binding("d", "delete", "Delete", show=True),
         Binding("s", "open_settings", "Settings", show=True),
@@ -83,7 +84,7 @@ class ForestApp(App[None]):
                 selected_worktree_id=self._state.selection.worktree_id,
                 show_archived=self._state.show_archived,
             )
-            with Vertical(id="detail-pane"):
+            with VerticalScroll(id="detail-pane"):
                 yield EmptyState()
         yield Footer()
 
@@ -219,6 +220,18 @@ class ForestApp(App[None]):
         """Handle start Claude session request."""
         self._start_claude_session(event.path)
 
+    def on_repository_detail_start_claude_yolo_session(
+        self, event: RepositoryDetail.StartClaudeYoloSession
+    ) -> None:
+        """Handle start Claude YOLO session request."""
+        self._start_claude_session(event.path, yolo=True)
+
+    def on_worktree_detail_start_claude_yolo_session(
+        self, event: WorktreeDetail.StartClaudeYoloSession
+    ) -> None:
+        """Handle start Claude YOLO session request."""
+        self._start_claude_session(event.path, yolo=True)
+
     def on_repository_detail_continue_claude_session(
         self, event: RepositoryDetail.ContinueClaudeSession
     ) -> None:
@@ -230,6 +243,18 @@ class ForestApp(App[None]):
     ) -> None:
         """Handle continue Claude session request."""
         self._continue_claude_session(event.session_id, event.path)
+
+    def on_repository_detail_continue_claude_yolo_session(
+        self, event: RepositoryDetail.ContinueClaudeYoloSession
+    ) -> None:
+        """Handle continue Claude YOLO session request."""
+        self._continue_claude_session(event.session_id, event.path, yolo=True)
+
+    def on_worktree_detail_continue_claude_yolo_session(
+        self, event: WorktreeDetail.ContinueClaudeYoloSession
+    ) -> None:
+        """Handle continue Claude YOLO session request."""
+        self._continue_claude_session(event.session_id, event.path, yolo=True)
 
     async def on_repository_detail_add_worktree_requested(
         self, event: RepositoryDetail.AddWorktreeRequested
@@ -440,6 +465,12 @@ class ForestApp(App[None]):
         if path:
             self._start_claude_session(path)
 
+    def action_start_claude_yolo(self) -> None:
+        """Start Claude session with --dangerously-skip-permissions."""
+        path = self._get_selected_path()
+        if path:
+            self._start_claude_session(path, yolo=True)
+
     async def action_toggle_archive(self) -> None:
         """Toggle archive status of selected worktree."""
         if self._state.selection.worktree_id:
@@ -536,6 +567,18 @@ class ForestApp(App[None]):
                 return repo.name
         return None
 
+    def _get_claude_window_name(self, path: str) -> str:
+        """Get the window name for Claude sessions: repo:branch format."""
+        # Check worktrees first
+        for repo in self._state.repositories:
+            for worktree in repo.worktrees:
+                if worktree.path == path:
+                    return f"{repo.name}:{worktree.branch}"
+            # Check if it's the repository source path
+            if repo.source_path == path:
+                return repo.name
+        return "session"
+
     def _open_in_editor(self, path: str) -> None:
         """Open path in configured editor."""
         editor = self._settings_service.settings.default_editor
@@ -544,10 +587,9 @@ class ForestApp(App[None]):
         if self._tmux_service.is_inside_tmux and self._tmux_service.is_tui_editor(
             editor
         ):
-            # Find the name for this path (worktree name or repo name)
-            name = self._get_name_for_path(path)
-            if name and self._tmux_service.create_editor_window(name, path, editor):
-                self.notify(f"Opened {editor} in tmux window")
+            name = self._get_claude_window_name(path)
+            if self._tmux_service.create_editor_window(name, path, editor):
+                self.notify(f"Opened {editor} in edit:{name}")
                 return
 
         # GUI editor or not in tmux - spawn normally
@@ -565,41 +607,41 @@ class ForestApp(App[None]):
 
     def _open_in_terminal(self, path: str) -> None:
         """Open path in a tmux terminal window."""
-        name = self._get_name_for_path(path) or "shell"
+        name = self._get_claude_window_name(path)
         if self._tmux_service.create_shell_window(name, path):
-            self.notify(f"Opened terminal in tmux window term:{name}")
+            self.notify(f"Opened terminal in term:{name}")
         else:
             self.notify("Failed to create terminal window", severity="error")
 
     def _open_in_file_manager(self, path: str) -> None:
-        """Open path in file manager."""
-        system = platform.system()
-        try:
-            if system == "Darwin":
-                subprocess.Popen(["open", path])
-            elif system == "Linux":
-                subprocess.Popen(["xdg-open", path])
-            elif system == "Windows":
-                subprocess.Popen(["explorer", path])
-            self.notify("Opened in file manager")
-        except FileNotFoundError as e:
-            self.notify(f"Failed to open file manager: {e}", severity="error")
+        """Open path in Midnight Commander (mc) in a tmux window."""
+        name = self._get_claude_window_name(path)
+        if self._tmux_service.create_mc_window(name, path):
+            self.notify(f"Opened mc in files:{name}")
+        else:
+            self.notify("Failed to create mc window", severity="error")
 
-    def _start_claude_session(self, path: str) -> None:
+    def _start_claude_session(self, path: str, yolo: bool = False) -> None:
         """Start a new Claude session in a tmux window."""
-        name = self._get_name_for_path(path) or "session"
-        if self._tmux_service.create_claude_window(name, path):
-            self.notify(f"Started Claude in tmux window claude:{name}")
+        name = self._get_claude_window_name(path)
+        prefix = "yolo" if yolo else "claude"
+        if self._tmux_service.create_claude_window(name, path, yolo=yolo):
+            mode = " (YOLO)" if yolo else ""
+            self.notify(f"Started Claude{mode} in {prefix}:{name}")
         else:
             self.notify("Failed to create Claude window", severity="error")
 
-    def _continue_claude_session(self, session_id: str, path: str) -> None:
+    def _continue_claude_session(
+        self, session_id: str, path: str, yolo: bool = False
+    ) -> None:
         """Continue an existing Claude session in a tmux window."""
-        name = self._get_name_for_path(path) or "session"
+        name = self._get_claude_window_name(path)
+        prefix = "yolo" if yolo else "claude"
         if self._tmux_service.create_claude_window(
-            name, path, resume_session_id=session_id
+            name, path, resume_session_id=session_id, yolo=yolo
         ):
-            self.notify(f"Resuming Claude session in tmux window claude:{name}")
+            mode = " (YOLO)" if yolo else ""
+            self.notify(f"Resuming Claude{mode} in {prefix}:{name}")
         else:
             self.notify("Failed to create Claude window", severity="error")
 

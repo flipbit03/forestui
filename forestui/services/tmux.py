@@ -190,11 +190,47 @@ class TmuxService:
         except LibTmuxException:
             return False
 
+    def create_mc_window(self, name: str, path: str) -> bool:
+        """Create a tmux window with Midnight Commander.
+
+        Args:
+            name: Name for the window
+            path: Working directory path
+
+        Returns:
+            True if window was created/selected successfully, False otherwise
+        """
+        if self.session is None:
+            return False
+
+        window_name = f"files:{name}"
+
+        try:
+            # Check if window already exists
+            existing_window = self.find_window(window_name)
+            if existing_window is not None:
+                existing_window.select()
+                return True
+
+            # Create new window with mc (closes when mc exits)
+            self.session.new_window(
+                window_name=window_name,
+                start_directory=path,
+                attach=True,
+                window_shell="mc",
+            )
+
+            return True
+
+        except LibTmuxException:
+            return False
+
     def create_claude_window(
         self,
         name: str,
         path: str,
         resume_session_id: str | None = None,
+        yolo: bool = False,
     ) -> bool:
         """Create a tmux window with Claude Code.
 
@@ -202,6 +238,7 @@ class TmuxService:
             name: Name for the window (e.g., worktree name)
             path: Working directory path
             resume_session_id: Optional session ID to resume
+            yolo: If True, add --dangerously-skip-permissions flag
 
         Returns:
             True if window was created/selected successfully, False otherwise
@@ -210,6 +247,8 @@ class TmuxService:
             return False
 
         window_name = f"claude:{name}"
+        if yolo:
+            window_name = f"yolo:{name}"
 
         try:
             # Check if window already exists
@@ -219,7 +258,12 @@ class TmuxService:
                 return True
 
             # Build claude command (closes when claude exits)
-            cmd = f"claude -r {resume_session_id}" if resume_session_id else "claude"
+            cmd = "claude"
+            if yolo:
+                cmd += " --dangerously-skip-permissions"
+            if resume_session_id:
+                cmd += f" -r {resume_session_id}"
+
             self.session.new_window(
                 window_name=window_name,
                 start_directory=path,

@@ -5,12 +5,13 @@ from uuid import UUID
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
-from textual.widgets import Button, Input, Label, Rule, Static
+from textual.widget import Widget
+from textual.widgets import Button, Input, Label, Rule
 
 from forestui.models import ClaudeSession, Repository, Worktree
 
 
-class WorktreeDetail(Static):
+class WorktreeDetail(Widget):
     """Detail view for a selected worktree."""
 
     class OpenInEditor(Message):
@@ -41,8 +42,23 @@ class WorktreeDetail(Static):
             self.path = path
             super().__init__()
 
+    class StartClaudeYoloSession(Message):
+        """Request to start a Claude YOLO session."""
+
+        def __init__(self, path: str) -> None:
+            self.path = path
+            super().__init__()
+
     class ContinueClaudeSession(Message):
         """Request to continue an existing Claude session."""
+
+        def __init__(self, session_id: str, path: str) -> None:
+            self.session_id = session_id
+            self.path = path
+            super().__init__()
+
+    class ContinueClaudeYoloSession(Message):
+        """Request to continue an existing Claude session in YOLO mode."""
 
         def __init__(self, session_id: str, path: str) -> None:
             self.session_id = session_id
@@ -101,19 +117,20 @@ class WorktreeDetail(Static):
     def compose(self) -> ComposeResult:
         """Compose the worktree detail view."""
         with Vertical(classes="detail-content"):
-            # Header
+            # Header - Worktree
             with Vertical(classes="detail-header"):
+                yield Label("WORKTREE", classes="section-header")
                 yield Label(
-                    f"  {self._worktree.name}",
+                    f"Repository: {self._repository.name}",
                     classes="detail-title",
                 )
                 yield Label(
-                    f"   {self._worktree.branch}",
-                    classes="detail-subtitle label-accent",
+                    f"Worktree:   {self._worktree.name}",
+                    classes="label-primary",
                 )
                 yield Label(
-                    f"in {self._repository.name}",
-                    classes="label-muted",
+                    f"Branch:     {self._worktree.branch}",
+                    classes="label-accent",
                 )
 
             yield Rule()
@@ -121,7 +138,7 @@ class WorktreeDetail(Static):
             # Location section
             yield Label("LOCATION", classes="section-header")
             yield Label(
-                f" {self._worktree.path}",
+                self._worktree.path,
                 classes="path-display label-secondary",
             )
 
@@ -139,22 +156,39 @@ class WorktreeDetail(Static):
             # Claude section
             yield Label("CLAUDE", classes="section-header")
             with Horizontal(classes="action-row"):
-                yield Button("󰚩 New Session", id="btn-claude-new", variant="primary")
+                yield Button("New Session", id="btn-claude-new", variant="primary")
+                yield Button(
+                    "New Session: YOLO",
+                    id="btn-claude-yolo",
+                    variant="error",
+                    classes="-destructive",
+                )
 
             # Sessions list
             if self._sessions:
                 yield Label("RECENT SESSIONS", classes="section-header")
                 for session in self._sessions[:5]:
-                    with Vertical(classes="session-item", id=f"session-{session.id}"):
-                        yield Label(
-                            session.title[:50]
-                            + ("..." if len(session.title) > 50 else ""),
-                            classes="session-title",
+                    with Horizontal(classes="session-item"):
+                        with Vertical(classes="session-info"):
+                            yield Label(
+                                session.title[:40]
+                                + ("..." if len(session.title) > 40 else ""),
+                                classes="session-title",
+                            )
+                            meta = f"{session.relative_time} • {session.message_count} msgs"
+                            yield Label(meta, classes="session-meta label-muted")
+                        yield Button(
+                            "Resume",
+                            id=f"btn-resume-{session.id}",
+                            variant="default",
+                            classes="session-btn",
                         )
-                        meta = f"{session.relative_time} • {session.message_count} messages"
-                        if session.primary_branch:
-                            meta += f" •  {session.primary_branch}"
-                        yield Label(meta, classes="session-meta label-muted")
+                        yield Button(
+                            "YOLO",
+                            id=f"btn-yolo-{session.id}",
+                            variant="error",
+                            classes="session-btn -destructive",
+                        )
 
             yield Rule()
 
@@ -200,8 +234,9 @@ class WorktreeDetail(Static):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses."""
         path = self._worktree.path
+        btn_id = event.button.id or ""
 
-        match event.button.id:
+        match btn_id:
             case "btn-editor":
                 self.post_message(self.OpenInEditor(path))
             case "btn-terminal":
@@ -210,6 +245,8 @@ class WorktreeDetail(Static):
                 self.post_message(self.OpenInFileManager(path))
             case "btn-claude-new":
                 self.post_message(self.StartClaudeSession(path))
+            case "btn-claude-yolo":
+                self.post_message(self.StartClaudeYoloSession(path))
             case "btn-archive":
                 self.post_message(self.ArchiveWorktreeRequested(self._worktree.id))
             case "btn-unarchive":
@@ -218,6 +255,12 @@ class WorktreeDetail(Static):
                 self.post_message(
                     self.DeleteWorktreeRequested(self._repository.id, self._worktree.id)
                 )
+            case _ if btn_id.startswith("btn-resume-"):
+                session_id = btn_id.replace("btn-resume-", "")
+                self.post_message(self.ContinueClaudeSession(session_id, path))
+            case _ if btn_id.startswith("btn-yolo-"):
+                session_id = btn_id.replace("btn-yolo-", "")
+                self.post_message(self.ContinueClaudeYoloSession(session_id, path))
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle input submission."""
@@ -232,15 +275,3 @@ class WorktreeDetail(Static):
                     self.post_message(
                         self.RenameBranchRequested(self._worktree.id, event.value)
                     )
-
-    def on_click(self, event: object) -> None:
-        """Handle clicks on session items."""
-        widget = getattr(event, "widget", None)
-        while widget:
-            if hasattr(widget, "id") and widget.id and widget.id.startswith("session-"):
-                session_id = widget.id.replace("session-", "")
-                self.post_message(
-                    self.ContinueClaudeSession(session_id, self._worktree.path)
-                )
-                return
-            widget = widget.parent

@@ -1,6 +1,6 @@
 [project]
 name = "forestui"
-version = "0.3.6"
+version = "0.5.5"
 description = "A Terminal UI for managing Git worktrees"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -39,6 +39,7 @@ dev = [
     "mypy>=1.19.1",
     "pre-commit>=4.5.1",
     "ruff>=0.14.11",
+    "textual-dev>=1.7.0",
 ]
 
 [tool.mypy]

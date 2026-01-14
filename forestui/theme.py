@@ -68,6 +68,7 @@ Screen {
 
 #detail-pane {
     width: 1fr;
+    height: 100%;
     background: $bg;
     padding: 1 2;
 }
@@ -202,6 +203,26 @@ Button.-destructive:hover {
 }
 
 /* Detail View */
+.detail-content {
+    height: auto;
+    width: 100%;
+}
+
+RepositoryDetail {
+    height: auto;
+    width: 100%;
+}
+
+WorktreeDetail {
+    height: auto;
+    width: 100%;
+}
+
+EmptyState {
+    height: auto;
+    width: 100%;
+}
+
 .detail-header {
     height: auto;
     margin-bottom: 1;
@@ -290,10 +311,16 @@ ModalScreen {
     padding: 1;
     margin: 0 0 1 0;
     height: auto;
+    align: left middle;
 }
 
 .session-item:hover {
     background: $bg-hover;
+}
+
+.session-info {
+    width: 1fr;
+    height: auto;
 }
 
 .session-title {
@@ -302,6 +329,12 @@ ModalScreen {
 
 .session-meta {
     color: $text-muted;
+}
+
+.session-btn {
+    min-width: 8;
+    height: 3;
+    margin-left: 1;
 }
 
 /* Status Messages */
