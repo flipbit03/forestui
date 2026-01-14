@@ -2,10 +2,6 @@
 
 > A terminal UI for managing Git worktrees, inspired by [forest](https://github.com/ricwo/forest) for macOS by [@ricwo](https://github.com/ricwo).
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/flipbit03/forestui/main/install.sh | bash
-```
-
 forestui brings the power of Git worktree management to the terminal with a beautiful TUI interface built on [Textual](https://textual.textualize.io/).
 
 ## Features
@@ -17,30 +13,17 @@ forestui brings the power of Git worktree management to the terminal with a beau
 - **Multi-Forest Support**: Manage multiple forest directories via CLI argument
 - **tmux Native**: Runs inside tmux for a cohesive terminal experience
 
-## Requirements
-
-- Python 3.14+
-- tmux
-- uv (for installation)
-
-## Installation
-
-### Quick Install
+## Installing
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/flipbit03/forestui/main/install.sh | bash
 ```
 
-### Manual Install
+## Requirements
 
-```bash
-# Clone the repository
-git clone https://github.com/flipbit03/forestui.git ~/.forestui-install
-cd ~/.forestui-install
-
-# Install with uv
-uv tool install .
-```
+- Python 3.14+
+- tmux
+- uv (for installation)
 
 ## Usage
 
