@@ -143,17 +143,13 @@ class TmuxService:
                 existing_window.select()
                 return True
 
-            # Create new window
-            window = self.session.new_window(
+            # Create new window with editor as the command (closes when editor exits)
+            self.session.new_window(
                 window_name=window_name,
                 start_directory=worktree_path,
                 attach=True,
+                window_shell=f"{editor} .",
             )
-
-            # Send editor command
-            pane = window.active_pane
-            if pane is not None:
-                pane.send_keys(f"{editor} .")
 
             return True
 
@@ -222,20 +218,14 @@ class TmuxService:
                 existing_window.select()
                 return True
 
-            # Create new window
-            window = self.session.new_window(
+            # Build claude command (closes when claude exits)
+            cmd = f"claude -r {resume_session_id}" if resume_session_id else "claude"
+            self.session.new_window(
                 window_name=window_name,
                 start_directory=path,
                 attach=True,
+                window_shell=cmd,
             )
-
-            # Send claude command
-            pane = window.active_pane
-            if pane is not None:
-                if resume_session_id:
-                    pane.send_keys(f"claude -r {resume_session_id}")
-                else:
-                    pane.send_keys("claude")
 
             return True
 

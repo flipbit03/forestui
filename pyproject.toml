@@ -1,6 +1,6 @@
 [project]
 name = "forestui"
-version = "0.3.2"
+version = "0.3.3"
 description = "A Terminal UI for managing Git worktrees"
 readme = "README.md"
 requires-python = ">=3.14"
