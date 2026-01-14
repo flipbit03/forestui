@@ -100,7 +100,7 @@ class WorktreeDetail(Static):
 
     def compose(self) -> ComposeResult:
         """Compose the worktree detail view."""
-        with Vertical(id="detail-pane"):
+        with Vertical(classes="detail-content"):
             # Header
             with Vertical(classes="detail-header"):
                 yield Label(
