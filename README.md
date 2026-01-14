@@ -2,7 +2,7 @@
 
 > A terminal UI for managing Git worktrees, inspired by [forest](https://github.com/ricwo/forest) for macOS by [@ricwo](https://github.com/ricwo).
 
-forestui brings the power of Git worktree management to the terminal with a beautiful TUI interface built on [Textual](https://textual.textualize.io/).
+forestui brings the power of Git worktree management to the terminal with a beautiful TUI interface built on [Textual](https://textual.textualize.io/), featuring deep integration with [Claude Code](https://claude.ai/code).
 
 ![forestui screenshot](doc/screenshot_small.png)
 
