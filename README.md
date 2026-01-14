@@ -120,9 +120,11 @@ forestui is designed to coexist with [forest](https://github.com/ricwo/forest) f
 
 - Both apps can share the same `~/forest` directory for worktrees
 - Each app maintains its own state file:
-  - forest: `.forest-config.json`
-  - forestui: `.forestui-config.json`
+  - forest: `.forest-config.json` (stored in `~/.config/forest/`)
+  - forestui: `.forestui-config.json` (stored in the forest folder itself)
 - Worktrees created by either app work seamlessly with both
+
+**Key difference:** forestui stores its state inside the forest folder (`~/forest/.forestui-config.json`) rather than in a global config directory. This design enables multi-forest support - you can run `forestui ~/work` and `forestui ~/personal` with completely independent state for each.
 
 ## License
 
