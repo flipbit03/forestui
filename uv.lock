@@ -65,6 +65,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
+    { name = "libtmux" },
     { name = "pydantic" },
     { name = "textual" },
 ]
@@ -79,6 +80,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1.0" },
+    { name = "libtmux", specifier = ">=0.37.0" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "textual", specifier = ">=7.2.0" },
 ]
@@ -127,6 +129,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/22/f0/07fb6ab5c39a4ca9af3e37554f9d42f25c464829254d72e4ebbd81da351c/librt-0.7.8-cp314-cp314t-win32.whl", hash = "sha256:171ca3a0a06c643bd0a2f62a8944e1902c94aa8e5da4db1ea9a8daf872685365", size = 41173, upload-time = "2026-01-14T12:55:59.315Z" },
     { url = "https://files.pythonhosted.org/packages/24/d4/7e4be20993dc6a782639625bd2f97f3c66125c7aa80c82426956811cfccf/librt-0.7.8-cp314-cp314t-win_amd64.whl", hash = "sha256:445b7304145e24c60288a2f172b5ce2ca35c0f81605f5299f3fa567e189d2e32", size = 47668, upload-time = "2026-01-14T12:56:00.261Z" },
     { url = "https://files.pythonhosted.org/packages/fc/85/69f92b2a7b3c0f88ffe107c86b952b397004b5b8ea5a81da3d9c04c04422/librt-0.7.8-cp314-cp314t-win_arm64.whl", hash = "sha256:8766ece9de08527deabcd7cb1b4f1a967a385d26e33e536d6d8913db6ef74f06", size = 40550, upload-time = "2026-01-14T12:56:01.542Z" },
+]
+
+[[package]]
+name = "libtmux"
+version = "0.53.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e7/28/e2b252817cb181aec2f42fe2d1d7fac5ec9c4d15bfb2b8ea4bd1179e4244/libtmux-0.53.0.tar.gz", hash = "sha256:1d19af4cea0c19543954d7e7317c7025c0739b029cccbe3b843212fae238f1bd", size = 405001, upload-time = "2025-12-14T11:59:11.337Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0e/d0/2e8bc5caa639ebb9f8801ba0be7070a28d48d8ed60e2a428d40f71fb88b8/libtmux-0.53.0-py3-none-any.whl", hash = "sha256:024b7ae6a12aae55358e8feb914c8632b3ab9bd61c0987c53559643c6a58ee4f", size = 77582, upload-time = "2025-12-14T11:59:09.739Z" },
 ]
 
 [[package]]

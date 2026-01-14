@@ -126,11 +126,9 @@ def self_update() -> None:
 
 def rename_tmux_window(name: str) -> None:
     """Rename the current tmux window."""
-    if os.environ.get("TMUX"):
-        subprocess.run(
-            ["tmux", "rename-window", name],
-            capture_output=True,
-        )
+    from forestui.services.tmux import get_tmux_service
+
+    get_tmux_service().rename_window(name)
 
 
 def ensure_tmux(forest_path: str | None) -> None:

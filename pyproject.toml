@@ -19,6 +19,7 @@ classifiers = [
 ]
 dependencies = [
     "click>=8.1.0",
+    "libtmux>=0.37.0",
     "pydantic>=2.12.5",
     "textual>=7.2.0",
 ]
