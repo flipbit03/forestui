@@ -60,15 +60,19 @@ class TmuxService:
         if self._session is None:
             try:
                 # Get session from TMUX environment variable
-                # Format: /tmp/tmux-1000/default,12345,0
+                # Format: /socket/path,pid,window_index
                 tmux_env = os.environ.get("TMUX", "")
                 if tmux_env:
-                    # Find the active session
+                    # Find the attached session (session_attached is a count > 0)
                     for sess in self.server.sessions:
-                        if sess.session_attached:
+                        attached = sess.session_attached
+                        if attached and int(attached) > 0:
                             self._session = sess
                             break
-            except LibTmuxException:
+                    # Fallback to first session if none found
+                    if self._session is None and self.server.sessions:
+                        self._session = self.server.sessions[0]
+            except (LibTmuxException, ValueError, TypeError):
                 return None
         return self._session
 
