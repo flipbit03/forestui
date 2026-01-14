@@ -1,9 +1,7 @@
 """Main forestui application."""
 
 import contextlib
-import os
 import platform
-import shutil
 import subprocess
 from pathlib import Path
 from uuid import UUID
@@ -559,35 +557,12 @@ class ForestApp(App[None]):
             self.notify(f"Editor '{editor}' not found", severity="error")
 
     def _open_in_terminal(self, path: str) -> None:
-        """Open path in terminal."""
-        system = platform.system()
-        try:
-            if system == "Darwin":
-                # macOS
-                terminal = os.environ.get("TERM_PROGRAM", "Terminal")
-                if terminal == "iTerm.app":
-                    subprocess.Popen(["open", "-a", "iTerm", path])
-                else:
-                    subprocess.Popen(["open", "-a", "Terminal", path])
-            elif system == "Linux":
-                # Try common terminal emulators
-                terminal = os.environ.get("TERMINAL", "")
-                if terminal:
-                    subprocess.Popen([terminal, "--working-directory", path])
-                elif shutil.which("gnome-terminal"):
-                    subprocess.Popen(["gnome-terminal", "--working-directory", path])
-                elif shutil.which("konsole"):
-                    subprocess.Popen(["konsole", "--workdir", path])
-                elif shutil.which("xterm"):
-                    subprocess.Popen(["xterm", "-e", f"cd {path} && $SHELL"])
-                else:
-                    self.notify("No terminal found", severity="error")
-                    return
-            elif system == "Windows":
-                subprocess.Popen(["wt", "-d", path])
-            self.notify("Opened terminal")
-        except FileNotFoundError as e:
-            self.notify(f"Failed to open terminal: {e}", severity="error")
+        """Open path in a tmux terminal window."""
+        name = self._get_name_for_path(path) or "shell"
+        if self._tmux_service.create_shell_window(name, path):
+            self.notify(f"Opened terminal in tmux window term:{name}")
+        else:
+            self.notify("Failed to create terminal window", severity="error")
 
     def _open_in_file_manager(self, path: str) -> None:
         """Open path in file manager."""
