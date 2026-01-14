@@ -13,17 +13,17 @@ forestui brings the power of Git worktree management to the terminal with a beau
 - **Multi-Forest Support**: Manage multiple forest directories via CLI argument
 - **tmux Native**: Runs inside tmux for a cohesive terminal experience
 
-## Installing
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/flipbit03/forestui/main/install.sh | bash
-```
-
 ## Requirements
 
 - Python 3.14+
 - tmux
 - uv (for installation)
+
+## Installing
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/flipbit03/forestui/main/install.sh | bash
+```
 
 ## Usage
 
@@ -51,9 +51,11 @@ forestui --help
 | `t` | Open in terminal |
 | `o` | Open in file manager |
 | `n` | Start Claude session |
+| `y` | Start Claude session (YOLO mode) |
 | `h` | Toggle archive |
 | `d` | Delete |
 | `s` | Settings |
+| `r` | Refresh |
 | `?` | Show help |
 | `q` | Quit |
 
