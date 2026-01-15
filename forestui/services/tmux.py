@@ -225,13 +225,39 @@ class TmuxService:
         except LibTmuxException:
             return False
 
+    def _find_unique_window_name(self, base_name: str) -> str:
+        """Find a unique window name by adding :2, :3, etc. suffix if needed.
+
+        Args:
+            base_name: The base window name (e.g., "yolo:cogram")
+
+        Returns:
+            A unique window name (e.g., "yolo:cogram" or "yolo:cogram:2")
+        """
+        if self.session is None:
+            return base_name
+
+        try:
+            existing_names = {w.window_name for w in self.session.windows}
+        except LibTmuxException:
+            return base_name
+
+        if base_name not in existing_names:
+            return base_name
+
+        # Find next available suffix
+        counter = 2
+        while f"{base_name}:{counter}" in existing_names:
+            counter += 1
+        return f"{base_name}:{counter}"
+
     def create_claude_window(
         self,
         name: str,
         path: str,
         resume_session_id: str | None = None,
         yolo: bool = False,
-    ) -> bool:
+    ) -> str | None:
         """Create a tmux window with Claude Code.
 
         Args:
@@ -241,21 +267,25 @@ class TmuxService:
             yolo: If True, add --dangerously-skip-permissions flag
 
         Returns:
-            True if window was created/selected successfully, False otherwise
+            The window name if created/selected successfully, None otherwise
         """
         if self.session is None:
-            return False
+            return None
 
-        window_name = f"claude:{name}"
+        base_window_name = f"claude:{name}"
         if yolo:
-            window_name = f"yolo:{name}"
+            base_window_name = f"yolo:{name}"
 
         try:
-            # Check if window already exists
-            existing_window = self.find_window(window_name)
-            if existing_window is not None:
-                existing_window.select()
-                return True
+            # For resume: try to find existing window and switch to it
+            if resume_session_id:
+                existing_window = self.find_window(base_window_name)
+                if existing_window is not None:
+                    existing_window.select()
+                    return base_window_name
+
+            # For new sessions: always create a new window with unique name
+            window_name = self._find_unique_window_name(base_window_name)
 
             # Build claude command (closes when claude exits)
             cmd = "claude"
@@ -271,10 +301,10 @@ class TmuxService:
                 window_shell=cmd,
             )
 
-            return True
+            return window_name
 
         except LibTmuxException:
-            return False
+            return None
 
 
 def get_tmux_service() -> TmuxService:

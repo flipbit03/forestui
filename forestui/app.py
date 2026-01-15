@@ -624,10 +624,10 @@ class ForestApp(App[None]):
     def _start_claude_session(self, path: str, yolo: bool = False) -> None:
         """Start a new Claude session in a tmux window."""
         name = self._get_claude_window_name(path)
-        prefix = "yolo" if yolo else "claude"
-        if self._tmux_service.create_claude_window(name, path, yolo=yolo):
+        window_name = self._tmux_service.create_claude_window(name, path, yolo=yolo)
+        if window_name:
             mode = " (YOLO)" if yolo else ""
-            self.notify(f"Started Claude{mode} in {prefix}:{name}")
+            self.notify(f"Started Claude{mode} in {window_name}")
         else:
             self.notify("Failed to create Claude window", severity="error")
 
@@ -636,12 +636,12 @@ class ForestApp(App[None]):
     ) -> None:
         """Continue an existing Claude session in a tmux window."""
         name = self._get_claude_window_name(path)
-        prefix = "yolo" if yolo else "claude"
-        if self._tmux_service.create_claude_window(
+        window_name = self._tmux_service.create_claude_window(
             name, path, resume_session_id=session_id, yolo=yolo
-        ):
+        )
+        if window_name:
             mode = " (YOLO)" if yolo else ""
-            self.notify(f"Resuming Claude{mode} in {prefix}:{name}")
+            self.notify(f"Resuming Claude{mode} in {window_name}")
         else:
             self.notify("Failed to create Claude window", severity="error")
 
