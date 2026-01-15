@@ -135,6 +135,19 @@ __version__ = "0.1.0"
 
 **IMPORTANT:** Every commit to `main` must include a version bump in both files. This is required for `--self-update` to work correctly - it compares the local version against the remote to detect updates. If you forget to bump the version, users won't see the update.
 
+### Workflow: Test Before Commit
+
+**Do NOT bump the version, commit, or push until the user has tested and approved the changes.**
+
+Every commit to `main` with a bumped version is an actual release that will propagate to all users via `--self-update`. The workflow should be:
+
+1. Make code changes
+2. Run `make check` to verify lint/typecheck pass
+3. **Ask the user to test the changes** before proceeding
+4. Only after user confirmation: bump version, commit, and push
+
+This keeps a human in the loop for quality control before releasing.
+
 ## Git Commits
 
 - Do NOT include `Co-Authored-By` attribution

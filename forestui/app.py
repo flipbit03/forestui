@@ -13,6 +13,7 @@ from textual.widget import Widget
 from textual.widgets import Footer, Header, Label
 
 from forestui import __version__
+from forestui.cli import INSTALL_DIR
 from forestui.components.modals import (
     AddRepositoryModal,
     AddWorktreeModal,
@@ -93,6 +94,99 @@ class ForestApp(App[None]):
         if not self._state.selection.repository_id and self._state.repositories:
             self._state.select_repository(self._state.repositories[0].id)
             await self._refresh_detail_pane()
+        # Auto-update in background
+        self._auto_update()
+
+    def _set_title_suffix(self, suffix: str | None) -> None:
+        """Update title with optional suffix."""
+        base = f"forestui v{__version__}"
+        self.title = f"{base} ({suffix})" if suffix else base
+
+    @work(thread=True)
+    def _auto_update(self) -> None:
+        """Auto-update in background with status in title bar."""
+        if not INSTALL_DIR.exists():
+            return
+
+        try:
+            # Check for updates
+            self._set_title_suffix("checking for updates...")
+
+            # Fetch with timeout to avoid hanging on bad connectivity
+            subprocess.run(
+                ["git", "fetch", "origin", "main"],
+                cwd=INSTALL_DIR,
+                capture_output=True,
+                check=True,
+                timeout=15,
+            )
+
+            # Compare local vs remote
+            local = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=INSTALL_DIR,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+
+            remote = subprocess.run(
+                ["git", "rev-parse", "origin/main"],
+                cwd=INSTALL_DIR,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+
+            if local == remote:
+                # Already up to date
+                self._set_title_suffix(None)
+                return
+
+            # Get remote version
+            remote_version = None
+            result = subprocess.run(
+                ["git", "show", "origin/main:forestui/__init__.py"],
+                cwd=INSTALL_DIR,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            for line in result.stdout.splitlines():
+                if line.startswith("__version__"):
+                    remote_version = line.split("=")[1].strip().strip('"').strip("'")
+                    break
+
+            if not remote_version:
+                self._set_title_suffix(None)
+                return
+
+            # Update available - apply it
+            self._set_title_suffix(f"updating to v{remote_version}...")
+
+            # Pull latest
+            subprocess.run(
+                ["git", "pull", "origin", "main"],
+                cwd=INSTALL_DIR,
+                capture_output=True,
+                check=True,
+                timeout=30,
+            )
+
+            # Reinstall
+            subprocess.run(
+                ["uv", "tool", "install", ".", "--force"],
+                cwd=INSTALL_DIR,
+                capture_output=True,
+                check=True,
+                timeout=60,
+            )
+
+            self._set_title_suffix(f"updated to v{remote_version} - restart to apply")
+
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            # Silent failure - don't disrupt the app
+            self._set_title_suffix(None)
 
     def _refresh_sidebar(self) -> None:
         """Refresh the sidebar with current state."""
