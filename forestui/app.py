@@ -105,6 +105,11 @@ class ForestApp(App[None]):
     @work(thread=True)
     def _auto_update(self) -> None:
         """Auto-update in background with status in title bar."""
+        import os
+
+        if os.environ.get("FORESTUI_NO_AUTO_UPDATE"):
+            return
+
         if not INSTALL_DIR.exists():
             return
 
