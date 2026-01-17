@@ -11,6 +11,7 @@ from textual.widget import Widget
 from textual.widgets import Button, Input, Label, Rule
 
 from forestui.components.messages import (
+    ConfigureClaudeCommand,
     ContinueClaudeSession,
     ContinueClaudeYoloSession,
     OpenInEditor,
@@ -186,6 +187,11 @@ class WorktreeDetail(Widget):
             # Manage section
             yield Label("MANAGE", classes="section-header")
             with Horizontal(classes="action-row"):
+                yield Button(
+                    " Custom Claude Command",
+                    id="btn-configure-claude",
+                    variant="default",
+                )
                 if self._worktree.is_archived:
                     yield Button(
                         " Unarchive",
@@ -221,6 +227,10 @@ class WorktreeDetail(Widget):
                 self.post_message(StartClaudeSession(path))
             case "btn-claude-yolo":
                 self.post_message(StartClaudeYoloSession(path))
+            case "btn-configure-claude":
+                self.post_message(
+                    ConfigureClaudeCommand(self._repository.id, self._worktree.id)
+                )
             case "btn-archive":
                 self.post_message(self.ArchiveWorktreeRequested(self._worktree.id))
             case "btn-unarchive":

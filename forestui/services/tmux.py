@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 
 from libtmux import Server
 from libtmux.exc import LibTmuxException
@@ -263,6 +264,7 @@ class TmuxService:
         path: str,
         resume_session_id: str | None = None,
         yolo: bool = False,
+        custom_command: str | None = None,
     ) -> str | None:
         """Create a tmux window with Claude Code.
 
@@ -271,6 +273,7 @@ class TmuxService:
             path: Working directory path
             resume_session_id: Optional session ID to resume
             yolo: If True, add --dangerously-skip-permissions flag
+            custom_command: Optional custom Claude command (e.g., "claude --model opus")
 
         Returns:
             The window name if created/selected successfully, None otherwise
@@ -287,17 +290,23 @@ class TmuxService:
             window_name = self._find_unique_window_name(base_window_name)
 
             # Build claude command (closes when claude exits)
-            cmd = "claude"
+            # Use custom_command if provided, otherwise default to "claude"
+            cmd = custom_command or "claude"
             if yolo:
                 cmd += " --dangerously-skip-permissions"
             if resume_session_id:
                 cmd += f" -r {resume_session_id}"
 
+            # Wrap in interactive shell to support aliases
+            # Use shlex.quote to prevent shell injection from custom commands
+            shell = os.environ.get("SHELL", "/bin/bash")
+            shell_cmd = f"{shell} -ic {shlex.quote(cmd)}"
+
             self.session.new_window(
                 window_name=window_name,
                 start_directory=path,
                 attach=True,
-                window_shell=cmd,
+                window_shell=shell_cmd,
             )
 
             return window_name

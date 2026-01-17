@@ -96,6 +96,33 @@ class AppState:
                 return repo
         return None
 
+    def update_repository_command(self, repo_id: UUID, command: str | None) -> bool:
+        """Update a repository's custom Claude command.
+
+        Returns:
+            True if the repository was found and updated, False otherwise.
+        """
+        for repo in self._repositories:
+            if repo.id == repo_id:
+                repo.custom_claude_command = command
+                self._save_state()
+                return True
+        return False
+
+    def update_worktree_command(self, worktree_id: UUID, command: str | None) -> bool:
+        """Update a worktree's custom Claude command.
+
+        Returns:
+            True if the worktree was found and updated, False otherwise.
+        """
+        for repo in self._repositories:
+            for worktree in repo.worktrees:
+                if worktree.id == worktree_id:
+                    worktree.custom_claude_command = command
+                    self._save_state()
+                    return True
+        return False
+
     def find_worktree(self, worktree_id: UUID) -> tuple[Repository, Worktree] | None:
         """Find a worktree by ID and return with its parent repository."""
         for repo in self._repositories:
