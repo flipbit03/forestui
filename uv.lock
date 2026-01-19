@@ -155,7 +155,7 @@ wheels = [
 
 [[package]]
 name = "forestui"
-version = "0.5.17"
+version = "0.5.18"
 source = { editable = "." }
 dependencies = [
     { name = "click" },

@@ -69,10 +69,25 @@ def ensure_tmux(
     if forest_path:
         forestui_cmd += f" {forest_path}"
 
-    # Exec into tmux with forestui
-    # -A: attach to existing session or create new one
-    # -s: session name based on forest folder
-    os.execvp("tmux", ["tmux", "new-session", "-A", "-s", session_name, forestui_cmd])
+    # Check if session already exists
+    import subprocess
+
+    result = subprocess.run(
+        ["tmux", "has-session", "-t", session_name],
+        capture_output=True,
+    )
+    session_exists = result.returncode == 0
+
+    if session_exists:
+        # Session exists: create new window with forestui and attach
+        # This handles the case where forestui was killed but session remains
+        subprocess.run(
+            ["tmux", "new-window", "-t", session_name, "-n", "forestui", forestui_cmd],
+        )
+        os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
+    else:
+        # No session: create new one with forestui as initial command
+        os.execvp("tmux", ["tmux", "new-session", "-s", session_name, forestui_cmd])
 
 
 @click.command()
