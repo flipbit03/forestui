@@ -100,7 +100,7 @@ class ClaudeSession(BaseModel):
 class Settings(BaseModel):
     """Application settings."""
 
-    default_editor: str = "code"
+    default_editor: str = "vim"
     default_terminal: str = ""
     branch_prefix: str = "feat/"
     theme: str = "system"

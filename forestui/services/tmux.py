@@ -164,21 +164,17 @@ class TmuxService:
             path: Working directory path
 
         Returns:
-            True if window was created/selected successfully, False otherwise
+            True if window was created successfully, False otherwise
         """
         if self.session is None:
             return False
 
-        window_name = f"term:{name}"
+        base_window_name = f"term:{name}"
 
         try:
-            # Check if window already exists
-            existing_window = self.find_window(window_name)
-            if existing_window is not None:
-                existing_window.select()
-                return True
+            # Always create a new window with unique name
+            window_name = self._find_unique_window_name(base_window_name)
 
-            # Create new window
             self.session.new_window(
                 window_name=window_name,
                 start_directory=path,
@@ -198,21 +194,17 @@ class TmuxService:
             path: Working directory path
 
         Returns:
-            True if window was created/selected successfully, False otherwise
+            True if window was created successfully, False otherwise
         """
         if self.session is None:
             return False
 
-        window_name = f"files:{name}"
+        base_window_name = f"files:{name}"
 
         try:
-            # Check if window already exists
-            existing_window = self.find_window(window_name)
-            if existing_window is not None:
-                existing_window.select()
-                return True
+            # Always create a new window with unique name
+            window_name = self._find_unique_window_name(base_window_name)
 
-            # Create new window with mc (closes when mc exits)
             self.session.new_window(
                 window_name=window_name,
                 start_directory=path,
