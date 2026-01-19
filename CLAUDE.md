@@ -142,9 +142,10 @@ __version__ = "0.1.0"
 Every commit to `main` with a bumped version is an actual release that will propagate to all users via `--self-update`. The workflow should be:
 
 1. Make code changes
-2. Run `make check` to verify lint/typecheck pass
+2. Run `make check` to verify lint/typecheck pass (do this BEFORE bumping version - if linter reformats code, you don't want to bump twice)
 3. **Ask the user to test the changes** before proceeding
-4. Only after user confirmation: bump version, commit, and push
+4. Bump version in both `forestui/__init__.py` and `pyproject.toml`
+5. Commit and push
 
 This keeps a human in the loop for quality control before releasing.
 
