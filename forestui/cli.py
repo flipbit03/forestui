@@ -79,11 +79,27 @@ def ensure_tmux(
     session_exists = result.returncode == 0
 
     if session_exists:
-        # Session exists: create new window with forestui and attach
-        # This handles the case where forestui was killed but session remains
-        subprocess.run(
-            ["tmux", "new-window", "-t", session_name, "-n", "forestui", forestui_cmd],
+        # Session exists: check if forestui window is already running
+        result = subprocess.run(
+            ["tmux", "select-window", "-t", f"{session_name}:forestui"],
+            capture_output=True,
         )
+        forestui_window_exists = result.returncode == 0
+
+        if not forestui_window_exists:
+            # forestui was killed but session remains - create new window
+            subprocess.run(
+                [
+                    "tmux",
+                    "new-window",
+                    "-t",
+                    session_name,
+                    "-n",
+                    "forestui",
+                    forestui_cmd,
+                ],
+            )
+
         os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
     else:
         # No session: create new one with forestui as initial command
