@@ -269,14 +269,7 @@ class TmuxService:
             base_window_name = f"yolo:{name}"
 
         try:
-            # For resume: try to find existing window and switch to it
-            if resume_session_id:
-                existing_window = self.find_window(base_window_name)
-                if existing_window is not None:
-                    existing_window.select()
-                    return base_window_name
-
-            # For new sessions: always create a new window with unique name
+            # Always create a new window with unique name (add :2, :3 suffix if needed)
             window_name = self._find_unique_window_name(base_window_name)
 
             # Build claude command (closes when claude exits)
