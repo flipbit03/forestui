@@ -91,11 +91,20 @@ class ForestApp(App[None]):
 
     async def on_mount(self) -> None:
         """Handle app mount - auto-select first repo if nothing selected."""
+        # Ensure tmux focus events are enabled for auto-refresh
+        if not self._tmux_service.ensure_focus_events():
+            self.notify("Could not enable focus events", severity="warning")
+
         if not self._state.selection.repository_id and self._state.repositories:
             self._state.select_repository(self._state.repositories[0].id)
             await self._refresh_detail_pane()
         # Auto-update in background
         self._auto_update()
+
+    @work
+    async def on_app_focus(self) -> None:
+        """Refresh detail pane when app regains focus."""
+        await self._refresh_detail_pane()
 
     def _set_title_suffix(self, suffix: str | None) -> None:
         """Update title with optional suffix."""
@@ -217,9 +226,31 @@ class ForestApp(App[None]):
             result = self._state.find_worktree(selection.worktree_id)
             if result:
                 repo, worktree = result
+                # Get commit info
+                commit_hash = ""
+                commit_time = None
+                has_remote = False
+                try:
+                    commit_info = await self._git_service.get_latest_commit(
+                        worktree.path
+                    )
+                    commit_hash = commit_info.short_hash
+                    commit_time = commit_info.timestamp
+                    has_remote = await self._git_service.has_remote_tracking(
+                        worktree.path
+                    )
+                except GitError:
+                    pass
                 sessions = self._claude_service.get_sessions_for_path(worktree.path)
                 await detail_pane.mount(
-                    WorktreeDetail(repo, worktree, sessions=sessions)
+                    WorktreeDetail(
+                        repo,
+                        worktree,
+                        sessions=sessions,
+                        commit_hash=commit_hash,
+                        commit_time=commit_time,
+                        has_remote=has_remote,
+                    )
                 )
         elif selection.repository_id:
             # Show repository detail
@@ -231,12 +262,32 @@ class ForestApp(App[None]):
                     )
                 except GitError:
                     branch = ""
+                # Get commit info
+                commit_hash = ""
+                commit_time = None
+                has_remote = False
+                try:
+                    commit_info = await self._git_service.get_latest_commit(
+                        selected_repo.source_path
+                    )
+                    commit_hash = commit_info.short_hash
+                    commit_time = commit_info.timestamp
+                    has_remote = await self._git_service.has_remote_tracking(
+                        selected_repo.source_path
+                    )
+                except GitError:
+                    pass
                 sessions = self._claude_service.get_sessions_for_path(
                     selected_repo.source_path
                 )
                 await detail_pane.mount(
                     RepositoryDetail(
-                        selected_repo, current_branch=branch, sessions=sessions
+                        selected_repo,
+                        current_branch=branch,
+                        sessions=sessions,
+                        commit_hash=commit_hash,
+                        commit_time=commit_time,
+                        has_remote=has_remote,
                     )
                 )
         else:
@@ -355,6 +406,19 @@ class ForestApp(App[None]):
         """Handle continue Claude YOLO session request."""
         self._continue_claude_session(event.session_id, event.path, yolo=True)
 
+    @work
+    async def on_worktree_detail_sync_requested(
+        self, event: WorktreeDetail.SyncRequested
+    ) -> None:
+        """Handle sync (fetch/pull) request for worktree."""
+        self.notify("Syncing...")
+        try:
+            await self._git_service.pull(event.path)
+            self.notify("Sync complete")
+            await self._refresh_detail_pane()
+        except GitError as e:
+            self.notify(f"Sync failed: {e}", severity="error")
+
     async def on_repository_detail_add_worktree_requested(
         self, event: RepositoryDetail.AddWorktreeRequested
     ) -> None:
@@ -378,6 +442,19 @@ class ForestApp(App[None]):
                 self._state.remove_repository(event.repo_id)
                 self._refresh_sidebar()
                 await self._refresh_detail_pane()
+
+    @work
+    async def on_repository_detail_sync_requested(
+        self, event: RepositoryDetail.SyncRequested
+    ) -> None:
+        """Handle sync (fetch/pull) request."""
+        self.notify("Syncing...")
+        try:
+            await self._git_service.pull(event.path)
+            self.notify("Sync complete")
+            await self._refresh_detail_pane()
+        except GitError as e:
+            self.notify(f"Sync failed: {e}", severity="error")
 
     async def on_worktree_detail_archive_worktree_requested(
         self, event: WorktreeDetail.ArchiveWorktreeRequested

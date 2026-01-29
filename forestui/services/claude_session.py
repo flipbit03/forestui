@@ -1,6 +1,7 @@
 """Service for managing Claude Code session history."""
 
 import json
+import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -59,6 +60,7 @@ class ClaudeSessionService:
 
         session_id = file_path.stem
         title = ""
+        last_message = ""
         last_timestamp = datetime.min.replace(tzinfo=UTC)
         message_count = 0
         git_branches: list[str] = []
@@ -93,28 +95,34 @@ class ClaudeSessionService:
                     if data.get("type") == "user" or data.get("role") == "user":
                         message_count += 1
 
-                        # Get title from first user message
-                        if not title:
-                            content = data.get("message", {}).get(
-                                "content", ""
-                            ) or data.get("content", "")
-                            if isinstance(content, list):
-                                # Handle block format
-                                for block in content:
-                                    if (
-                                        isinstance(block, dict)
-                                        and block.get("type") == "text"
-                                    ):
-                                        content = block.get("text", "")
-                                        break
-                                else:
-                                    content = ""
-                            if (
-                                isinstance(content, str)
-                                and content
-                                and not content.startswith("<")
-                            ):
-                                title = content[:100]
+                        # Extract message content
+                        content = data.get("message", {}).get(
+                            "content", ""
+                        ) or data.get("content", "")
+                        if isinstance(content, list):
+                            # Handle block format
+                            for block in content:
+                                if (
+                                    isinstance(block, dict)
+                                    and block.get("type") == "text"
+                                ):
+                                    content = block.get("text", "")
+                                    break
+                            else:
+                                content = ""
+
+                        # Use for title/last_message if valid
+                        if (
+                            isinstance(content, str)
+                            and content
+                            and not content.startswith("<")
+                        ):
+                            # Collapse 3+ newlines to 2 (preserve single blank lines)
+                            normalized = re.sub(r"\n{3,}", "\n\n", content)
+                            if not title:
+                                title = normalized[:100]
+                            # Always update last_message (will end up with the last one)
+                            last_message = normalized[:100]
 
                     # Extract git branches
                     if "gitBranches" in data:
@@ -136,6 +144,7 @@ class ClaudeSessionService:
         return ClaudeSession(
             id=session_id,
             title=title or "Untitled session",
+            last_message=last_message,
             last_timestamp=last_timestamp,
             message_count=message_count,
             git_branches=git_branches,

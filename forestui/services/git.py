@@ -1,6 +1,7 @@
 """Git service for executing git commands."""
 
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
@@ -17,6 +18,14 @@ class WorktreeInfo(NamedTuple):
     path: str
     head: str
     branch: str | None
+
+
+class CommitInfo(NamedTuple):
+    """Information about a git commit."""
+
+    hash: str
+    short_hash: str
+    timestamp: datetime
 
 
 class GitService:
@@ -199,6 +208,45 @@ class GitService:
         """Check if a branch exists."""
         branches = await self.list_branches(repo_path)
         return branch in branches
+
+    async def get_latest_commit(self, path: str | Path) -> CommitInfo:
+        """Get the latest commit info for a repository."""
+        path = Path(path).expanduser()
+        # Get commit hash and unix timestamp
+        code, stdout, stderr = await self._run_git(
+            "log", "-1", "--format=%H|%h|%ct", cwd=path
+        )
+        if code != 0:
+            raise GitError(f"Failed to get latest commit: {stderr}")
+        parts = stdout.split("|")
+        if len(parts) != 3:
+            raise GitError("Unexpected git log output format")
+        full_hash, short_hash, timestamp_str = parts
+        timestamp = datetime.fromtimestamp(int(timestamp_str), tz=UTC)
+        return CommitInfo(hash=full_hash, short_hash=short_hash, timestamp=timestamp)
+
+    async def fetch(self, path: str | Path) -> None:
+        """Fetch from remote."""
+        path = Path(path).expanduser()
+        code, _stdout, stderr = await self._run_git("fetch", cwd=path)
+        if code != 0:
+            raise GitError(f"Failed to fetch: {stderr}")
+
+    async def pull(self, path: str | Path) -> None:
+        """Pull from remote (fetch + merge)."""
+        path = Path(path).expanduser()
+        code, _stdout, stderr = await self._run_git("pull", cwd=path)
+        if code != 0:
+            raise GitError(f"Failed to pull: {stderr}")
+
+    async def has_remote_tracking(self, path: str | Path) -> bool:
+        """Check if the current branch has a remote tracking branch."""
+        path = Path(path).expanduser()
+        code, stdout, _stderr = await self._run_git(
+            "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", cwd=path
+        )
+        # Returns 0 if tracking branch exists, non-zero otherwise
+        return code == 0 and bool(stdout.strip())
 
 
 def get_git_service() -> GitService:

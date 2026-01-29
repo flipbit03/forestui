@@ -1,6 +1,6 @@
 [project]
 name = "forestui"
-version = "0.5.21"
+version = "0.6.0"
 description = "A Terminal UI for managing Git worktrees"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -19,6 +19,7 @@ classifiers = [
 ]
 dependencies = [
     "click>=8.1.0",
+    "humanize>=4.9.0",
     "libtmux>=0.37.0",
     "pydantic>=2.12.5",
     "textual>=7.2.0",

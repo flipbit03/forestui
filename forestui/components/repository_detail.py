@@ -1,7 +1,9 @@
 """Repository detail view component."""
 
+from datetime import datetime
 from uuid import UUID
 
+import humanize
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
@@ -79,16 +81,30 @@ class RepositoryDetail(Widget):
             self.repo_id = repo_id
             super().__init__()
 
+    class SyncRequested(Message):
+        """Request to sync (fetch/pull) the repository."""
+
+        def __init__(self, repo_id: UUID, path: str) -> None:
+            self.repo_id = repo_id
+            self.path = path
+            super().__init__()
+
     def __init__(
         self,
         repository: Repository,
         current_branch: str = "",
         sessions: list[ClaudeSession] | None = None,
+        commit_hash: str = "",
+        commit_time: datetime | None = None,
+        has_remote: bool = True,
     ) -> None:
         super().__init__()
         self._repository = repository
         self._current_branch = current_branch
         self._sessions = sessions or []
+        self._commit_hash = commit_hash
+        self._commit_time = commit_time
+        self._has_remote = has_remote
 
     def compose(self) -> ComposeResult:
         """Compose the repository detail view."""
@@ -105,6 +121,28 @@ class RepositoryDetail(Widget):
                         f"Branch:     {self._current_branch}",
                         classes="label-accent",
                     )
+                # Commit info
+                if self._commit_hash:
+                    relative_time = (
+                        humanize.naturaltime(self._commit_time)
+                        if self._commit_time
+                        else ""
+                    )
+                    commit_text = f"Commit:     {self._commit_hash}"
+                    if relative_time:
+                        commit_text += f" ({relative_time})"
+                    yield Label(commit_text, classes="label-muted")
+                # Sync button
+                with Horizontal(classes="action-row"):
+                    if self._has_remote:
+                        yield Button("⟳ Git Pull", id="btn-sync", variant="default")
+                    else:
+                        yield Button(
+                            "⟳ Git Pull (No remote)",
+                            id="btn-sync",
+                            variant="default",
+                            disabled=True,
+                        )
 
             yield Rule()
 
@@ -142,27 +180,42 @@ class RepositoryDetail(Widget):
             if self._sessions:
                 yield Label("RECENT SESSIONS", classes="section-header")
                 for session in self._sessions[:5]:
-                    with Horizontal(classes="session-item"):
-                        with Vertical(classes="session-info"):
-                            yield Label(
-                                session.title[:40]
-                                + ("..." if len(session.title) > 40 else ""),
-                                classes="session-title",
-                            )
-                            meta = f"{session.relative_time} • {session.message_count} msgs"
-                            yield Label(meta, classes="session-meta label-muted")
-                        yield Button(
-                            "Resume",
-                            id=f"btn-resume-{session.id}",
-                            variant="default",
-                            classes="session-btn",
-                        )
-                        yield Button(
-                            "YOLO",
-                            id=f"btn-yolo-{session.id}",
-                            variant="error",
-                            classes="session-btn -destructive",
-                        )
+                    with Vertical(classes="session-item"):  # noqa: SIM117
+                        with Horizontal(classes="session-header-row"):
+                            with Vertical(classes="session-info"):
+                                # Initial message (title)
+                                title_display = session.title[:60] + (
+                                    "..." if len(session.title) > 60 else ""
+                                )
+                                yield Label(title_display, classes="session-title")
+                                # Last message if different from title
+                                if (
+                                    session.last_message
+                                    and session.last_message != session.title
+                                ):
+                                    last_display = session.last_message[:40] + (
+                                        "..." if len(session.last_message) > 40 else ""
+                                    )
+                                    yield Label(
+                                        f"> {last_display}",
+                                        classes="session-last label-secondary",
+                                    )
+                                # Meta info
+                                meta = f"{session.relative_time} • {session.message_count} msgs"
+                                yield Label(meta, classes="session-meta label-muted")
+                            with Horizontal(classes="session-buttons"):
+                                yield Button(
+                                    "Resume",
+                                    id=f"btn-resume-{session.id}",
+                                    variant="default",
+                                    classes="session-btn",
+                                )
+                                yield Button(
+                                    "YOLO",
+                                    id=f"btn-yolo-{session.id}",
+                                    variant="error",
+                                    classes="session-btn -destructive",
+                                )
 
             yield Rule()
 
@@ -196,6 +249,12 @@ class RepositoryDetail(Widget):
                 self.post_message(self.AddWorktreeRequested(self._repository.id))
             case "btn-remove-repo":
                 self.post_message(self.RemoveRepositoryRequested(self._repository.id))
+            case "btn-sync":
+                self.post_message(
+                    self.SyncRequested(
+                        self._repository.id, self._repository.source_path
+                    )
+                )
             case _ if btn_id.startswith("btn-resume-"):
                 session_id = btn_id.replace("btn-resume-", "")
                 self.post_message(self.ContinueClaudeSession(session_id, path))

@@ -110,6 +110,7 @@ class Sidebar(Static):
         self._selected_repo_id = selected_repo_id
         self._selected_worktree_id = selected_worktree_id
         self._show_archived = show_archived
+        self._last_selected_repo_id: UUID | None = None
 
     def compose(self) -> ComposeResult:
         """Compose the sidebar UI."""
@@ -180,7 +181,21 @@ class Sidebar(Static):
         self, event: Tree.NodeSelected[RepoNode | WorktreeNode | ArchivedNode]
     ) -> None:
         """Handle tree node selection (Enter key or click)."""
-        self._select_node(event.node)
+        node = event.node
+        data = node.data
+
+        # Smart collapse: only collapse if clicking on already-selected repo
+        if isinstance(data, RepoNode):
+            was_already_selected = self._last_selected_repo_id == data.id
+            if not was_already_selected and not node.is_expanded:
+                # Re-expand: user clicked to select, not to collapse
+                node.expand()
+            self._last_selected_repo_id = data.id
+        elif isinstance(data, WorktreeNode):
+            # Clicking a worktree clears the "last selected repo" tracking
+            self._last_selected_repo_id = None
+
+        self._select_node(node)
 
     def on_tree_node_highlighted(
         self, event: Tree.NodeHighlighted[RepoNode | WorktreeNode | ArchivedNode]

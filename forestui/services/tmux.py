@@ -97,6 +97,20 @@ class TmuxService:
         except LibTmuxException:
             return False
 
+    def ensure_focus_events(self) -> bool:
+        """Ensure tmux focus-events option is enabled for proper app refresh.
+
+        Returns:
+            True if focus events were enabled successfully, False otherwise.
+        """
+        if self.server is None:
+            return False
+        try:
+            self.server.cmd("set-option", "-g", "focus-events", "on")
+            return True
+        except LibTmuxException:
+            return False
+
     def is_tui_editor(self, editor: str) -> bool:
         """Check if an editor is a TUI editor that should run in tmux."""
         # Get base command (handle "emacs -nw" -> "emacs")

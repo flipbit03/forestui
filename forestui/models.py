@@ -65,6 +65,7 @@ class ClaudeSession(BaseModel):
 
     id: str
     title: str
+    last_message: str = ""
     last_timestamp: datetime
     message_count: int
     git_branches: list[str] = Field(default_factory=list)

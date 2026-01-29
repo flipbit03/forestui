@@ -309,13 +309,19 @@ ModalScreen {
     background: $bg-elevated;
     border: solid $border;
     padding: 1;
-    margin: 0 0 1 0;
+    margin: 0 2 1 0;
     height: auto;
     align: left middle;
 }
 
 .session-item:hover {
     background: $bg-hover;
+}
+
+.session-header-row {
+    width: 100%;
+    height: auto;
+    align: left middle;
 }
 
 .session-info {
@@ -327,8 +333,18 @@ ModalScreen {
     color: $text-primary;
 }
 
+.session-last {
+    color: $text-secondary;
+}
+
 .session-meta {
     color: $text-muted;
+    margin-top: 1;
+}
+
+.session-buttons {
+    height: auto;
+    align: right middle;
 }
 
 .session-btn {
@@ -415,7 +431,7 @@ DataTable > .datatable--cursor {
 /* Horizontal Rule */
 Rule.-horizontal {
     color: $border;
-    margin: 1 0;
+    margin: 1 2 1 0;
 }
 
 /* Footer */
@@ -519,11 +535,6 @@ Container {
 /* Scrollbars */
 .scrollbar {
     background: $bg-elevated;
-}
-
-/* Focus styling */
-*:focus {
-    border: solid $accent;
 }
 
 /* Action row */
