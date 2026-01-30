@@ -14,6 +14,15 @@ from textual.widgets import Footer, Header, Label
 
 from forestui import __version__
 from forestui.cli import INSTALL_DIR
+from forestui.components.messages import (
+    ContinueClaudeSession,
+    ContinueClaudeYoloSession,
+    OpenInEditor,
+    OpenInFileManager,
+    OpenInTerminal,
+    StartClaudeSession,
+    StartClaudeYoloSession,
+)
 from forestui.components.modals import (
     AddRepositoryModal,
     AddWorktreeModal,
@@ -374,88 +383,32 @@ class ForestApp(App[None]):
         """Handle add worktree request."""
         await self._show_add_worktree_modal(event.repo_id)
 
-    # Event handlers from detail views
-    def on_repository_detail_open_in_editor(
-        self, event: RepositoryDetail.OpenInEditor
-    ) -> None:
+    # Consolidated event handlers for shared messages (from both detail views)
+    def on_open_in_editor(self, event: OpenInEditor) -> None:
         """Handle open in editor request."""
         self._open_in_editor(event.path)
 
-    def on_worktree_detail_open_in_editor(
-        self, event: WorktreeDetail.OpenInEditor
-    ) -> None:
-        """Handle open in editor request."""
-        self._open_in_editor(event.path)
-
-    def on_repository_detail_open_in_terminal(
-        self, event: RepositoryDetail.OpenInTerminal
-    ) -> None:
+    def on_open_in_terminal(self, event: OpenInTerminal) -> None:
         """Handle open in terminal request."""
         self._open_in_terminal(event.path)
 
-    def on_worktree_detail_open_in_terminal(
-        self, event: WorktreeDetail.OpenInTerminal
-    ) -> None:
-        """Handle open in terminal request."""
-        self._open_in_terminal(event.path)
-
-    def on_repository_detail_open_in_file_manager(
-        self, event: RepositoryDetail.OpenInFileManager
-    ) -> None:
+    def on_open_in_file_manager(self, event: OpenInFileManager) -> None:
         """Handle open in file manager request."""
         self._open_in_file_manager(event.path)
 
-    def on_worktree_detail_open_in_file_manager(
-        self, event: WorktreeDetail.OpenInFileManager
-    ) -> None:
-        """Handle open in file manager request."""
-        self._open_in_file_manager(event.path)
-
-    def on_repository_detail_start_claude_session(
-        self, event: RepositoryDetail.StartClaudeSession
-    ) -> None:
+    def on_start_claude_session(self, event: StartClaudeSession) -> None:
         """Handle start Claude session request."""
         self._start_claude_session(event.path)
 
-    def on_worktree_detail_start_claude_session(
-        self, event: WorktreeDetail.StartClaudeSession
-    ) -> None:
-        """Handle start Claude session request."""
-        self._start_claude_session(event.path)
-
-    def on_repository_detail_start_claude_yolo_session(
-        self, event: RepositoryDetail.StartClaudeYoloSession
-    ) -> None:
+    def on_start_claude_yolo_session(self, event: StartClaudeYoloSession) -> None:
         """Handle start Claude YOLO session request."""
         self._start_claude_session(event.path, yolo=True)
 
-    def on_worktree_detail_start_claude_yolo_session(
-        self, event: WorktreeDetail.StartClaudeYoloSession
-    ) -> None:
-        """Handle start Claude YOLO session request."""
-        self._start_claude_session(event.path, yolo=True)
-
-    def on_repository_detail_continue_claude_session(
-        self, event: RepositoryDetail.ContinueClaudeSession
-    ) -> None:
+    def on_continue_claude_session(self, event: ContinueClaudeSession) -> None:
         """Handle continue Claude session request."""
         self._continue_claude_session(event.session_id, event.path)
 
-    def on_worktree_detail_continue_claude_session(
-        self, event: WorktreeDetail.ContinueClaudeSession
-    ) -> None:
-        """Handle continue Claude session request."""
-        self._continue_claude_session(event.session_id, event.path)
-
-    def on_repository_detail_continue_claude_yolo_session(
-        self, event: RepositoryDetail.ContinueClaudeYoloSession
-    ) -> None:
-        """Handle continue Claude YOLO session request."""
-        self._continue_claude_session(event.session_id, event.path, yolo=True)
-
-    def on_worktree_detail_continue_claude_yolo_session(
-        self, event: WorktreeDetail.ContinueClaudeYoloSession
-    ) -> None:
+    def on_continue_claude_yolo_session(self, event: ContinueClaudeYoloSession) -> None:
         """Handle continue Claude YOLO session request."""
         self._continue_claude_session(event.session_id, event.path, yolo=True)
 

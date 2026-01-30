@@ -10,62 +10,20 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Button, Input, Label, Rule
 
+from forestui.components.messages import (
+    ContinueClaudeSession,
+    ContinueClaudeYoloSession,
+    OpenInEditor,
+    OpenInFileManager,
+    OpenInTerminal,
+    StartClaudeSession,
+    StartClaudeYoloSession,
+)
 from forestui.models import ClaudeSession, Repository, Worktree
 
 
 class WorktreeDetail(Widget):
     """Detail view for a selected worktree."""
-
-    class OpenInEditor(Message):
-        """Request to open worktree in editor."""
-
-        def __init__(self, path: str) -> None:
-            self.path = path
-            super().__init__()
-
-    class OpenInTerminal(Message):
-        """Request to open worktree in terminal."""
-
-        def __init__(self, path: str) -> None:
-            self.path = path
-            super().__init__()
-
-    class OpenInFileManager(Message):
-        """Request to open worktree in file manager."""
-
-        def __init__(self, path: str) -> None:
-            self.path = path
-            super().__init__()
-
-    class StartClaudeSession(Message):
-        """Request to start a new Claude session."""
-
-        def __init__(self, path: str) -> None:
-            self.path = path
-            super().__init__()
-
-    class StartClaudeYoloSession(Message):
-        """Request to start a Claude YOLO session."""
-
-        def __init__(self, path: str) -> None:
-            self.path = path
-            super().__init__()
-
-    class ContinueClaudeSession(Message):
-        """Request to continue an existing Claude session."""
-
-        def __init__(self, session_id: str, path: str) -> None:
-            self.session_id = session_id
-            self.path = path
-            super().__init__()
-
-    class ContinueClaudeYoloSession(Message):
-        """Request to continue an existing Claude session in YOLO mode."""
-
-        def __init__(self, session_id: str, path: str) -> None:
-            self.session_id = session_id
-            self.path = path
-            super().__init__()
 
     class ArchiveWorktreeRequested(Message):
         """Request to archive the worktree."""
@@ -254,15 +212,15 @@ class WorktreeDetail(Widget):
 
         match btn_id:
             case "btn-editor":
-                self.post_message(self.OpenInEditor(path))
+                self.post_message(OpenInEditor(path))
             case "btn-terminal":
-                self.post_message(self.OpenInTerminal(path))
+                self.post_message(OpenInTerminal(path))
             case "btn-files":
-                self.post_message(self.OpenInFileManager(path))
+                self.post_message(OpenInFileManager(path))
             case "btn-claude-new":
-                self.post_message(self.StartClaudeSession(path))
+                self.post_message(StartClaudeSession(path))
             case "btn-claude-yolo":
-                self.post_message(self.StartClaudeYoloSession(path))
+                self.post_message(StartClaudeYoloSession(path))
             case "btn-archive":
                 self.post_message(self.ArchiveWorktreeRequested(self._worktree.id))
             case "btn-unarchive":
@@ -275,10 +233,10 @@ class WorktreeDetail(Widget):
                 self.post_message(self.SyncRequested(self._worktree.id, path))
             case _ if btn_id.startswith("btn-resume-"):
                 session_id = btn_id.replace("btn-resume-", "")
-                self.post_message(self.ContinueClaudeSession(session_id, path))
+                self.post_message(ContinueClaudeSession(session_id, path))
             case _ if btn_id.startswith("btn-yolo-"):
                 session_id = btn_id.replace("btn-yolo-", "")
-                self.post_message(self.ContinueClaudeYoloSession(session_id, path))
+                self.post_message(ContinueClaudeYoloSession(session_id, path))
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle input submission."""
