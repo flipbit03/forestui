@@ -181,7 +181,7 @@ class GitHubService:
                         issues.append(self._parse_issue(item))
                         seen_numbers.add(item["number"])
 
-        issues.sort(key=lambda i: i.updated_at, reverse=True)
+        issues.sort(key=lambda i: i.created_at, reverse=True)
         return issues[:limit]
 
     def _parse_issue(self, data: dict[str, object]) -> GitHubIssue:
