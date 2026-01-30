@@ -4,12 +4,19 @@ from pathlib import Path
 from uuid import UUID
 
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Input, Label, Select
 
-from forestui.models import GitHubIssue, Repository, Settings
+from forestui.models import (
+    MAX_CLAUDE_COMMAND_LENGTH,
+    ClaudeCommandResult,
+    GitHubIssue,
+    Repository,
+    Settings,
+    validate_claude_command,
+)
 
 
 class AddRepositoryModal(ModalScreen[str | None]):
@@ -342,26 +349,44 @@ class SettingsModal(ModalScreen[Settings | None]):
         with Vertical(classes="modal-container"):
             yield Label(" Settings", classes="modal-title")
 
-            yield Label("DEFAULT EDITOR", classes="section-header")
-            yield Select(
-                [(name, cmd) for name, cmd in self.EDITORS],
-                value=self._settings.default_editor,
-                id="select-editor",
-            )
+            with VerticalScroll(classes="modal-scroll"):
+                yield Label("DEFAULT EDITOR", classes="section-header")
+                yield Select(
+                    [(name, cmd) for name, cmd in self.EDITORS],
+                    value=self._settings.default_editor,
+                    id="select-editor",
+                )
 
-            yield Label("BRANCH PREFIX", classes="section-header")
-            yield Input(
-                value=self._settings.branch_prefix,
-                id="input-branch-prefix",
-                placeholder="feat/",
-            )
+                yield Label("BRANCH PREFIX", classes="section-header")
+                yield Input(
+                    value=self._settings.branch_prefix,
+                    id="input-branch-prefix",
+                    placeholder="feat/",
+                )
 
-            yield Label("THEME", classes="section-header")
-            yield Select(
-                [(name, value) for name, value in self.THEMES],
-                value=self._settings.theme,
-                id="select-theme",
-            )
+                yield Label("THEME", classes="section-header")
+                yield Select(
+                    [(name, value) for name, value in self.THEMES],
+                    value=self._settings.theme,
+                    id="select-theme",
+                )
+
+                yield Label("CUSTOM CLAUDE COMMAND", classes="section-header")
+                yield Input(
+                    value=self._settings.custom_claude_command or "",
+                    id="input-custom-claude-command",
+                    placeholder="e.g., claude --model opus",
+                    max_length=MAX_CLAUDE_COMMAND_LENGTH,
+                )
+                yield Label(
+                    "Default command for all repos",
+                    classes="label-muted",
+                )
+                yield Label(
+                    "Can be overridden per-repo",
+                    classes="label-muted",
+                )
+                yield Label("", id="label-claude-error", classes="label-destructive")
 
             with Horizontal(classes="modal-buttons"):
                 yield Button("Cancel", id="btn-cancel", variant="default")
@@ -381,11 +406,24 @@ class SettingsModal(ModalScreen[Settings | None]):
         branch_prefix = self.query_one("#input-branch-prefix", Input).value
         theme_select = self.query_one("#select-theme", Select)
         theme = str(theme_select.value) if theme_select.value else "system"
+        custom_claude_command = (
+            self.query_one("#input-custom-claude-command", Input).value.strip() or None
+        )
+
+        # Validate custom claude command
+        error_label = self.query_one("#label-claude-error", Label)
+        if custom_claude_command:
+            error = validate_claude_command(custom_claude_command)
+            if error:
+                error_label.update(f" {error}")
+                return
+        error_label.update("")
 
         new_settings = Settings(
             default_editor=editor,
             branch_prefix=branch_prefix,
             theme=theme,
+            custom_claude_command=custom_claude_command,
         )
 
         self.dismiss(new_settings)
@@ -534,3 +572,97 @@ class CreateWorktreeFromIssueModal(ModalScreen[tuple[str, str, bool, bool] | Non
     def action_cancel(self) -> None:
         """Cancel and close the modal."""
         self.dismiss(None)
+
+
+class ClaudeCommandModal(ModalScreen[ClaudeCommandResult]):
+    """Modal for editing custom Claude command for a repository or worktree."""
+
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+    ]
+
+    # Common command presets
+    PRESETS = [
+        ("claude", "claude"),
+        ("opus", "claude --model opus"),
+        ("sonnet", "claude --model sonnet"),
+    ]
+
+    def __init__(
+        self,
+        name: str,
+        current_command: str | None,
+        *,
+        is_worktree: bool = False,
+    ) -> None:
+        super().__init__()
+        self._name = name
+        self._current_command = current_command
+        self._is_worktree = is_worktree
+
+    def compose(self) -> ComposeResult:
+        """Compose the modal UI."""
+        with Vertical(classes="modal-container"):
+            yield Label(" Custom Claude Command", classes="modal-title")
+            yield Label(f"for {self._name}", classes="label-secondary")
+
+            yield Label("PRESETS", classes="section-header")
+            with Horizontal(classes="action-row"):
+                for label, _cmd in self.PRESETS:
+                    yield Button(label, id=f"btn-preset-{label}", variant="default")
+
+            yield Label("COMMAND", classes="section-header")
+            yield Input(
+                value=self._current_command or "",
+                id="input-claude-command",
+                placeholder="e.g., claude --model opus",
+                max_length=MAX_CLAUDE_COMMAND_LENGTH,
+            )
+            fallback = "repo default" if self._is_worktree else "folder default"
+            yield Label(
+                f"Leave empty to use {fallback}",
+                classes="label-muted",
+            )
+            yield Label("", id="label-error", classes="label-destructive")
+
+            with Horizontal(classes="modal-buttons"):
+                yield Button("Cancel", id="btn-cancel", variant="default")
+                yield Button("Save", id="btn-save", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button presses."""
+        btn_id = event.button.id or ""
+
+        if btn_id == "btn-cancel":
+            self.dismiss(ClaudeCommandResult(command=None, cancelled=True))
+        elif btn_id == "btn-save":
+            self._save_command()
+        elif btn_id.startswith("btn-preset-"):
+            # Handle preset buttons
+            preset_label = btn_id.replace("btn-preset-", "")
+            for label, cmd in self.PRESETS:
+                if label == preset_label:
+                    self.query_one("#input-claude-command", Input).value = cmd
+                    break
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle enter key in input."""
+        if event.input.id == "input-claude-command":
+            self._save_command()
+
+    def _save_command(self) -> None:
+        """Save the custom command."""
+        command = self.query_one("#input-claude-command", Input).value.strip()
+        error_label = self.query_one("#label-error", Label)
+
+        error = validate_claude_command(command)
+        if error:
+            error_label.update(f" {error}")
+            return
+
+        # Return None command to clear the setting, or the command string
+        self.dismiss(ClaudeCommandResult(command=command if command else None))
+
+    def action_cancel(self) -> None:
+        """Cancel and close the modal."""
+        self.dismiss(ClaudeCommandResult(command=None, cancelled=True))

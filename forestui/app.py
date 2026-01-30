@@ -15,6 +15,7 @@ from textual.widgets import Footer, Header, Label
 from forestui import __version__
 from forestui.cli import INSTALL_DIR
 from forestui.components.messages import (
+    ConfigureClaudeCommand,
     ContinueClaudeSession,
     ContinueClaudeYoloSession,
     OpenInEditor,
@@ -26,6 +27,7 @@ from forestui.components.messages import (
 from forestui.components.modals import (
     AddRepositoryModal,
     AddWorktreeModal,
+    ClaudeCommandModal,
     ConfirmDeleteModal,
     CreateWorktreeFromIssueModal,
     SettingsModal,
@@ -33,7 +35,7 @@ from forestui.components.modals import (
 from forestui.components.repository_detail import RepositoryDetail
 from forestui.components.sidebar import Sidebar
 from forestui.components.worktree_detail import WorktreeDetail
-from forestui.models import GitHubIssue, Repository, Worktree
+from forestui.models import ClaudeCommandResult, GitHubIssue, Repository, Worktree
 from forestui.services.claude_session import get_claude_session_service
 from forestui.services.git import GitError, get_git_service
 from forestui.services.github import get_github_service
@@ -430,6 +432,10 @@ class ForestApp(App[None]):
     ) -> None:
         """Handle add worktree request."""
         await self._show_add_worktree_modal(event.repo_id)
+
+    def on_configure_claude_command(self, event: ConfigureClaudeCommand) -> None:
+        """Handle configure Claude command request."""
+        self._show_claude_command_modal(event.repo_id, event.worktree_id)
 
     @work
     async def on_repository_detail_remove_repository_requested(
@@ -866,10 +872,95 @@ class ForestApp(App[None]):
         else:
             self.notify("Failed to create mc window", severity="error")
 
+    @work
+    async def _show_claude_command_modal(
+        self, repo_id: UUID, worktree_id: UUID | None = None
+    ) -> None:
+        """Show the Claude command configuration modal."""
+        repo = self._state.find_repository(repo_id)
+        if not repo:
+            return
+
+        # Determine if configuring worktree or repository
+        if worktree_id:
+            worktree = repo.find_worktree(worktree_id)
+            if not worktree:
+                return
+            name = f"{repo.name}:{worktree.name}"
+            current_command = worktree.custom_claude_command
+            is_worktree = True
+        else:
+            name = repo.name
+            current_command = repo.custom_claude_command
+            is_worktree = False
+
+        result: ClaudeCommandResult = await self.push_screen_wait(
+            ClaudeCommandModal(name, current_command, is_worktree=is_worktree)
+        )
+
+        if result.cancelled:
+            return
+
+        # Update the appropriate level
+        if worktree_id:
+            self._state.update_worktree_command(worktree_id, result.command)
+            target = f"{repo.name}:{worktree.name}"  # type: ignore[union-attr]
+        else:
+            self._state.update_repository_command(repo_id, result.command)
+            target = repo.name
+
+        await self._refresh_detail_pane()
+        if result.command:
+            self.notify(f"Custom Claude command set for {target}")
+        else:
+            self.notify(f"Custom Claude command cleared for {target}")
+
+    def _find_repo_for_path(self, path: str) -> Repository | None:
+        """Find the repository associated with a path (worktree or source)."""
+        for repo in self._state.repositories:
+            if repo.source_path == path:
+                return repo
+            for worktree in repo.worktrees:
+                if worktree.path == path:
+                    return repo
+        return None
+
+    def _resolve_claude_command(self, path: str) -> str | None:
+        """Resolve Claude command with hierarchy: worktree > repo > folder > default.
+
+        Args:
+            path: The path to check for associated repository/worktree
+
+        Returns:
+            Custom command if set, None to use default "claude"
+        """
+        # Check worktree-level and repo-level
+        for repo in self._state.repositories:
+            # Check worktrees first (most specific)
+            for worktree in repo.worktrees:
+                if worktree.path == path:
+                    if worktree.custom_claude_command:
+                        return worktree.custom_claude_command
+                    if repo.custom_claude_command:
+                        return repo.custom_claude_command
+                    break
+            # Check repository source path
+            if repo.source_path == path:
+                if repo.custom_claude_command:
+                    return repo.custom_claude_command
+                break
+
+        # Fall back to folder-level setting
+        settings = self._settings_service.settings
+        return settings.custom_claude_command
+
     def _start_claude_session(self, path: str, yolo: bool = False) -> None:
         """Start a new Claude session in a tmux window."""
         name = self._get_claude_window_name(path)
-        window_name = self._tmux_service.create_claude_window(name, path, yolo=yolo)
+        custom_command = self._resolve_claude_command(path)
+        window_name = self._tmux_service.create_claude_window(
+            name, path, yolo=yolo, custom_command=custom_command
+        )
         if window_name:
             mode = " (YOLO)" if yolo else ""
             self.notify(f"Started Claude{mode} in {window_name}")
@@ -881,8 +972,13 @@ class ForestApp(App[None]):
     ) -> None:
         """Continue an existing Claude session in a tmux window."""
         name = self._get_claude_window_name(path)
+        custom_command = self._resolve_claude_command(path)
         window_name = self._tmux_service.create_claude_window(
-            name, path, resume_session_id=session_id, yolo=yolo
+            name,
+            path,
+            resume_session_id=session_id,
+            yolo=yolo,
+            custom_command=custom_command,
         )
         if window_name:
             mode = " (YOLO)" if yolo else ""

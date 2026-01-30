@@ -255,6 +255,11 @@ ModalScreen {
     padding: 1 2;
 }
 
+.modal-scroll {
+    height: auto;
+    max-height: 20;
+}
+
 .modal-title {
     text-style: bold;
     color: $text-primary;

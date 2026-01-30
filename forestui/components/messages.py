@@ -1,5 +1,7 @@
 """Shared message classes for detail view components."""
 
+from uuid import UUID
+
 from textual.message import Message
 
 
@@ -58,4 +60,17 @@ class ContinueClaudeYoloSession(Message):
     def __init__(self, session_id: str, path: str) -> None:
         self.session_id = session_id
         self.path = path
+        super().__init__()
+
+
+class ConfigureClaudeCommand(Message):
+    """Request to configure custom Claude command for a repository or worktree."""
+
+    def __init__(
+        self,
+        repo_id: UUID,
+        worktree_id: UUID | None = None,
+    ) -> None:
+        self.repo_id = repo_id
+        self.worktree_id = worktree_id
         super().__init__()

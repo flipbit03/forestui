@@ -12,6 +12,7 @@ from textual.widget import Widget
 from textual.widgets import Button, Label, Rule
 
 from forestui.components.messages import (
+    ConfigureClaudeCommand,
     ContinueClaudeSession,
     ContinueClaudeYoloSession,
     OpenInEditor,
@@ -173,6 +174,11 @@ class RepositoryDetail(Widget):
             yield Label("MANAGE", classes="section-header")
             with Horizontal(classes="action-row"):
                 yield Button(
+                    " Custom Claude Command",
+                    id="btn-configure-claude",
+                    variant="default",
+                )
+                yield Button(
                     " Remove Repository",
                     id="btn-remove-repo",
                     variant="error",
@@ -195,6 +201,8 @@ class RepositoryDetail(Widget):
                 self.post_message(StartClaudeSession(path))
             case "btn-claude-yolo":
                 self.post_message(StartClaudeYoloSession(path))
+            case "btn-configure-claude":
+                self.post_message(ConfigureClaudeCommand(self._repository.id))
             case "btn-add-worktree":
                 self.post_message(self.AddWorktreeRequested(self._repository.id))
             case "btn-remove-repo":
