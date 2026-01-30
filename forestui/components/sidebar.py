@@ -4,7 +4,7 @@ from uuid import UUID
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Vertical
 from textual.message import Message
 from textual.widgets import Button, Label, Static, Tree
 
@@ -111,14 +111,14 @@ class Sidebar(Static):
         self._selected_worktree_id = selected_worktree_id
         self._show_archived = show_archived
         self._last_selected_repo_id: UUID | None = None
+        self._gh_status: str = "..."
 
     def compose(self) -> ComposeResult:
         """Compose the sidebar UI."""
-        # Header
-        with Horizontal(classes="sidebar-header"):
-            yield Label(" Worktrees", classes="label-primary")
-            with Horizontal(classes="header-buttons"):
-                yield Button("+", id="btn-add-repo", variant="default")
+        # App header box
+        with Vertical(id="sidebar-header-box"):
+            yield Label("forestui", id="sidebar-title")
+            yield Label(f"gh cli: {self._gh_status}", id="gh-status")
         # Tree view
         tree: Tree[RepoNode | WorktreeNode | ArchivedNode] = Tree(
             "Repositories", id="repo-tree"
@@ -225,3 +225,32 @@ class Sidebar(Static):
     def action_add_repository(self) -> None:
         """Action to add a repository."""
         self.post_message(self.AddRepositoryRequested())
+
+    def set_gh_status(self, status: str, username: str | None = None) -> None:
+        """Update GitHub CLI status display."""
+        # Map to shorter display text
+        if status == "authenticated" and username:
+            display_text = f"ok ({username})"
+        elif status == "authenticated":
+            display_text = "ok"
+        elif status == "not_authenticated":
+            display_text = "unauth'd"
+        elif status == "not_installed":
+            display_text = "missing"
+        else:
+            display_text = status
+        self._gh_status = display_text
+
+        try:
+            label = self.query_one("#gh-status", Label)
+            label.update(f"gh cli: {display_text}")
+            # Update styling class
+            label.remove_class("gh-status-ok", "gh-status-warn", "gh-status-error")
+            if status == "authenticated":
+                label.add_class("gh-status-ok")
+            elif status == "not_authenticated":
+                label.add_class("gh-status-warn")
+            else:
+                label.add_class("gh-status-error")
+        except Exception:
+            pass

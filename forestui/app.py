@@ -18,14 +18,16 @@ from forestui.components.modals import (
     AddRepositoryModal,
     AddWorktreeModal,
     ConfirmDeleteModal,
+    CreateWorktreeFromIssueModal,
     SettingsModal,
 )
 from forestui.components.repository_detail import RepositoryDetail
 from forestui.components.sidebar import Sidebar
 from forestui.components.worktree_detail import WorktreeDetail
-from forestui.models import Repository, Worktree
+from forestui.models import GitHubIssue, Repository, Worktree
 from forestui.services.claude_session import get_claude_session_service
 from forestui.services.git import GitError, get_git_service
+from forestui.services.github import get_github_service
 from forestui.services.settings import get_forest_path, get_settings_service
 from forestui.services.tmux import get_tmux_service
 from forestui.state import get_app_state
@@ -74,6 +76,7 @@ class ForestApp(App[None]):
         self._git_service = get_git_service()
         self._claude_service = get_claude_session_service()
         self._tmux_service = get_tmux_service()
+        self._github_service = get_github_service()
 
     def compose(self) -> ComposeResult:
         """Compose the application UI."""
@@ -101,10 +104,60 @@ class ForestApp(App[None]):
         # Auto-update in background
         self._auto_update()
 
+        # Check GitHub CLI status
+        self._check_gh_status()
+
+        # Start GitHub issues refresh timer (5 minutes)
+        self.set_interval(300, self._refresh_github_issues)
+
     @work
     async def on_app_focus(self) -> None:
         """Refresh detail pane when app regains focus."""
         await self._refresh_detail_pane()
+
+    @work
+    async def _check_gh_status(self) -> None:
+        """Check and display GitHub CLI auth status."""
+        status, username = await self._github_service.get_auth_status()
+        sidebar = self.query_one(Sidebar)
+        sidebar.set_gh_status(status, username)
+
+    @work
+    async def _refresh_github_issues(self) -> None:
+        """Periodically refresh GitHub issues cache."""
+        self._github_service.invalidate_cache()
+        if self._state.selection.repository_id:
+            repo = self._state.find_repository(self._state.selection.repository_id)
+            if repo:
+                self._fetch_issues_for_repo(repo.source_path)
+
+    @work
+    async def _fetch_issues_for_repo(self, repo_path: str) -> None:
+        """Fetch GitHub issues in background and update the detail pane."""
+        issues: list[GitHubIssue] = []
+        try:
+            issues = await self._github_service.list_issues(repo_path)
+        except Exception as e:
+            self.notify(f"Issue fetch error: {e}", severity="error")
+        # Update the detail pane if it's still showing a RepositoryDetail
+        try:
+            detail = self.query_one(RepositoryDetail)
+            detail.update_issues(issues)
+        except Exception:
+            pass  # Detail pane changed, ignore
+
+    @work
+    async def _fetch_sessions_for_path(self, path: str, detail_type: str) -> None:
+        """Fetch Claude sessions in background and update the detail pane."""
+        sessions = self._claude_service.get_sessions_for_path(path)
+        # Update the appropriate detail pane
+        try:
+            if detail_type == "repository":
+                self.query_one(RepositoryDetail).update_sessions(sessions)
+            else:
+                self.query_one(WorktreeDetail).update_sessions(sessions)
+        except Exception:
+            pass  # Detail pane changed, ignore
 
     def _set_title_suffix(self, suffix: str | None) -> None:
         """Update title with optional suffix."""
@@ -241,17 +294,17 @@ class ForestApp(App[None]):
                     )
                 except GitError:
                     pass
-                sessions = self._claude_service.get_sessions_for_path(worktree.path)
                 await detail_pane.mount(
                     WorktreeDetail(
                         repo,
                         worktree,
-                        sessions=sessions,
                         commit_hash=commit_hash,
                         commit_time=commit_time,
                         has_remote=has_remote,
                     )
                 )
+                # Fetch sessions in background
+                self._fetch_sessions_for_path(worktree.path, "worktree")
         elif selection.repository_id:
             # Show repository detail
             selected_repo = self._state.find_repository(selection.repository_id)
@@ -277,19 +330,19 @@ class ForestApp(App[None]):
                     )
                 except GitError:
                     pass
-                sessions = self._claude_service.get_sessions_for_path(
-                    selected_repo.source_path
+                # Mount detail pane immediately, fetch data in background
+                detail = RepositoryDetail(
+                    selected_repo,
+                    current_branch=branch,
+                    commit_hash=commit_hash,
+                    commit_time=commit_time,
+                    has_remote=has_remote,
                 )
-                await detail_pane.mount(
-                    RepositoryDetail(
-                        selected_repo,
-                        current_branch=branch,
-                        sessions=sessions,
-                        commit_hash=commit_hash,
-                        commit_time=commit_time,
-                        has_remote=has_remote,
-                    )
-                )
+                await detail_pane.mount(detail)
+                # Start spinner and fetch sessions and issues in background
+                detail.start_issues_spinner()
+                self._fetch_sessions_for_path(selected_repo.source_path, "repository")
+                self._fetch_issues_for_repo(selected_repo.source_path)
         else:
             # Show empty state
             await detail_pane.mount(EmptyState())
@@ -455,6 +508,69 @@ class ForestApp(App[None]):
             await self._refresh_detail_pane()
         except GitError as e:
             self.notify(f"Sync failed: {e}", severity="error")
+
+    async def on_repository_detail_create_worktree_from_issue(
+        self, event: RepositoryDetail.CreateWorktreeFromIssue
+    ) -> None:
+        """Handle create worktree from issue request."""
+        await self._show_create_worktree_from_issue_modal(event.repo_id, event.issue)
+
+    def on_repository_detail_refresh_issues_requested(
+        self, event: RepositoryDetail.RefreshIssuesRequested
+    ) -> None:
+        """Handle manual refresh of GitHub issues."""
+        self._github_service.invalidate_cache()
+        self._fetch_issues_for_repo(event.repo_path)
+
+    async def _show_create_worktree_from_issue_modal(
+        self, repo_id: UUID, issue: GitHubIssue
+    ) -> None:
+        """Show the create worktree from issue modal."""
+        repo = self._state.find_repository(repo_id)
+        if not repo:
+            return
+        try:
+            branches = await self._git_service.list_branches(repo.source_path)
+        except GitError:
+            branches = []
+        settings = self._settings_service.settings
+        self.push_screen(
+            CreateWorktreeFromIssueModal(
+                repo, issue, branches, get_forest_path(), settings.branch_prefix
+            )
+        )
+
+    @work
+    async def on_create_worktree_from_issue_modal_worktree_created(
+        self, event: CreateWorktreeFromIssueModal.WorktreeCreated
+    ) -> None:
+        """Handle worktree created from issue modal."""
+        repo = self._state.find_repository(event.repo_id)
+        if not repo:
+            return
+
+        forest_dir = get_forest_path()
+        worktree_path = forest_dir / repo.name / event.name
+
+        try:
+            # Pull repo first if requested
+            if event.pull_first:
+                self.notify("Pulling repo...")
+                await self._git_service.pull(repo.source_path)
+
+            await self._git_service.create_worktree(
+                repo.source_path, worktree_path, event.branch, event.new_branch
+            )
+            worktree = Worktree(
+                name=event.name, branch=event.branch, path=str(worktree_path)
+            )
+            self._state.add_worktree(event.repo_id, worktree)
+            self._state.select_worktree(event.repo_id, worktree.id)
+            self._refresh_sidebar()
+            await self._refresh_detail_pane()
+            self.notify(f"Created worktree '{event.name}'")
+        except GitError as e:
+            self.notify(f"Failed to create worktree: {e}", severity="error")
 
     async def on_worktree_detail_archive_worktree_requested(
         self, event: WorktreeDetail.ArchiveWorktreeRequested

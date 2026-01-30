@@ -14,6 +14,27 @@ from forestui import __version__
 INSTALL_DIR = Path.home() / ".forestui-install"
 
 
+def is_dev_mode() -> bool:
+    """Check if running from source (dev mode) vs installed."""
+    # If running from within the install dir, it's installed
+    try:
+        cli_path = Path(__file__).resolve()
+        install_path = INSTALL_DIR.resolve()
+        return not str(cli_path).startswith(str(install_path))
+    except Exception:
+        return False
+
+
+def get_window_name() -> str:
+    """Get the tmux window name based on install/dev mode."""
+    if is_dev_mode():
+        from datetime import datetime
+
+        hhmm = datetime.now().strftime("%H%M")
+        return f"forestui-dev-{hhmm}"
+    return "forestui"
+
+
 def rename_tmux_window(name: str) -> None:
     """Rename the current tmux window."""
     from forestui.services.tmux import get_tmux_service
@@ -136,7 +157,7 @@ def main(forest_path: str | None, no_self_update: bool, debug_mode: bool) -> Non
     if no_self_update:
         os.environ["FORESTUI_NO_AUTO_UPDATE"] = "1"
 
-    rename_tmux_window("forestui")
+    rename_tmux_window(get_window_name())
 
     # Import here to avoid circular imports and speed up --help/--version
     from forestui.app import run_app

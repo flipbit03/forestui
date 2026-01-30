@@ -1,5 +1,6 @@
 """Data models for forestui."""
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Self
@@ -127,3 +128,53 @@ class Selection(BaseModel):
     def is_worktree(self) -> bool:
         """Check if a worktree is selected."""
         return self.worktree_id is not None
+
+
+class GitHubLabel(BaseModel):
+    """GitHub issue label."""
+
+    name: str
+    color: str = ""
+
+
+class GitHubUser(BaseModel):
+    """GitHub user."""
+
+    login: str
+
+
+class GitHubIssue(BaseModel):
+    """GitHub issue."""
+
+    number: int
+    title: str
+    state: str
+    url: str
+    created_at: datetime
+    updated_at: datetime
+    author: GitHubUser
+    assignees: list[GitHubUser] = Field(default_factory=list)
+    labels: list[GitHubLabel] = Field(default_factory=list)
+
+    @property
+    def branch_name(self) -> str:
+        """Generate branch-safe name from issue. e.g., '42-fix-login-bug'."""
+        slug = re.sub(r"[^a-z0-9]+", "-", self.title.lower())[:40].strip("-")
+        return f"{self.number}-{slug}"
+
+    @property
+    def relative_time(self) -> str:
+        """Human-readable relative time since update."""
+        now = datetime.now(UTC)
+        diff = now - self.updated_at
+        seconds = diff.total_seconds()
+        if seconds < 60:
+            return "just now"
+        if seconds < 3600:
+            mins = int(seconds // 60)
+            return f"{mins}m ago"
+        if seconds < 86400:
+            hours = int(seconds // 3600)
+            return f"{hours}h ago"
+        days = int(seconds // 86400)
+        return f"{days}d ago"

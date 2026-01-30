@@ -117,7 +117,6 @@ class WorktreeDetail(Widget):
         self,
         repository: Repository,
         worktree: Worktree,
-        sessions: list[ClaudeSession] | None = None,
         commit_hash: str = "",
         commit_time: datetime | None = None,
         has_remote: bool = True,
@@ -125,10 +124,10 @@ class WorktreeDetail(Widget):
         super().__init__()
         self._repository = repository
         self._worktree = worktree
-        self._sessions = sessions or []
         self._commit_hash = commit_hash
         self._commit_time = commit_time
         self._has_remote = has_remote
+        self._sessions: list[ClaudeSession] = []
 
     def compose(self) -> ComposeResult:
         """Compose the worktree detail view."""
@@ -202,46 +201,10 @@ class WorktreeDetail(Widget):
                     classes="-destructive",
                 )
 
-            # Sessions list
-            if self._sessions:
-                yield Label("RECENT SESSIONS", classes="section-header")
-                for session in self._sessions[:5]:
-                    with Vertical(classes="session-item"):  # noqa: SIM117
-                        with Horizontal(classes="session-header-row"):
-                            with Vertical(classes="session-info"):
-                                # Initial message (title)
-                                title_display = session.title[:60] + (
-                                    "..." if len(session.title) > 60 else ""
-                                )
-                                yield Label(title_display, classes="session-title")
-                                # Last message if different from title
-                                if (
-                                    session.last_message
-                                    and session.last_message != session.title
-                                ):
-                                    last_display = session.last_message[:40] + (
-                                        "..." if len(session.last_message) > 40 else ""
-                                    )
-                                    yield Label(
-                                        f"> {last_display}",
-                                        classes="session-last label-secondary",
-                                    )
-                                # Meta info
-                                meta = f"{session.relative_time} • {session.message_count} msgs"
-                                yield Label(meta, classes="session-meta label-muted")
-                            with Horizontal(classes="session-buttons"):
-                                yield Button(
-                                    "Resume",
-                                    id=f"btn-resume-{session.id}",
-                                    variant="default",
-                                    classes="session-btn",
-                                )
-                                yield Button(
-                                    "YOLO",
-                                    id=f"btn-yolo-{session.id}",
-                                    variant="error",
-                                    classes="session-btn -destructive",
-                                )
+            # Sessions list (loaded async)
+            yield Label("RECENT SESSIONS", classes="section-header")
+            with Vertical(id="sessions-container"):
+                yield Label("Loading...", classes="label-muted")
 
             yield Rule()
 
@@ -330,3 +293,66 @@ class WorktreeDetail(Widget):
                     self.post_message(
                         self.RenameBranchRequested(self._worktree.id, event.value)
                     )
+
+    def update_sessions(self, sessions: list[ClaudeSession]) -> None:
+        """Update the sessions section with fetched sessions."""
+        self._sessions = sessions
+
+        try:
+            container = self.query_one("#sessions-container", Vertical)
+            container.remove_children()
+
+            if sessions:
+                for session in sessions[:5]:
+                    title_display = session.title[:60] + (
+                        "..." if len(session.title) > 60 else ""
+                    )
+
+                    # Build session info widgets
+                    info_children: list[Label] = [
+                        Label(title_display, classes="session-title")
+                    ]
+
+                    if session.last_message and session.last_message != session.title:
+                        last_display = session.last_message[:40] + (
+                            "..." if len(session.last_message) > 40 else ""
+                        )
+                        info_children.append(
+                            Label(
+                                f"> {last_display}",
+                                classes="session-last label-secondary",
+                            )
+                        )
+
+                    meta = f"{session.relative_time} • {session.message_count} msgs"
+                    info_children.append(
+                        Label(meta, classes="session-meta label-muted")
+                    )
+
+                    row = Vertical(
+                        Horizontal(
+                            Vertical(*info_children, classes="session-info"),
+                            Horizontal(
+                                Button(
+                                    "Resume",
+                                    id=f"btn-resume-{session.id}",
+                                    variant="default",
+                                    classes="session-btn",
+                                ),
+                                Button(
+                                    "YOLO",
+                                    id=f"btn-yolo-{session.id}",
+                                    variant="error",
+                                    classes="session-btn -destructive",
+                                ),
+                                classes="session-buttons",
+                            ),
+                            classes="session-header-row",
+                        ),
+                        classes="session-item",
+                    )
+                    container.mount(row)
+            else:
+                container.mount(Label("No sessions found", classes="label-muted"))
+        except Exception:
+            pass  # Widget may have been removed

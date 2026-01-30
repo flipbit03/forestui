@@ -561,4 +561,124 @@ Container {
     color: $text-muted;
     padding: 0 1;
 }
+
+/* Sidebar Header Box */
+#sidebar-header-box {
+    width: 100%;
+    height: 4;
+    background: $bg-elevated;
+    border-bottom: solid $border;
+    align: center middle;
+    padding: 0;
+}
+
+#sidebar-title {
+    text-align: center;
+    width: 100%;
+    color: $accent;
+    text-style: bold;
+}
+
+#gh-status {
+    text-align: center;
+    width: 100%;
+    color: $text-muted;
+}
+
+.gh-status-ok {
+    color: $success;
+}
+
+.gh-status-warn {
+    color: $warning;
+}
+
+.gh-status-error {
+    color: $text-muted;
+}
+
+/* Async-loaded sections */
+#issues-container {
+    margin-top: 1;
+}
+
+#sessions-container {
+    margin-top: 1;
+}
+
+/* Section header with refresh button */
+.section-header-row {
+    height: auto;
+    width: auto;
+}
+
+.section-header-row .section-header {
+    width: auto;
+    margin: 0;
+}
+
+.refresh-btn {
+    min-width: 3;
+    width: 3;
+    height: 1;
+    padding: 0;
+    margin: 0;
+    border: none;
+    background: transparent;
+    color: $text-muted;
+    text-style: none;
+}
+
+.refresh-btn:focus {
+    color: $text-muted;
+    background: transparent;
+    border: none;
+    text-style: none;
+}
+
+.refresh-btn:hover {
+    color: $accent;
+    background: transparent;
+    border: none;
+}
+
+.refresh-btn:focus:hover {
+    color: $accent;
+    background: transparent;
+    border: none;
+}
+
+/* Issue List */
+.issue-row {
+    height: auto;
+    margin: 0 2 1 0;
+    padding: 1;
+    background: $bg-elevated;
+    border: solid $border;
+}
+
+.issue-row:hover {
+    background: $bg-hover;
+}
+
+.issue-info {
+    width: 1fr;
+}
+
+.issue-title {
+    color: $text-primary;
+}
+
+.issue-meta {
+    color: $text-muted;
+}
+
+.issue-btn {
+    min-width: 12;
+    margin-left: 1;
+}
+
+.issue-title-preview {
+    margin-bottom: 1;
+}
 """
