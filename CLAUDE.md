@@ -165,7 +165,12 @@ Version is defined in **both** `forestui/__init__.py` and `pyproject.toml`:
 __version__ = "0.1.0"
 ```
 
-**IMPORTANT:** Every commit to `main` must include a version bump in both files. This is required for `--self-update` to work correctly - it compares the local version against the remote to detect updates. If you forget to bump the version, users won't see the update.
+**IMPORTANT:** The `main` branch represents the release. Every feature, fix, or change merged to `main` **must** include a version bump in both files:
+- **Patch** (0.0.X): Bug fixes, dead code removal, minor cleanup
+- **Minor** (0.X.0): New features, enhancements
+- **Major** (X.0.0): Breaking changes
+
+This is required for `--self-update` to work correctly - it compares the local version against the remote to detect updates. If you forget to bump the version, users won't see the update.
 
 ### Workflow: Test Before Commit
 
