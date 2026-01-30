@@ -9,7 +9,7 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Input, Label, Select
 
-from forestui.models import Repository, Settings
+from forestui.models import GitHubIssue, Repository, Settings
 
 
 class AddRepositoryModal(ModalScreen[str | None]):
@@ -429,3 +429,108 @@ class ConfirmDeleteModal(ModalScreen[bool]):
     def action_cancel(self) -> None:
         """Cancel and close the modal."""
         self.dismiss(False)
+
+
+class CreateWorktreeFromIssueModal(ModalScreen[tuple[str, str, bool, bool] | None]):
+    """Modal for creating a worktree from a GitHub issue."""
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    class WorktreeCreated(Message):
+        """Worktree creation requested."""
+
+        def __init__(
+            self,
+            repo_id: UUID,
+            name: str,
+            branch: str,
+            new_branch: bool,
+            pull_first: bool,
+        ) -> None:
+            self.repo_id = repo_id
+            self.name = name
+            self.branch = branch
+            self.new_branch = new_branch
+            self.pull_first = pull_first
+            super().__init__()
+
+    def __init__(
+        self,
+        repository: Repository,
+        issue: GitHubIssue,
+        branches: list[str],
+        forest_dir: Path,
+        branch_prefix: str = "feat/",
+    ) -> None:
+        super().__init__()
+        self._repository = repository
+        self._issue = issue
+        self._branches = branches
+        self._forest_dir = forest_dir
+        self._branch_prefix = branch_prefix
+        # Pre-fill from issue
+        self._name: str = issue.branch_name
+        self._branch: str = f"{branch_prefix}{issue.branch_name}"
+        self._pull_first: bool = True
+
+    def compose(self) -> ComposeResult:
+        """Compose the modal UI."""
+        with Vertical(classes="modal-container"):
+            yield Label(
+                f"Create Worktree from Issue #{self._issue.number}",
+                classes="modal-title",
+            )
+            yield Label(self._issue.title, classes="issue-title-preview label-muted")
+
+            yield Label("Worktree Name", classes="section-header")
+            yield Input(value=self._name, id="input-name", placeholder="worktree-name")
+
+            path_preview = self._forest_dir / self._repository.name / self._name
+            yield Label(
+                f"Path: {path_preview}", id="path-preview", classes="label-muted"
+            )
+
+            yield Label("Branch Name", classes="section-header")
+            yield Input(
+                value=self._branch, id="input-branch", placeholder="feat/branch-name"
+            )
+
+            yield Checkbox("Pull repo before creating", value=True, id="checkbox-pull")
+
+            with Horizontal(classes="modal-buttons"):
+                yield Button("Cancel", id="btn-cancel", variant="default")
+                yield Button("Create", id="btn-create", variant="primary")
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Handle input changes."""
+        if event.input.id == "input-name":
+            self._name = event.value
+            path_preview = self._forest_dir / self._repository.name / self._name
+            self.query_one("#path-preview", Label).update(f"Path: {path_preview}")
+        elif event.input.id == "input-branch":
+            self._branch = event.value
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        """Handle checkbox changes."""
+        if event.checkbox.id == "checkbox-pull":
+            self._pull_first = event.value
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button presses."""
+        if event.button.id == "btn-cancel":
+            self.dismiss(None)
+        elif event.button.id == "btn-create" and self._name and self._branch:
+            self.post_message(
+                self.WorktreeCreated(
+                    self._repository.id,
+                    self._name,
+                    self._branch,
+                    True,
+                    self._pull_first,
+                )
+            )
+            self.dismiss((self._name, self._branch, True, self._pull_first))
+
+    def action_cancel(self) -> None:
+        """Cancel and close the modal."""
+        self.dismiss(None)

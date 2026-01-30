@@ -7,10 +7,11 @@ import humanize
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
+from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Button, Label, Rule
 
-from forestui.models import ClaudeSession, Repository
+from forestui.models import ClaudeSession, GitHubIssue, Repository
 
 
 class RepositoryDetail(Widget):
@@ -89,11 +90,25 @@ class RepositoryDetail(Widget):
             self.path = path
             super().__init__()
 
+    class CreateWorktreeFromIssue(Message):
+        """Request to create worktree from GitHub issue."""
+
+        def __init__(self, repo_id: UUID, issue: GitHubIssue) -> None:
+            self.repo_id = repo_id
+            self.issue = issue
+            super().__init__()
+
+    class RefreshIssuesRequested(Message):
+        """Request to refresh GitHub issues."""
+
+        def __init__(self, repo_path: str) -> None:
+            self.repo_path = repo_path
+            super().__init__()
+
     def __init__(
         self,
         repository: Repository,
         current_branch: str = "",
-        sessions: list[ClaudeSession] | None = None,
         commit_hash: str = "",
         commit_time: datetime | None = None,
         has_remote: bool = True,
@@ -101,10 +116,15 @@ class RepositoryDetail(Widget):
         super().__init__()
         self._repository = repository
         self._current_branch = current_branch
-        self._sessions = sessions or []
         self._commit_hash = commit_hash
         self._commit_time = commit_time
         self._has_remote = has_remote
+        self._sessions: list[ClaudeSession] = []
+        self._issues: list[GitHubIssue] = []
+        self._issues_by_number: dict[int, GitHubIssue] = {}
+        self._spinner_chars = "|/-\\"
+        self._spinner_index = 0
+        self._spinner_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         """Compose the repository detail view."""
@@ -176,46 +196,18 @@ class RepositoryDetail(Widget):
                 )
                 yield Button(" Add Worktree", id="btn-add-worktree", variant="default")
 
-            # Sessions list
-            if self._sessions:
-                yield Label("RECENT SESSIONS", classes="section-header")
-                for session in self._sessions[:5]:
-                    with Vertical(classes="session-item"):  # noqa: SIM117
-                        with Horizontal(classes="session-header-row"):
-                            with Vertical(classes="session-info"):
-                                # Initial message (title)
-                                title_display = session.title[:60] + (
-                                    "..." if len(session.title) > 60 else ""
-                                )
-                                yield Label(title_display, classes="session-title")
-                                # Last message if different from title
-                                if (
-                                    session.last_message
-                                    and session.last_message != session.title
-                                ):
-                                    last_display = session.last_message[:40] + (
-                                        "..." if len(session.last_message) > 40 else ""
-                                    )
-                                    yield Label(
-                                        f"> {last_display}",
-                                        classes="session-last label-secondary",
-                                    )
-                                # Meta info
-                                meta = f"{session.relative_time} • {session.message_count} msgs"
-                                yield Label(meta, classes="session-meta label-muted")
-                            with Horizontal(classes="session-buttons"):
-                                yield Button(
-                                    "Resume",
-                                    id=f"btn-resume-{session.id}",
-                                    variant="default",
-                                    classes="session-btn",
-                                )
-                                yield Button(
-                                    "YOLO",
-                                    id=f"btn-yolo-{session.id}",
-                                    variant="error",
-                                    classes="session-btn -destructive",
-                                )
+            # Sessions list (loaded async)
+            yield Label("RECENT SESSIONS", classes="section-header")
+            with Vertical(id="sessions-container"):
+                yield Label("Loading...", classes="label-muted")
+
+            # GitHub Issues section (loaded async)
+            yield Rule()
+            with Horizontal(classes="section-header-row"):
+                yield Label("MY OPEN GITHUB ISSUES", classes="section-header")
+                yield Button("↻", id="btn-refresh-issues", classes="refresh-btn")
+            with Vertical(id="issues-container"):
+                yield Label("Loading...", classes="label-muted")
 
             yield Rule()
 
@@ -255,9 +247,165 @@ class RepositoryDetail(Widget):
                         self._repository.id, self._repository.source_path
                     )
                 )
+            case "btn-refresh-issues":
+                self._start_refresh_spinner()
+                self.post_message(
+                    self.RefreshIssuesRequested(self._repository.source_path)
+                )
             case _ if btn_id.startswith("btn-resume-"):
                 session_id = btn_id.replace("btn-resume-", "")
                 self.post_message(self.ContinueClaudeSession(session_id, path))
             case _ if btn_id.startswith("btn-yolo-"):
                 session_id = btn_id.replace("btn-yolo-", "")
                 self.post_message(self.ContinueClaudeYoloSession(session_id, path))
+            case _ if btn_id.startswith("btn-issue-"):
+                issue_num = int(btn_id.replace("btn-issue-", ""))
+                issue = self._issues_by_number.get(issue_num)
+                if issue:
+                    self.post_message(
+                        self.CreateWorktreeFromIssue(self._repository.id, issue)
+                    )
+
+    def update_sessions(self, sessions: list[ClaudeSession]) -> None:
+        """Update the sessions section with fetched sessions."""
+        self._sessions = sessions
+
+        try:
+            container = self.query_one("#sessions-container", Vertical)
+            container.remove_children()
+
+            if sessions:
+                for session in sessions[:5]:
+                    title_display = session.title[:60] + (
+                        "..." if len(session.title) > 60 else ""
+                    )
+
+                    # Build session info widgets
+                    info_children: list[Label] = [
+                        Label(title_display, classes="session-title")
+                    ]
+
+                    if session.last_message and session.last_message != session.title:
+                        last_display = session.last_message[:40] + (
+                            "..." if len(session.last_message) > 40 else ""
+                        )
+                        info_children.append(
+                            Label(
+                                f"> {last_display}",
+                                classes="session-last label-secondary",
+                            )
+                        )
+
+                    meta = f"{session.relative_time} • {session.message_count} msgs"
+                    info_children.append(
+                        Label(meta, classes="session-meta label-muted")
+                    )
+
+                    row = Vertical(
+                        Horizontal(
+                            Vertical(*info_children, classes="session-info"),
+                            Horizontal(
+                                Button(
+                                    "Resume",
+                                    id=f"btn-resume-{session.id}",
+                                    variant="default",
+                                    classes="session-btn",
+                                ),
+                                Button(
+                                    "YOLO",
+                                    id=f"btn-yolo-{session.id}",
+                                    variant="error",
+                                    classes="session-btn -destructive",
+                                ),
+                                classes="session-buttons",
+                            ),
+                            classes="session-header-row",
+                        ),
+                        classes="session-item",
+                    )
+                    container.mount(row)
+            else:
+                container.mount(Label("No sessions found", classes="label-muted"))
+        except Exception:
+            pass  # Widget may have been removed
+
+    def start_issues_spinner(self) -> None:
+        """Start the refresh button spinner animation (public for initial load)."""
+        self._start_refresh_spinner()
+
+    def _start_refresh_spinner(self) -> None:
+        """Start the refresh button spinner animation."""
+        # Don't start if already spinning
+        if self._spinner_timer is not None:
+            return
+        self._spinner_index = 0
+        try:
+            btn = self.query_one("#btn-refresh-issues", Button)
+            btn.label = self._spinner_chars[0]
+            btn.disabled = True
+            self._spinner_timer = self.set_interval(0.05, self._tick_spinner)
+        except Exception:
+            pass
+
+    def _tick_spinner(self) -> None:
+        """Advance the spinner animation."""
+        self._spinner_index = (self._spinner_index + 1) % len(self._spinner_chars)
+        try:
+            btn = self.query_one("#btn-refresh-issues", Button)
+            btn.label = self._spinner_chars[self._spinner_index]
+        except Exception:
+            self._stop_refresh_spinner()
+
+    def _stop_refresh_spinner(self) -> None:
+        """Stop the spinner and restore the refresh icon."""
+        if self._spinner_timer:
+            self._spinner_timer.stop()
+            self._spinner_timer = None
+        try:
+            btn = self.query_one("#btn-refresh-issues", Button)
+            btn.label = "↻"
+            btn.disabled = False
+        except Exception:
+            pass
+
+    def update_issues(self, issues: list[GitHubIssue]) -> None:
+        """Update the issues section with fetched issues."""
+        self._stop_refresh_spinner()
+        self._issues = issues
+        self._issues_by_number = {i.number: i for i in issues}
+
+        try:
+            container = self.query_one("#issues-container", Vertical)
+            container.remove_children()
+
+            if issues:
+                for issue in issues[:5]:
+                    title_text = issue.title[:45] + (
+                        "..." if len(issue.title) > 45 else ""
+                    )
+                    labels_str = ", ".join(lbl.name for lbl in issue.labels[:2])
+                    meta = f"{issue.relative_time}"
+                    if labels_str:
+                        meta += f" \u2022 {labels_str}"
+
+                    # Compose widgets using Textual's compose pattern
+                    row = Horizontal(
+                        Vertical(
+                            Label(
+                                f"#{issue.number} {title_text}", classes="issue-title"
+                            ),
+                            Label(meta, classes="issue-meta label-muted"),
+                            classes="issue-info",
+                        ),
+                        Button(
+                            "Create WT",
+                            id=f"btn-issue-{issue.number}",
+                            classes="issue-btn",
+                        ),
+                        classes="issue-row",
+                    )
+                    container.mount(row)
+            else:
+                container.mount(Label("No issues found", classes="label-muted"))
+        except Exception:
+            pass  # Widget may have been removed

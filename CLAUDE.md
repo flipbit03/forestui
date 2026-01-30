@@ -72,6 +72,38 @@ Always run `make check` before committing changes.
 - Use `@work` decorator for async operations that update UI
 - CSS is defined in `theme.py` as `APP_CSS`
 
+### Async Operations & Reactive UI
+
+**IMPORTANT:** Never block the UI with slow operations. The app must start instantly.
+
+For any operation that may take time (CLI calls, network requests, file I/O):
+1. Render UI immediately with a loading state ("Loading...", "Checking...")
+2. Dispatch work to a background task using `@work` decorator
+3. When the task completes, update the UI reactively
+
+Example pattern:
+```python
+# In compose(), show loading state:
+yield Label("Loading...", id="my-loading")
+
+# In on_mount() or elsewhere, dispatch background work:
+self._fetch_data()
+
+@work
+async def _fetch_data(self) -> None:
+    data = await slow_operation()
+    # Update UI when ready
+    self.query_one("#my-loading").update(f"Result: {data}")
+```
+
+This applies to:
+- External CLI integrations (gh, git, etc.)
+- Network requests
+- File system operations that may be slow
+- Any operation that could fail or hang
+
+The UI should always remain responsive. Users should never see the app freeze.
+
 ### Services
 - Services are singletons accessed via `get_*_service()` functions
 - State is persisted automatically via `_save_state()` methods
