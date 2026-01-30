@@ -11,62 +11,20 @@ from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Button, Label, Rule
 
+from forestui.components.messages import (
+    ContinueClaudeSession,
+    ContinueClaudeYoloSession,
+    OpenInEditor,
+    OpenInFileManager,
+    OpenInTerminal,
+    StartClaudeSession,
+    StartClaudeYoloSession,
+)
 from forestui.models import ClaudeSession, GitHubIssue, Repository
 
 
 class RepositoryDetail(Widget):
     """Detail view for a selected repository."""
-
-    class OpenInEditor(Message):
-        """Request to open repository in editor."""
-
-        def __init__(self, path: str) -> None:
-            self.path = path
-            super().__init__()
-
-    class OpenInTerminal(Message):
-        """Request to open repository in terminal."""
-
-        def __init__(self, path: str) -> None:
-            self.path = path
-            super().__init__()
-
-    class OpenInFileManager(Message):
-        """Request to open repository in file manager."""
-
-        def __init__(self, path: str) -> None:
-            self.path = path
-            super().__init__()
-
-    class StartClaudeSession(Message):
-        """Request to start a new Claude session."""
-
-        def __init__(self, path: str) -> None:
-            self.path = path
-            super().__init__()
-
-    class StartClaudeYoloSession(Message):
-        """Request to start a Claude YOLO session."""
-
-        def __init__(self, path: str) -> None:
-            self.path = path
-            super().__init__()
-
-    class ContinueClaudeSession(Message):
-        """Request to continue an existing Claude session."""
-
-        def __init__(self, session_id: str, path: str) -> None:
-            self.session_id = session_id
-            self.path = path
-            super().__init__()
-
-    class ContinueClaudeYoloSession(Message):
-        """Request to continue an existing Claude session in YOLO mode."""
-
-        def __init__(self, session_id: str, path: str) -> None:
-            self.session_id = session_id
-            self.path = path
-            super().__init__()
 
     class AddWorktreeRequested(Message):
         """Request to add a worktree."""
@@ -228,15 +186,15 @@ class RepositoryDetail(Widget):
 
         match btn_id:
             case "btn-editor":
-                self.post_message(self.OpenInEditor(path))
+                self.post_message(OpenInEditor(path))
             case "btn-terminal":
-                self.post_message(self.OpenInTerminal(path))
+                self.post_message(OpenInTerminal(path))
             case "btn-files":
-                self.post_message(self.OpenInFileManager(path))
+                self.post_message(OpenInFileManager(path))
             case "btn-claude-new":
-                self.post_message(self.StartClaudeSession(path))
+                self.post_message(StartClaudeSession(path))
             case "btn-claude-yolo":
-                self.post_message(self.StartClaudeYoloSession(path))
+                self.post_message(StartClaudeYoloSession(path))
             case "btn-add-worktree":
                 self.post_message(self.AddWorktreeRequested(self._repository.id))
             case "btn-remove-repo":
@@ -254,10 +212,10 @@ class RepositoryDetail(Widget):
                 )
             case _ if btn_id.startswith("btn-resume-"):
                 session_id = btn_id.replace("btn-resume-", "")
-                self.post_message(self.ContinueClaudeSession(session_id, path))
+                self.post_message(ContinueClaudeSession(session_id, path))
             case _ if btn_id.startswith("btn-yolo-"):
                 session_id = btn_id.replace("btn-yolo-", "")
-                self.post_message(self.ContinueClaudeYoloSession(session_id, path))
+                self.post_message(ContinueClaudeYoloSession(session_id, path))
             case _ if btn_id.startswith("btn-issue-"):
                 issue_num = int(btn_id.replace("btn-issue-", ""))
                 issue = self._issues_by_number.get(issue_num)
