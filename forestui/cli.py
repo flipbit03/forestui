@@ -14,20 +14,9 @@ from forestui import __version__
 INSTALL_DIR = Path.home() / ".forestui-install"
 
 
-def is_dev_mode() -> bool:
-    """Check if running from source (dev mode) vs installed."""
-    # If running from within the install dir, it's installed
-    try:
-        cli_path = Path(__file__).resolve()
-        install_path = INSTALL_DIR.resolve()
-        return not str(cli_path).startswith(str(install_path))
-    except Exception:
-        return False
-
-
-def get_window_name() -> str:
-    """Get the tmux window name based on install/dev mode."""
-    if is_dev_mode():
+def get_window_name(dev_mode: bool = False) -> str:
+    """Get the tmux window name based on dev mode flag."""
+    if dev_mode:
         from datetime import datetime
 
         hhmm = datetime.now().strftime("%H%M")
@@ -56,6 +45,7 @@ def ensure_tmux(
     forest_path: str | None,
     debug_mode: bool = False,
     no_self_update: bool = False,
+    dev_mode: bool = False,
 ) -> None:
     """Ensure forestui is running inside tmux, or exec into tmux."""
     # Already inside tmux - good to go
@@ -87,6 +77,8 @@ def ensure_tmux(
         forestui_cmd += " --debug"
     if no_self_update:
         forestui_cmd += " --no-self-update"
+    if dev_mode:
+        forestui_cmd += " --dev"
     if forest_path:
         forestui_cmd += f" {forest_path}"
 
@@ -141,15 +133,23 @@ def ensure_tmux(
     is_flag=True,
     help="Run with Textual devtools enabled",
 )
+@click.option(
+    "--dev",
+    "dev_mode",
+    is_flag=True,
+    help="Dev mode: use timestamped window name (forestui-dev-HHMM)",
+)
 @click.version_option(version=__version__, prog_name="forestui")
-def main(forest_path: str | None, no_self_update: bool, debug_mode: bool) -> None:
+def main(
+    forest_path: str | None, no_self_update: bool, debug_mode: bool, dev_mode: bool
+) -> None:
     """forestui - Git Worktree Manager
 
     A terminal UI for managing Git worktrees, inspired by forest for macOS.
 
     FOREST_PATH: Optional path to forest directory (default: ~/forest)
     """
-    ensure_tmux(forest_path, debug_mode, no_self_update)
+    ensure_tmux(forest_path, debug_mode, no_self_update, dev_mode)
 
     if debug_mode:
         os.environ["TEXTUAL"] = "devtools"
@@ -157,7 +157,7 @@ def main(forest_path: str | None, no_self_update: bool, debug_mode: bool) -> Non
     if no_self_update:
         os.environ["FORESTUI_NO_AUTO_UPDATE"] = "1"
 
-    rename_tmux_window(get_window_name())
+    rename_tmux_window(get_window_name(dev_mode))
 
     # Import here to avoid circular imports and speed up --help/--version
     from forestui.app import run_app
