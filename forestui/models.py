@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Self
 from uuid import UUID, uuid4
 
+import humanize
 from pydantic import BaseModel, Field
 
 
@@ -74,24 +75,7 @@ class ClaudeSession(BaseModel):
     @property
     def relative_time(self) -> str:
         """Get a human-readable relative time string."""
-        now = datetime.now(UTC)
-        diff = now - self.last_timestamp
-        seconds = diff.total_seconds()
-
-        if seconds < 60:
-            return "just now"
-        elif seconds < 3600:
-            mins = int(seconds / 60)
-            return f"{mins}m ago"
-        elif seconds < 86400:
-            hours = int(seconds / 3600)
-            return f"{hours}h ago"
-        elif seconds < 604800:
-            days = int(seconds / 86400)
-            return f"{days}d ago"
-        else:
-            weeks = int(seconds / 604800)
-            return f"{weeks}w ago"
+        return humanize.naturaltime(self.last_timestamp)
 
     @property
     def primary_branch(self) -> str | None:
@@ -165,16 +149,4 @@ class GitHubIssue(BaseModel):
     @property
     def relative_time(self) -> str:
         """Human-readable relative time since update."""
-        now = datetime.now(UTC)
-        diff = now - self.updated_at
-        seconds = diff.total_seconds()
-        if seconds < 60:
-            return "just now"
-        if seconds < 3600:
-            mins = int(seconds // 60)
-            return f"{mins}m ago"
-        if seconds < 86400:
-            hours = int(seconds // 3600)
-            return f"{hours}h ago"
-        days = int(seconds // 86400)
-        return f"{days}d ago"
+        return humanize.naturaltime(self.updated_at)
