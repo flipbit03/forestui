@@ -1,37 +1,5 @@
 """Theme and styling for forestui."""
 
-# Forest Green Color Palette
-COLORS = {
-    # Accent colors (Forest Green)
-    "accent": "#2D6A4F",
-    "accent_light": "#52B788",
-    "accent_soft": "#D8F3DC",
-    "accent_dark": "#1B4332",
-    # Warm amber secondary
-    "accent_warm": "#B68D40",
-    "accent_warm_light": "#D4A855",
-    # Backgrounds
-    "bg": "#1C1C1E",
-    "bg_elevated": "#2C2C2E",
-    "bg_hover": "#3A3A3C",
-    "bg_selected": "#48484A",
-    "bg_subtle": "#252527",
-    # Borders
-    "border": "#3D3D3F",
-    "border_subtle": "#323234",
-    "border_focus": "#52B788",
-    # Text
-    "text_primary": "#F5F5F5",
-    "text_secondary": "#A8A8A8",
-    "text_muted": "#7A7A7A",
-    "text_tertiary": "#5A5A5A",
-    # Semantic
-    "destructive": "#FF6B6B",
-    "destructive_dark": "#C1292E",
-    "warning": "#FFB347",
-    "success": "#52B788",
-}
-
 # CSS styles for Textual
 APP_CSS = """
 $accent: #52B788;
