@@ -13,7 +13,6 @@ from textual.widget import Widget
 from textual.widgets import Footer, Header, Label
 
 from forestui import __version__
-from forestui.cli import INSTALL_DIR
 from forestui.components.messages import (
     ConfigureClaudeCommand,
     ContinueClaudeSession,
@@ -177,90 +176,57 @@ class ForestApp(App[None]):
 
     @work(thread=True)
     def _auto_update(self) -> None:
-        """Auto-update in background with status in title bar."""
+        """Auto-update via PyPI with status in title bar.
+
+        Uses `uv tool install forestui --force --upgrade` to check PyPI for updates.
+
+        IMPORTANT: We use `install --force --upgrade` instead of `upgrade` because
+        `uv tool upgrade` rebuilds from the original install source. For users who
+        installed via the old git-clone method, that would rebuild from the local
+        ~/.forestui-install directory instead of fetching from PyPI.
+
+        The `--upgrade` flag ensures we only reinstall if a newer version exists.
+        The `--force` flag ensures we overwrite the existing installation.
+        """
         import os
+        import re
 
         if os.environ.get("FORESTUI_NO_AUTO_UPDATE"):
             return
 
-        if not INSTALL_DIR.exists():
-            return
-
         try:
-            # Check for updates
             self._set_title_suffix("checking for updates...")
 
-            # Fetch with timeout to avoid hanging on bad connectivity
-            subprocess.run(
-                ["git", "fetch", "origin", "main"],
-                cwd=INSTALL_DIR,
-                capture_output=True,
-                check=True,
-                timeout=15,
-            )
-
-            # Compare local vs remote
-            local = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=INSTALL_DIR,
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout.strip()
-
-            remote = subprocess.run(
-                ["git", "rev-parse", "origin/main"],
-                cwd=INSTALL_DIR,
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout.strip()
-
-            if local == remote:
-                # Already up to date
-                self._set_title_suffix(None)
-                return
-
-            # Get remote version
-            remote_version = None
+            # Install from PyPI if newer version available
+            # MUST use "install --force --upgrade", NOT "upgrade"
+            # See docstring for explanation
             result = subprocess.run(
-                ["git", "show", "origin/main:forestui/__init__.py"],
-                cwd=INSTALL_DIR,
+                ["uv", "tool", "install", "forestui", "--force", "--upgrade"],
                 capture_output=True,
                 text=True,
-                check=True,
+                timeout=120,
             )
-            for line in result.stdout.splitlines():
-                if line.startswith("__version__"):
-                    remote_version = line.split("=")[1].strip().strip('"').strip("'")
-                    break
 
-            if not remote_version:
+            if result.returncode == 0:
+                # Check if we actually upgraded (vs already up to date)
+                # Output contains "Installed forestui v0.9.1" when installed/upgraded
+                # Output contains "forestui is already installed" when up to date
+                if "Installed" in result.stdout or "Upgraded" in result.stdout:
+                    # Try to extract version from output
+                    match = re.search(r"v(\d+\.\d+\.\d+)", result.stdout)
+                    if match:
+                        new_version = match.group(1)
+                        self._set_title_suffix(
+                            f"updated to v{new_version} - restart to apply"
+                        )
+                    else:
+                        self._set_title_suffix("updated - restart to apply")
+                else:
+                    # Already up to date
+                    self._set_title_suffix(None)
+            else:
+                # Command failed - might not be on PyPI yet or network issue
                 self._set_title_suffix(None)
-                return
-
-            # Update available - apply it
-            self._set_title_suffix(f"updating to v{remote_version}...")
-
-            # Pull latest
-            subprocess.run(
-                ["git", "pull", "origin", "main"],
-                cwd=INSTALL_DIR,
-                capture_output=True,
-                check=True,
-                timeout=30,
-            )
-
-            # Reinstall
-            subprocess.run(
-                ["uv", "tool", "install", ".", "--force"],
-                cwd=INSTALL_DIR,
-                capture_output=True,
-                check=True,
-                timeout=60,
-            )
-
-            self._set_title_suffix(f"updated to v{remote_version} - restart to apply")
 
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
             # Silent failure - don't disrupt the app
