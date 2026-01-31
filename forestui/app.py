@@ -178,15 +178,16 @@ class ForestApp(App[None]):
     def _auto_update(self) -> None:
         """Auto-update via PyPI with status in title bar.
 
-        Uses `uv tool install forestui --force --upgrade` to check PyPI for updates.
+        Uses `uv tool upgrade forestui` to check PyPI for updates.
 
-        IMPORTANT: We use `install --force --upgrade` instead of `upgrade` because
-        `uv tool upgrade` rebuilds from the original install source. For users who
-        installed via the old git-clone method, that would rebuild from the local
-        ~/.forestui-install directory instead of fetching from PyPI.
+        Output on successful update:
+            Updated forestui v0.9.3 -> v0.9.4
+             - forestui==0.9.3
+             + forestui==0.9.4
+            Installed 1 executable: forestui
 
-        The `--upgrade` flag ensures we only reinstall if a newer version exists.
-        The `--force` flag ensures we overwrite the existing installation.
+        Output when already up to date:
+            Nothing to upgrade
         """
         import os
         import re
@@ -197,23 +198,22 @@ class ForestApp(App[None]):
         try:
             self._set_title_suffix("checking for updates...")
 
-            # Install from PyPI if newer version available
-            # MUST use "install --force --upgrade", NOT "upgrade"
-            # See docstring for explanation
             result = subprocess.run(
-                ["uv", "tool", "install", "forestui", "--force", "--upgrade"],
+                ["uv", "tool", "upgrade", "forestui"],
                 capture_output=True,
                 text=True,
                 timeout=120,
             )
 
             if result.returncode == 0:
+                output = result.stdout + result.stderr
                 # Check if we actually upgraded (vs already up to date)
-                # Output contains "Installed forestui v0.9.1" when installed/upgraded
-                # Output contains "forestui is already installed" when up to date
-                if "Installed" in result.stdout or "Upgraded" in result.stdout:
-                    # Try to extract version from output
-                    match = re.search(r"v(\d+\.\d+\.\d+)", result.stdout)
+                # "Nothing to upgrade" means already on latest
+                if "Nothing to upgrade" in output:
+                    self._set_title_suffix(None)
+                elif "Updated" in output:
+                    # Extract version from "+ forestui==X.Y.Z" line
+                    match = re.search(r"\+ forestui==(\d+\.\d+\.\d+)", output)
                     if match:
                         new_version = match.group(1)
                         self._set_title_suffix(
@@ -222,7 +222,7 @@ class ForestApp(App[None]):
                     else:
                         self._set_title_suffix("updated - restart to apply")
                 else:
-                    # Already up to date
+                    # Unknown output format, assume no update
                     self._set_title_suffix(None)
             else:
                 # Command failed - might not be on PyPI yet or network issue
