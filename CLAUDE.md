@@ -160,31 +160,23 @@ Currently no test suite. When adding tests:
 
 ## Versioning
 
-Version is defined in **both** `forestui/__init__.py` and `pyproject.toml`:
-```python
-__version__ = "0.1.0"
+Version is `0.0.0` in source code. Actual versions are derived from git tags at release time.
+
+### Development
+
+1. Create a branch, make changes
+2. Run `make check` and test locally
+3. Open a PR and merge to `main`
+
+Running from source (`uv run forestui`) shows version `0.0.0` and auto-enables dev mode.
+
+### Releasing
+
+```bash
+gh release create v0.9.1 --generate-notes
 ```
 
-**IMPORTANT:** The `main` branch represents the release. Every feature, fix, or change merged to `main` **must** include a version bump in both files:
-- **Patch** (0.0.X): Bug fixes, dead code removal, minor cleanup
-- **Minor** (0.X.0): New features, enhancements
-- **Major** (X.0.0): Breaking changes
-
-This is required for `--self-update` to work correctly - it compares the local version against the remote to detect updates. If you forget to bump the version, users won't see the update.
-
-### Workflow: Test Before Commit
-
-**Do NOT bump the version, commit, or push until the user has tested and approved the changes.**
-
-Every commit to `main` with a bumped version is an actual release that will propagate to all users via `--self-update`. The workflow should be:
-
-1. Make code changes
-2. Run `make check` to verify lint/typecheck pass (do this BEFORE bumping version - if linter reformats code, you don't want to bump twice)
-3. **Ask the user to test the changes** before proceeding
-4. Bump version in both `forestui/__init__.py` and `pyproject.toml`
-5. Commit and push
-
-This keeps a human in the loop for quality control before releasing.
+This triggers the publish workflow which builds and publishes to PyPI.
 
 ## Git Commits
 

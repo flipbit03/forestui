@@ -147,6 +147,9 @@ def main(
 
     FOREST_PATH: Optional path to forest directory (default: ~/forest)
     """
+    # Auto-enable dev mode when running from source (version 0.0.0)
+    dev_mode = dev_mode or __version__ == "0.0.0"
+
     ensure_tmux(forest_path, debug_mode, no_self_update, dev_mode)
 
     if debug_mode:
