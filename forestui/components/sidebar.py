@@ -117,7 +117,6 @@ class Sidebar(Static):
         """Compose the sidebar UI."""
         # App header box
         with Vertical(id="sidebar-header-box"):
-            yield Label("forestui", id="sidebar-title")
             yield Label(f"gh cli: {self._gh_status}", id="gh-status")
         # Tree view
         tree: Tree[RepoNode | WorktreeNode | ArchivedNode] = Tree(
