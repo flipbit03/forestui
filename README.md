@@ -20,11 +20,32 @@ forestui brings the power of Git worktree management to the terminal with a beau
 - Python 3.14+
 - tmux
 - uv (for installation)
+- [gh](https://cli.github.com/) (optional, for GitHub integration)
 
 ## Installing
 
+### Quick Install (recommended)
+
+Installs [uv](https://github.com/astral-sh/uv) automatically if not present. No Python installation required.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/flipbit03/forestui/main/install.sh | bash
+```
+
+### Install via uv
+
+If you already have [uv](https://github.com/astral-sh/uv) installed:
+
+```bash
+uv tool install forestui
+```
+
+### Updating
+
+forestui auto-updates on startup. To manually update:
+
+```bash
+uv tool upgrade forestui
 ```
 
 ## Usage
@@ -35,9 +56,6 @@ forestui
 
 # Start with a custom forest directory
 forestui ~/my-projects
-
-# Update to latest version
-forestui --self-update
 
 # Show help
 forestui --help
