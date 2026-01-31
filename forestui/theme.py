@@ -538,18 +538,11 @@ Container {
 /* Sidebar Header Box */
 #sidebar-header-box {
     width: 100%;
-    height: 4;
+    height: 3;
     background: $bg-elevated;
     border-bottom: solid $border;
     align: center middle;
-    padding: 0;
-}
-
-#sidebar-title {
-    text-align: center;
-    width: 100%;
-    color: $accent;
-    text-style: bold;
+    padding: 1 0 0 0;
 }
 
 #gh-status {
