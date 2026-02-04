@@ -73,24 +73,60 @@ class GitService:
             raise GitError(f"Failed to get current branch: {stderr}")
         return stdout or "HEAD"
 
-    async def list_branches(self, path: str | Path) -> list[str]:
-        """List all branches (local and remote) for a repository."""
+    async def list_branches(
+        self, path: str | Path, include_remote: bool = True
+    ) -> list[str]:
+        """List branches for a repository.
+
+        Args:
+            path: Repository path
+            include_remote: If True, include remote branches with their prefix (e.g., origin/main)
+        """
         path = Path(path).expanduser()
+
+        # Get list of remotes to identify remote branches
+        remotes = await self._safe_list_remotes(path) if include_remote else []
+
         code, stdout, stderr = await self._run_git(
             "branch", "-a", "--format=%(refname:short)", cwd=path
         )
         if code != 0:
             raise GitError(f"Failed to list branches: {stderr}")
+
         branches = []
+        remote_prefixes = tuple(f"{r}/" for r in remotes)
+        remote_names = set(remotes)
+
         for line in stdout.split("\n"):
             line = line.strip()
-            if line and not line.startswith("origin/HEAD"):
-                # Clean up remote branch names
-                if line.startswith("origin/"):
-                    line = line[7:]
-                if line and line not in branches:
+            if not line or line.endswith("/HEAD"):
+                continue
+            # Skip bare remote names (e.g., "origin" without a branch)
+            if line in remote_names:
+                continue
+            # Check if it's a remote branch
+            is_remote = any(line.startswith(prefix) for prefix in remote_prefixes)
+            if is_remote:
+                if include_remote:
                     branches.append(line)
+            else:
+                branches.append(line)
         return sorted(branches)
+
+    async def list_remotes(self, path: str | Path) -> list[str]:
+        """List remote names for a repository."""
+        path = Path(path).expanduser()
+        code, stdout, stderr = await self._run_git("remote", cwd=path)
+        if code != 0:
+            raise GitError(f"Failed to list remotes: {stderr}")
+        return [r.strip() for r in stdout.split("\n") if r.strip()]
+
+    async def _safe_list_remotes(self, path: str | Path) -> list[str]:
+        """List remotes, returning empty list on error."""
+        try:
+            return await self.list_remotes(path)
+        except GitError:
+            return []
 
     async def create_worktree(
         self,
@@ -98,22 +134,69 @@ class GitService:
         worktree_path: str | Path,
         branch: str,
         new_branch: bool = True,
+        base_branch: str | None = None,
     ) -> None:
-        """Create a new worktree."""
+        """Create a new worktree.
+
+        Args:
+            repo_path: Path to the source repository
+            worktree_path: Path where the worktree will be created
+            branch: Branch name (new or existing)
+            new_branch: If True, create a new branch; if False, use existing branch
+            base_branch: Base branch to stem from (only used when new_branch=True)
+        """
         repo_path = Path(repo_path).expanduser()
         worktree_path = Path(worktree_path).expanduser()
 
         # Ensure parent directory exists
         worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Get remotes to detect remote branches
+        remotes = await self._safe_list_remotes(repo_path)
+
         if new_branch:
-            code, _stdout, stderr = await self._run_git(
-                "worktree", "add", "-b", branch, str(worktree_path), cwd=repo_path
-            )
+            # git worktree add -b <new-branch> <path> [<base-branch>]
+            args = ["worktree", "add", "-b", branch, str(worktree_path)]
+            if base_branch:
+                args.append(base_branch)
+            code, _stdout, stderr = await self._run_git(*args, cwd=repo_path)
+
+            # If base is a remote branch, git may auto-set upstream (branch.autoSetupMerge)
+            # Unset it - new branches should be pushed with `git push -u origin <branch>`
+            if code == 0 and base_branch:
+                is_remote_base = any(base_branch.startswith(f"{r}/") for r in remotes)
+                if is_remote_base:
+                    await self._run_git(
+                        "branch", "--unset-upstream", branch, cwd=worktree_path
+                    )
         else:
-            code, _stdout, stderr = await self._run_git(
-                "worktree", "add", str(worktree_path), branch, cwd=repo_path
-            )
+            # Check if this is a remote branch (e.g., origin/feature-branch)
+            # If so, create a local tracking branch to avoid detached HEAD
+            remote_prefix = None
+            for remote in remotes:
+                if branch.startswith(f"{remote}/"):
+                    remote_prefix = f"{remote}/"
+                    break
+
+            if remote_prefix:
+                # Extract local branch name from remote branch
+                local_branch = branch[len(remote_prefix) :]
+                # git worktree add --track -b <local-branch> <path> <remote-branch>
+                code, _stdout, stderr = await self._run_git(
+                    "worktree",
+                    "add",
+                    "--track",
+                    "-b",
+                    local_branch,
+                    str(worktree_path),
+                    branch,
+                    cwd=repo_path,
+                )
+            else:
+                # Local branch - checkout directly
+                code, _stdout, stderr = await self._run_git(
+                    "worktree", "add", str(worktree_path), branch, cwd=repo_path
+                )
 
         if code != 0:
             raise GitError(f"Failed to create worktree: {stderr}")
@@ -208,6 +291,16 @@ class GitService:
         """Check if a branch exists."""
         branches = await self.list_branches(repo_path)
         return branch in branches
+
+    async def get_ref(self, path: str | Path, ref: str = "HEAD") -> str | None:
+        """Get the short commit hash for a ref (branch, tag, or HEAD)."""
+        path = Path(path).expanduser()
+        code, stdout, _stderr = await self._run_git(
+            "rev-parse", "--short", ref, cwd=path
+        )
+        if code != 0:
+            return None
+        return stdout.strip() or None
 
     async def get_latest_commit(self, path: str | Path) -> CommitInfo:
         """Get the latest commit info for a repository."""

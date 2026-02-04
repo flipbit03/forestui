@@ -7,6 +7,8 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
+from textual.suggester import SuggestFromList
+from textual.timer import Timer
 from textual.widgets import Button, Checkbox, Input, Label, Select
 
 from forestui.models import (
@@ -203,10 +205,10 @@ class AddWorktreeModal(ModalScreen[tuple[str, str, bool] | None]):
                 id="input-branch",
             )
 
-            yield Select(
-                [(b, b) for b in self._branches],
-                id="select-branch",
-                prompt="Select a branch...",
+            yield Input(
+                placeholder="Start typing to search branches...",
+                id="input-existing-branch",
+                suggester=SuggestFromList(self._branches, case_sensitive=False),
             )
 
             yield Label("", id="label-error", classes="label-destructive")
@@ -217,11 +219,14 @@ class AddWorktreeModal(ModalScreen[tuple[str, str, bool] | None]):
 
     def on_mount(self) -> None:
         """Set up initial state."""
-        # Hide the select by default
-        self.query_one("#select-branch", Select).display = False
+        # Hide the existing branch input by default (new branch mode)
+        self.query_one("#input-existing-branch", Input).display = False
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Handle input changes."""
+        # Clear any error when user types
+        self._clear_error()
+
         if event.input.id == "input-name":
             self._name = self._sanitize_name(event.value)
             self._update_path_preview()
@@ -230,13 +235,23 @@ class AddWorktreeModal(ModalScreen[tuple[str, str, bool] | None]):
                 branch_input = self.query_one("#input-branch", Input)
                 branch_input.value = f"{self._branch_prefix}{self._name}"
                 self._branch = branch_input.value
-        elif event.input.id == "input-branch":
+        elif event.input.id in ("input-branch", "input-existing-branch"):
             self._branch = event.value
 
-    def on_select_changed(self, event: Select.Changed) -> None:
-        """Handle select changes."""
-        if event.select.id == "select-branch" and event.value:
-            self._branch = str(event.value)
+        self._update_create_button_state()
+
+    def _clear_error(self) -> None:
+        """Clear the error label."""
+        self.query_one("#label-error", Label).update("")
+
+    def _update_create_button_state(self) -> None:
+        """Enable/disable Create button based on validation."""
+        btn = self.query_one("#btn-create", Button)
+        # For existing branch mode, branch must be in the list
+        if not self._new_branch and self._branch not in self._branches:
+            btn.disabled = True
+        else:
+            btn.disabled = False
 
     def _sanitize_name(self, name: str) -> str:
         """Sanitize worktree name to valid characters."""
@@ -271,29 +286,36 @@ class AddWorktreeModal(ModalScreen[tuple[str, str, bool] | None]):
         new_btn = self.query_one("#btn-new-branch", Button)
         existing_btn = self.query_one("#btn-existing-branch", Button)
         branch_input = self.query_one("#input-branch", Input)
-        branch_select = self.query_one("#select-branch", Select)
+        existing_branch_input = self.query_one("#input-existing-branch", Input)
 
         if new_branch:
             new_btn.variant = "primary"
             existing_btn.variant = "default"
             branch_input.display = True
-            branch_select.display = False
+            existing_branch_input.display = False
         else:
             new_btn.variant = "default"
             existing_btn.variant = "primary"
             branch_input.display = False
-            branch_select.display = True
+            existing_branch_input.display = True
+
+        self._update_create_button_state()
 
     def _create_worktree(self) -> None:
         """Create the worktree if valid."""
         error_label = self.query_one("#label-error", Label)
 
         if not self._name:
-            error_label.update(" Name is required")
+            error_label.update(" Worktree name is required")
             return
 
         if not self._branch:
-            error_label.update(" Branch is required")
+            error_label.update(" Branch name is required")
+            return
+
+        # For existing branch mode, validate the branch exists
+        if not self._new_branch and self._branch not in self._branches:
+            error_label.update(f" Branch '{self._branch}' does not exist")
             return
 
         # Check if worktree path already exists
@@ -484,12 +506,21 @@ class CreateWorktreeFromIssueModal(ModalScreen[tuple[str, str, bool, bool] | Non
             branch: str,
             new_branch: bool,
             pull_first: bool,
+            base_branch: str | None = None,
         ) -> None:
             self.repo_id = repo_id
             self.name = name
             self.branch = branch
             self.new_branch = new_branch
             self.pull_first = pull_first
+            self.base_branch = base_branch
+            super().__init__()
+
+    class FetchRequested(Message):
+        """Request to fetch from remote."""
+
+        def __init__(self, repo_path: str) -> None:
+            self.repo_path = repo_path
             super().__init__()
 
     def __init__(
@@ -499,6 +530,7 @@ class CreateWorktreeFromIssueModal(ModalScreen[tuple[str, str, bool, bool] | Non
         branches: list[str],
         forest_dir: Path,
         branch_prefix: str = "feat/",
+        current_branch: str = "main",
     ) -> None:
         super().__init__()
         self._repository = repository
@@ -506,10 +538,34 @@ class CreateWorktreeFromIssueModal(ModalScreen[tuple[str, str, bool, bool] | Non
         self._branches = branches
         self._forest_dir = forest_dir
         self._branch_prefix = branch_prefix
+        self._current_branch = current_branch
         # Pre-fill from issue
         self._name: str = issue.branch_name
         self._branch: str = f"{branch_prefix}{issue.branch_name}"
         self._pull_first: bool = True
+        # Default base branch: prefer origin/<current> if available
+        self._base_branch: str = self._compute_default_base_branch()
+        self._is_fetching: bool = False
+        # Spinner animation
+        self._spinner_chars = "|/-\\"
+        self._spinner_index = 0
+        self._spinner_timer: Timer | None = None
+
+    def _compute_default_base_branch(self) -> str:
+        """Compute the default base branch, preferring remote version."""
+        # Look for origin/<current_branch> first
+        remote_branch = f"origin/{self._current_branch}"
+        if remote_branch in self._branches:
+            return remote_branch
+        # Try upstream/<current_branch>
+        upstream_branch = f"upstream/{self._current_branch}"
+        if upstream_branch in self._branches:
+            return upstream_branch
+        # Fall back to local current branch
+        if self._current_branch in self._branches:
+            return self._current_branch
+        # Last resort: first branch in list or empty
+        return self._branches[0] if self._branches else ""
 
     def compose(self) -> ComposeResult:
         """Compose the modal UI."""
@@ -533,6 +589,16 @@ class CreateWorktreeFromIssueModal(ModalScreen[tuple[str, str, bool, bool] | Non
                 value=self._branch, id="input-branch", placeholder="feat/branch-name"
             )
 
+            yield Label("Base Branch", classes="section-header")
+            with Horizontal(classes="base-branch-row"):
+                yield Input(
+                    value=self._base_branch,
+                    id="input-base-branch",
+                    placeholder="origin/main",
+                    suggester=SuggestFromList(self._branches, case_sensitive=False),
+                )
+                yield Button("Fetch", id="btn-fetch", variant="default")
+
             yield Checkbox("Pull repo before creating", value=True, id="checkbox-pull")
 
             with Horizontal(classes="modal-buttons"):
@@ -547,6 +613,18 @@ class CreateWorktreeFromIssueModal(ModalScreen[tuple[str, str, bool, bool] | Non
             self.query_one("#path-preview", Label).update(f"Path: {path_preview}")
         elif event.input.id == "input-branch":
             self._branch = event.value
+        elif event.input.id == "input-base-branch":
+            self._base_branch = event.value
+            self._update_create_button_state()
+
+    def _update_create_button_state(self) -> None:
+        """Enable/disable Create button based on base branch validation."""
+        btn = self.query_one("#btn-create", Button)
+        # Base branch must be in the list
+        if self._base_branch and self._base_branch not in self._branches:
+            btn.disabled = True
+        else:
+            btn.disabled = False
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         """Handle checkbox changes."""
@@ -557,6 +635,8 @@ class CreateWorktreeFromIssueModal(ModalScreen[tuple[str, str, bool, bool] | Non
         """Handle button presses."""
         if event.button.id == "btn-cancel":
             self.dismiss(None)
+        elif event.button.id == "btn-fetch":
+            self._start_fetch()
         elif event.button.id == "btn-create" and self._name and self._branch:
             self.post_message(
                 self.WorktreeCreated(
@@ -565,9 +645,72 @@ class CreateWorktreeFromIssueModal(ModalScreen[tuple[str, str, bool, bool] | Non
                     self._branch,
                     True,
                     self._pull_first,
+                    self._base_branch,
                 )
             )
             self.dismiss((self._name, self._branch, True, self._pull_first))
+
+    def _start_fetch(self) -> None:
+        """Start fetching from remote."""
+        if self._is_fetching:
+            return
+        self._is_fetching = True
+        self._spinner_index = 0
+        try:
+            btn = self.query_one("#btn-fetch", Button)
+            btn.label = self._spinner_chars[0]
+            btn.disabled = True
+            self._spinner_timer = self.set_interval(0.1, self._tick_spinner)
+        except Exception:
+            pass
+        self.post_message(self.FetchRequested(self._repository.source_path))
+
+    def _tick_spinner(self) -> None:
+        """Advance the spinner animation."""
+        self._spinner_index = (self._spinner_index + 1) % len(self._spinner_chars)
+        try:
+            btn = self.query_one("#btn-fetch", Button)
+            btn.label = self._spinner_chars[self._spinner_index]
+        except Exception:
+            self._stop_spinner()
+
+    def update_branches(self, branches: list[str]) -> None:
+        """Update the branch list after fetch."""
+        self._is_fetching = False
+        self._branches = branches
+        self._reset_fetch_button()
+        try:
+            input_widget = self.query_one("#input-base-branch", Input)
+            # Update the suggester with new branches
+            input_widget.suggester = SuggestFromList(branches, case_sensitive=False)
+            # If current value is empty or not in new list, set to computed default
+            if not self._base_branch or self._base_branch not in branches:
+                self._base_branch = self._compute_default_base_branch()
+                input_widget.value = self._base_branch
+            self._update_create_button_state()
+        except Exception:
+            pass
+
+    def fetch_failed(self, _error: str) -> None:
+        """Handle fetch failure - error is shown via app notification."""
+        self._is_fetching = False
+        self._reset_fetch_button()
+
+    def _stop_spinner(self) -> None:
+        """Stop the spinner animation."""
+        if self._spinner_timer is not None:
+            self._spinner_timer.stop()
+            self._spinner_timer = None
+
+    def _reset_fetch_button(self) -> None:
+        """Reset the fetch button to its default state."""
+        self._stop_spinner()
+        try:
+            btn = self.query_one("#btn-fetch", Button)
+            btn.label = "Fetch"
+            btn.disabled = False
+        except Exception:
+            pass
 
     def action_cancel(self) -> None:
         """Cancel and close the modal."""

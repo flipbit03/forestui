@@ -246,8 +246,8 @@ ModalScreen {
 }
 
 .modal-container {
-    width: 60;
-    max-width: 80%;
+    width: 80;
+    max-width: 90%;
     height: auto;
     max-height: 90%;
     background: $bg-elevated;
@@ -519,6 +519,21 @@ Container {
 
 .action-row Button {
     margin-right: 1;
+}
+
+/* Base branch row in modal */
+.base-branch-row {
+    height: 3;
+    width: 100%;
+}
+
+.base-branch-row Input {
+    width: 1fr;
+}
+
+.base-branch-row Button {
+    min-width: 10;
+    margin-left: 1;
 }
 
 /* Branch tag */
