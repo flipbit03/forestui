@@ -784,13 +784,13 @@ class ForestApp(App[None]):
                 return repo.name
         return None
 
-    def _get_claude_window_name(self, path: str) -> str:
-        """Get the window name for Claude sessions: repo:branch format."""
+    def _get_tmux_window_name(self, path: str) -> str:
+        """Get the window name for Claude sessions: repo:worktree format."""
         # Check worktrees first
         for repo in self._state.repositories:
             for worktree in repo.worktrees:
                 if worktree.path == path:
-                    return f"{repo.name}:{worktree.branch}"
+                    return f"{repo.name}:{worktree.name}"
             # Check if it's the repository source path
             if repo.source_path == path:
                 return repo.name
@@ -804,7 +804,7 @@ class ForestApp(App[None]):
         if self._tmux_service.is_inside_tmux and self._tmux_service.is_tui_editor(
             editor
         ):
-            name = self._get_claude_window_name(path)
+            name = self._get_tmux_window_name(path)
             if self._tmux_service.create_editor_window(name, path, editor):
                 self.notify(f"Opened {editor} in edit:{name}")
                 return
@@ -824,7 +824,7 @@ class ForestApp(App[None]):
 
     def _open_in_terminal(self, path: str) -> None:
         """Open path in a tmux terminal window."""
-        name = self._get_claude_window_name(path)
+        name = self._get_tmux_window_name(path)
         if self._tmux_service.create_shell_window(name, path):
             self.notify(f"Opened terminal in term:{name}")
         else:
@@ -832,7 +832,7 @@ class ForestApp(App[None]):
 
     def _open_in_file_manager(self, path: str) -> None:
         """Open path in Midnight Commander (mc) in a tmux window."""
-        name = self._get_claude_window_name(path)
+        name = self._get_tmux_window_name(path)
         if self._tmux_service.create_mc_window(name, path):
             self.notify(f"Opened mc in files:{name}")
         else:
@@ -922,7 +922,7 @@ class ForestApp(App[None]):
 
     def _start_claude_session(self, path: str, yolo: bool = False) -> None:
         """Start a new Claude session in a tmux window."""
-        name = self._get_claude_window_name(path)
+        name = self._get_tmux_window_name(path)
         custom_command = self._resolve_claude_command(path)
         window_name = self._tmux_service.create_claude_window(
             name, path, yolo=yolo, custom_command=custom_command
@@ -937,7 +937,7 @@ class ForestApp(App[None]):
         self, session_id: str, path: str, yolo: bool = False
     ) -> None:
         """Continue an existing Claude session in a tmux window."""
-        name = self._get_claude_window_name(path)
+        name = self._get_tmux_window_name(path)
         custom_command = self._resolve_claude_command(path)
         window_name = self._tmux_service.create_claude_window(
             name,
