@@ -106,6 +106,12 @@ class WorktreeDetail(Widget):
                     f"Branch:     {self._worktree.branch}",
                     classes="label-accent",
                 )
+                # Base branch info (if available)
+                if self._worktree.base_branch:
+                    base_text = f"Based on:   {self._worktree.base_branch}"
+                    if self._worktree.created_from_ref:
+                        base_text += f" ({self._worktree.created_from_ref})"
+                    yield Label(base_text, classes="label-muted")
                 # Commit info
                 if self._commit_hash:
                     relative_time = (

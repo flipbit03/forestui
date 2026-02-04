@@ -456,12 +456,21 @@ class ForestApp(App[None]):
             return
         try:
             branches = await self._git_service.list_branches(repo.source_path)
+            current_branch = await self._git_service.get_current_branch(
+                repo.source_path
+            )
         except GitError:
             branches = []
+            current_branch = "main"
         settings = self._settings_service.settings
         self.push_screen(
             CreateWorktreeFromIssueModal(
-                repo, issue, branches, get_forest_path(), settings.branch_prefix
+                repo,
+                issue,
+                branches,
+                get_forest_path(),
+                settings.branch_prefix,
+                current_branch,
             )
         )
 
@@ -483,11 +492,26 @@ class ForestApp(App[None]):
                 self.notify("Pulling repo...")
                 await self._git_service.pull(repo.source_path)
 
+            # Get the ref for the base branch before creating
+            base_ref: str | None = None
+            if event.base_branch:
+                base_ref = await self._git_service.get_ref(
+                    repo.source_path, event.base_branch
+                )
+
             await self._git_service.create_worktree(
-                repo.source_path, worktree_path, event.branch, event.new_branch
+                repo.source_path,
+                worktree_path,
+                event.branch,
+                event.new_branch,
+                event.base_branch,
             )
             worktree = Worktree(
-                name=event.name, branch=event.branch, path=str(worktree_path)
+                name=event.name,
+                branch=event.branch,
+                path=str(worktree_path),
+                base_branch=event.base_branch,
+                created_from_ref=base_ref,
             )
             self._state.add_worktree(event.repo_id, worktree)
             self._state.select_worktree(event.repo_id, worktree.id)
@@ -496,6 +520,31 @@ class ForestApp(App[None]):
             self.notify(f"Created worktree '{event.name}'")
         except GitError as e:
             self.notify(f"Failed to create worktree: {e}", severity="error")
+
+    @work
+    async def on_create_worktree_from_issue_modal_fetch_requested(
+        self, event: CreateWorktreeFromIssueModal.FetchRequested
+    ) -> None:
+        """Handle fetch request from the create worktree modal."""
+        branches: list[str] = []
+        error: str | None = None
+        try:
+            await self._git_service.fetch(event.repo_path)
+            branches = await self._git_service.list_branches(event.repo_path)
+        except GitError as e:
+            error = str(e)
+
+        # Update the modal - use screen stack to find it
+        for screen in self.screen_stack:
+            if isinstance(screen, CreateWorktreeFromIssueModal):
+                if error:
+                    screen.fetch_failed(error)
+                else:
+                    screen.update_branches(branches)
+                break
+
+        if error:
+            self.notify(f"Fetch failed: {error}", severity="error")
 
     async def on_worktree_detail_archive_worktree_requested(
         self, event: WorktreeDetail.ArchiveWorktreeRequested
@@ -610,11 +659,29 @@ class ForestApp(App[None]):
         worktree_path = forest_dir / repo.name / event.name
 
         try:
+            # Determine base branch and get ref before creating
+            if event.new_branch:
+                # New branch stems from HEAD
+                base_branch = await self._git_service.get_current_branch(
+                    repo.source_path
+                )
+                base_ref = await self._git_service.get_ref(repo.source_path, "HEAD")
+            else:
+                # Existing branch - base is the branch itself
+                base_branch = event.branch
+                base_ref = await self._git_service.get_ref(
+                    repo.source_path, event.branch
+                )
+
             await self._git_service.create_worktree(
                 repo.source_path, worktree_path, event.branch, event.new_branch
             )
             worktree = Worktree(
-                name=event.name, branch=event.branch, path=str(worktree_path)
+                name=event.name,
+                branch=event.branch,
+                path=str(worktree_path),
+                base_branch=base_branch,
+                created_from_ref=base_ref,
             )
             self._state.add_worktree(event.repo_id, worktree)
             self._state.select_worktree(event.repo_id, worktree.id)

@@ -69,6 +69,10 @@ class Worktree(BaseModel):
     sort_order: int | None = None
     last_modified: datetime = Field(default_factory=lambda: datetime.now(UTC))
     custom_claude_command: str | None = None
+    # Branch this worktree was created from (e.g., "origin/main")
+    base_branch: str | None = None
+    # Git commit ref when the worktree was created
+    created_from_ref: str | None = None
 
     @field_validator("custom_claude_command")
     @classmethod
