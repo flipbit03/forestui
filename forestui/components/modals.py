@@ -165,10 +165,12 @@ class AddWorktreeModal(ModalScreen[tuple[str, str, bool] | None]):
         branches: list[str],
         forest_dir: Path,
         branch_prefix: str = "feat/",
+        remotes: list[str] | None = None,
     ) -> None:
         super().__init__()
         self._repository = repository
         self._branches = branches
+        self._remotes = remotes or []
         self._forest_dir = forest_dir
         self._branch_prefix = branch_prefix
         self._name: str = ""
@@ -210,6 +212,7 @@ class AddWorktreeModal(ModalScreen[tuple[str, str, bool] | None]):
 
             yield BranchSearchInput(
                 self._branches,
+                remotes=self._remotes,
                 widget_id="branch-search",
             )
 
@@ -539,11 +542,13 @@ class CreateWorktreeFromIssueModal(ModalScreen[tuple[str, str, bool, bool] | Non
         forest_dir: Path,
         branch_prefix: str = "feat/",
         current_branch: str = "main",
+        remotes: list[str] | None = None,
     ) -> None:
         super().__init__()
         self._repository = repository
         self._issue = issue
         self._branches = branches
+        self._remotes = remotes or []
         self._forest_dir = forest_dir
         self._branch_prefix = branch_prefix
         self._current_branch = current_branch
@@ -561,14 +566,11 @@ class CreateWorktreeFromIssueModal(ModalScreen[tuple[str, str, bool, bool] | Non
 
     def _compute_default_base_branch(self) -> str:
         """Compute the default base branch, preferring remote version."""
-        # Look for origin/<current_branch> first
-        remote_branch = f"origin/{self._current_branch}"
-        if remote_branch in self._branches:
-            return remote_branch
-        # Try upstream/<current_branch>
-        upstream_branch = f"upstream/{self._current_branch}"
-        if upstream_branch in self._branches:
-            return upstream_branch
+        # Check each remote for <remote>/<current_branch>
+        for remote in self._remotes:
+            remote_branch = f"{remote}/{self._current_branch}"
+            if remote_branch in self._branches:
+                return remote_branch
         # Fall back to local current branch
         if self._current_branch in self._branches:
             return self._current_branch
@@ -603,7 +605,9 @@ class CreateWorktreeFromIssueModal(ModalScreen[tuple[str, str, bool, bool] | Non
                     value=self._base_branch,
                     id="input-base-branch",
                     placeholder="origin/main",
-                    suggester=FuzzyBranchSuggester(self._branches),
+                    suggester=FuzzyBranchSuggester(
+                        self._branches, remotes=self._remotes
+                    ),
                 )
                 yield Button("Fetch", id="btn-fetch", variant="default")
 
@@ -682,15 +686,21 @@ class CreateWorktreeFromIssueModal(ModalScreen[tuple[str, str, bool, bool] | Non
         except Exception:
             self._stop_spinner()
 
-    def update_branches(self, branches: list[str]) -> None:
+    def update_branches(
+        self, branches: list[str], remotes: list[str] | None = None
+    ) -> None:
         """Update the branch list after fetch."""
         self._is_fetching = False
         self._branches = branches
+        if remotes is not None:
+            self._remotes = remotes
         self._reset_fetch_button()
         try:
             input_widget = self.query_one("#input-base-branch", Input)
             # Update the suggester with new branches
-            input_widget.suggester = FuzzyBranchSuggester(branches)
+            input_widget.suggester = FuzzyBranchSuggester(
+                branches, remotes=self._remotes
+            )
             # If current value is empty or not in new list, set to computed default
             if not self._base_branch or self._base_branch not in branches:
                 self._base_branch = self._compute_default_base_branch()
