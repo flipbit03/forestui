@@ -22,7 +22,6 @@ dependencies = [
     "humanize>=4.9.0",
     "libtmux>=0.37.0",
     "pydantic>=2.12.5",
-    "rapidfuzz>=3.0.0",
     "textual>=7.2.0",
 ]
 

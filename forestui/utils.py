@@ -4,10 +4,28 @@ from __future__ import annotations
 
 import re
 
-from rapidfuzz.distance import Levenshtein
 from rich.text import Text
 
 MAX_DROPDOWN_RESULTS = 50
+
+
+def _levenshtein_distance(s1: str, s2: str) -> int:
+    """Calculate Levenshtein distance between two strings."""
+    if len(s1) < len(s2):
+        return _levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+
+    prev_row = list(range(len(s2) + 1))
+    for _i, c1 in enumerate(s1):
+        curr_row = [prev_row[0] + 1]
+        for j, c2 in enumerate(s2):
+            insertions = prev_row[j + 1] + 1
+            deletions = curr_row[j] + 1
+            substitutions = prev_row[j] + (c1 != c2)
+            curr_row.append(min(insertions, deletions, substitutions))
+        prev_row = curr_row
+    return prev_row[-1]
 
 
 def strip_remote_prefix(branch: str, remotes: list[str]) -> str:
@@ -79,7 +97,7 @@ def _match_score(query: str, branch: str, remotes: list[str]) -> float | None:
             seg_lower = seg.lower()
 
             # Levenshtein on full segment
-            dist = Levenshtein.distance(q, seg_lower)
+            dist = _levenshtein_distance(q, seg_lower)
             if dist <= threshold:
                 score = 4.0 + dist * 0.1
                 if best_score is None or score < best_score:
@@ -87,7 +105,7 @@ def _match_score(query: str, branch: str, remotes: list[str]) -> float | None:
 
             # Levenshtein on segment prefix (for partial typed matches)
             if len(seg_lower) > len(q):
-                prefix_dist = Levenshtein.distance(q, seg_lower[: len(q)])
+                prefix_dist = _levenshtein_distance(q, seg_lower[: len(q)])
                 if prefix_dist <= threshold:
                     score = 4.5 + prefix_dist * 0.1
                     if best_score is None or score < best_score:
