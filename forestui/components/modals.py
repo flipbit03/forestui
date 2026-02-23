@@ -7,10 +7,13 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.suggester import SuggestFromList
 from textual.timer import Timer
 from textual.widgets import Button, Checkbox, Input, Label, Select
 
+from forestui.components.branch_search import (
+    BranchSearchInput,
+    FuzzyBranchSuggester,
+)
 from forestui.models import (
     MAX_CLAUDE_COMMAND_LENGTH,
     ClaudeCommandResult,
@@ -162,10 +165,12 @@ class AddWorktreeModal(ModalScreen[tuple[str, str, bool] | None]):
         branches: list[str],
         forest_dir: Path,
         branch_prefix: str = "feat/",
+        remotes: list[str] | None = None,
     ) -> None:
         super().__init__()
         self._repository = repository
         self._branches = branches
+        self._remotes = remotes or []
         self._forest_dir = forest_dir
         self._branch_prefix = branch_prefix
         self._name: str = ""
@@ -205,10 +210,10 @@ class AddWorktreeModal(ModalScreen[tuple[str, str, bool] | None]):
                 id="input-branch",
             )
 
-            yield Input(
-                placeholder="Start typing to search branches...",
-                id="input-existing-branch",
-                suggester=SuggestFromList(self._branches, case_sensitive=False),
+            yield BranchSearchInput(
+                self._branches,
+                remotes=self._remotes,
+                widget_id="branch-search",
             )
 
             yield Label("", id="label-error", classes="label-destructive")
@@ -219,8 +224,8 @@ class AddWorktreeModal(ModalScreen[tuple[str, str, bool] | None]):
 
     def on_mount(self) -> None:
         """Set up initial state."""
-        # Hide the existing branch input by default (new branch mode)
-        self.query_one("#input-existing-branch", Input).display = False
+        # Hide the branch search widget by default (new branch mode)
+        self.query_one("#branch-search", BranchSearchInput).display = False
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Handle input changes."""
@@ -235,9 +240,15 @@ class AddWorktreeModal(ModalScreen[tuple[str, str, bool] | None]):
                 branch_input = self.query_one("#input-branch", Input)
                 branch_input.value = f"{self._branch_prefix}{self._name}"
                 self._branch = branch_input.value
-        elif event.input.id in ("input-branch", "input-existing-branch"):
+        elif event.input.id == "input-branch":
             self._branch = event.value
 
+        self._update_create_button_state()
+
+    def on_branch_search_input_changed(self, event: BranchSearchInput.Changed) -> None:
+        """Handle branch search input changes."""
+        self._clear_error()
+        self._branch = event.value
         self._update_create_button_state()
 
     def _clear_error(self) -> None:
@@ -286,18 +297,18 @@ class AddWorktreeModal(ModalScreen[tuple[str, str, bool] | None]):
         new_btn = self.query_one("#btn-new-branch", Button)
         existing_btn = self.query_one("#btn-existing-branch", Button)
         branch_input = self.query_one("#input-branch", Input)
-        existing_branch_input = self.query_one("#input-existing-branch", Input)
+        branch_search = self.query_one("#branch-search", BranchSearchInput)
 
         if new_branch:
             new_btn.variant = "primary"
             existing_btn.variant = "default"
             branch_input.display = True
-            existing_branch_input.display = False
+            branch_search.display = False
         else:
             new_btn.variant = "default"
             existing_btn.variant = "primary"
             branch_input.display = False
-            existing_branch_input.display = True
+            branch_search.display = True
 
         self._update_create_button_state()
 
@@ -531,11 +542,13 @@ class CreateWorktreeFromIssueModal(ModalScreen[tuple[str, str, bool, bool] | Non
         forest_dir: Path,
         branch_prefix: str = "feat/",
         current_branch: str = "main",
+        remotes: list[str] | None = None,
     ) -> None:
         super().__init__()
         self._repository = repository
         self._issue = issue
         self._branches = branches
+        self._remotes = remotes or []
         self._forest_dir = forest_dir
         self._branch_prefix = branch_prefix
         self._current_branch = current_branch
@@ -553,14 +566,11 @@ class CreateWorktreeFromIssueModal(ModalScreen[tuple[str, str, bool, bool] | Non
 
     def _compute_default_base_branch(self) -> str:
         """Compute the default base branch, preferring remote version."""
-        # Look for origin/<current_branch> first
-        remote_branch = f"origin/{self._current_branch}"
-        if remote_branch in self._branches:
-            return remote_branch
-        # Try upstream/<current_branch>
-        upstream_branch = f"upstream/{self._current_branch}"
-        if upstream_branch in self._branches:
-            return upstream_branch
+        # Check each remote for <remote>/<current_branch>
+        for remote in self._remotes:
+            remote_branch = f"{remote}/{self._current_branch}"
+            if remote_branch in self._branches:
+                return remote_branch
         # Fall back to local current branch
         if self._current_branch in self._branches:
             return self._current_branch
@@ -595,7 +605,9 @@ class CreateWorktreeFromIssueModal(ModalScreen[tuple[str, str, bool, bool] | Non
                     value=self._base_branch,
                     id="input-base-branch",
                     placeholder="origin/main",
-                    suggester=SuggestFromList(self._branches, case_sensitive=False),
+                    suggester=FuzzyBranchSuggester(
+                        self._branches, remotes=self._remotes
+                    ),
                 )
                 yield Button("Fetch", id="btn-fetch", variant="default")
 
@@ -674,15 +686,21 @@ class CreateWorktreeFromIssueModal(ModalScreen[tuple[str, str, bool, bool] | Non
         except Exception:
             self._stop_spinner()
 
-    def update_branches(self, branches: list[str]) -> None:
+    def update_branches(
+        self, branches: list[str], remotes: list[str] | None = None
+    ) -> None:
         """Update the branch list after fetch."""
         self._is_fetching = False
         self._branches = branches
+        if remotes is not None:
+            self._remotes = remotes
         self._reset_fetch_button()
         try:
             input_widget = self.query_one("#input-base-branch", Input)
             # Update the suggester with new branches
-            input_widget.suggester = SuggestFromList(branches, case_sensitive=False)
+            input_widget.suggester = FuzzyBranchSuggester(
+                branches, remotes=self._remotes
+            )
             # If current value is empty or not in new list, set to computed default
             if not self._base_branch or self._base_branch not in branches:
                 self._base_branch = self._compute_default_base_branch()

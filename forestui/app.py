@@ -459,9 +459,11 @@ class ForestApp(App[None]):
             current_branch = await self._git_service.get_current_branch(
                 repo.source_path
             )
+            remotes = await self._git_service.list_remotes(repo.source_path)
         except GitError:
             branches = []
             current_branch = "main"
+            remotes = []
         settings = self._settings_service.settings
         self.push_screen(
             CreateWorktreeFromIssueModal(
@@ -471,6 +473,7 @@ class ForestApp(App[None]):
                 get_forest_path(),
                 settings.branch_prefix,
                 current_branch,
+                remotes=remotes,
             )
         )
 
@@ -527,10 +530,12 @@ class ForestApp(App[None]):
     ) -> None:
         """Handle fetch request from the create worktree modal."""
         branches: list[str] = []
+        remotes: list[str] = []
         error: str | None = None
         try:
             await self._git_service.fetch(event.repo_path)
             branches = await self._git_service.list_branches(event.repo_path)
+            remotes = await self._git_service.list_remotes(event.repo_path)
         except GitError as e:
             error = str(e)
 
@@ -540,7 +545,7 @@ class ForestApp(App[None]):
                 if error:
                     screen.fetch_failed(error)
                 else:
-                    screen.update_branches(branches)
+                    screen.update_branches(branches, remotes=remotes)
                 break
 
         if error:
@@ -712,8 +717,10 @@ class ForestApp(App[None]):
 
         try:
             branches = await self._git_service.list_branches(repo.source_path)
+            remotes = await self._git_service.list_remotes(repo.source_path)
         except GitError:
             branches = []
+            remotes = []
 
         settings = self._settings_service.settings
         self.push_screen(
@@ -722,6 +729,7 @@ class ForestApp(App[None]):
                 branches,
                 get_forest_path(),
                 settings.branch_prefix,
+                remotes=remotes,
             )
         )
 

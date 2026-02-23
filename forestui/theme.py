@@ -662,4 +662,23 @@ Container {
 .issue-title-preview {
     margin-bottom: 1;
 }
+
+/* Branch search dropdown */
+BranchSearchInput OptionList {
+    max-height: 10;
+    height: auto;
+    background: $bg;
+    border: solid $border;
+    margin-top: 0;
+}
+
+BranchSearchInput OptionList > .option-list--option-highlighted {
+    background: $accent-dark;
+}
+
+BranchSearchInput .match-count {
+    color: $text-muted;
+    height: 1;
+    padding: 0 1;
+}
 """
