@@ -111,7 +111,19 @@ def ensure_tmux(
                 ],
             )
 
-        os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
+        os.execvp(
+            "tmux",
+            [
+                "tmux",
+                "new-session",
+                "-t",
+                session_name,
+                ";",
+                "set-option",
+                "destroy-unattached",
+                "on",
+            ],
+        )
     else:
         # No session: create new one with forestui as initial command
         os.execvp("tmux", ["tmux", "new-session", "-s", session_name, forestui_cmd])
