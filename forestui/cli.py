@@ -111,19 +111,19 @@ def ensure_tmux(
                 ],
             )
 
-        os.execvp(
-            "tmux",
-            [
-                "tmux",
-                "new-session",
-                "-t",
-                session_name,
-                ";",
-                "set-option",
-                "destroy-unattached",
-                "on",
-            ],
+        # Create a grouped session for independent window navigation.
+        # Each terminal gets its own session linked to the same window group,
+        # so switching windows in one terminal doesn't affect the other.
+        grouped_name = f"{session_name}-{os.getpid()}"
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", grouped_name, "-t", session_name],
+            capture_output=True,
         )
+        subprocess.run(
+            ["tmux", "set-option", "-t", grouped_name, "destroy-unattached", "on"],
+            capture_output=True,
+        )
+        os.execvp("tmux", ["tmux", "attach-session", "-t", grouped_name])
     else:
         # No session: create new one with forestui as initial command
         os.execvp("tmux", ["tmux", "new-session", "-s", session_name, forestui_cmd])
