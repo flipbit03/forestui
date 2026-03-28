@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -78,7 +79,7 @@ def ensure_tmux(
     if dev_mode:
         forestui_cmd += " --dev"
     if forest_path:
-        forestui_cmd += f" {forest_path}"
+        forestui_cmd += f" {shlex.quote(forest_path)}"
 
     # Check if session already exists
     import subprocess
@@ -90,12 +91,13 @@ def ensure_tmux(
     session_exists = result.returncode == 0
 
     if session_exists:
-        # Session exists: check if forestui window is already running
-        result = subprocess.run(
-            ["tmux", "select-window", "-t", f"{session_name}:forestui"],
+        # Check if forestui window exists (read-only, no side effects)
+        list_result = subprocess.run(
+            ["tmux", "list-windows", "-t", session_name, "-F", "#{window_name}"],
             capture_output=True,
+            text=True,
         )
-        forestui_window_exists = result.returncode == 0
+        forestui_window_exists = "forestui" in (list_result.stdout or "").splitlines()
 
         if not forestui_window_exists:
             # forestui was killed but session remains - create new window
@@ -114,13 +116,18 @@ def ensure_tmux(
         # Create a grouped session for independent window navigation.
         # Each terminal gets its own session linked to the same window group,
         # so switching windows in one terminal doesn't affect the other.
-        # We use a hook to set destroy-unattached AFTER the client attaches,
-        # because setting it on a detached session destroys it immediately.
         grouped_name = f"{session_name}-{os.getpid()}"
-        subprocess.run(
+        grouped_result = subprocess.run(
             ["tmux", "new-session", "-d", "-s", grouped_name, "-t", session_name],
             capture_output=True,
         )
+        if grouped_result.returncode != 0:
+            # Grouped session creation failed, fall back to direct attach
+            os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
+
+        # Use a hook to set destroy-unattached AFTER the client attaches,
+        # because setting it on a detached session destroys it immediately.
+        # keep-last prevents the last session in the group from being destroyed.
         subprocess.run(
             [
                 "tmux",
@@ -128,28 +135,20 @@ def ensure_tmux(
                 "-t",
                 grouped_name,
                 "client-attached",
-                "set-option destroy-unattached on",
+                "set-option destroy-unattached keep-last",
             ],
             capture_output=True,
         )
         # Override status-left so the grouped session shows the base session
-        # name instead of the PID-suffixed internal name.
+        # name instead of the PID-suffixed internal name. Uses -gv to get
+        # just the value without the option name prefix or quoting.
         status_result = subprocess.run(
-            ["tmux", "show-options", "-g", "status-left"],
+            ["tmux", "show-options", "-gv", "status-left"],
             capture_output=True,
             text=True,
         )
         if status_result.returncode == 0 and status_result.stdout.strip():
-            # Replace #S (session name variable) with the literal base name
-            status_left = status_result.stdout.strip().removeprefix("status-left ")
-            # Strip outer quotes if present
-            if (
-                len(status_left) >= 2
-                and status_left[0] == '"'
-                and status_left[-1] == '"'
-            ):
-                status_left = status_left[1:-1]
-            status_left = status_left.replace("#S", session_name)
+            status_left = status_result.stdout.strip().replace("#S", session_name)
             subprocess.run(
                 ["tmux", "set-option", "-t", grouped_name, "status-left", status_left],
                 capture_output=True,
