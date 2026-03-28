@@ -34,7 +34,10 @@ If no `.tmux.conf`: defaults are prefix `Ctrl+B`, next `Ctrl+B n`, prev `Ctrl+B 
 
 ## How to launch forestui
 
-forestui auto-execs into tmux. Isolate from the user's real session:
+**NEVER run `uv run forestui` or any tmux command without `TMUX_TMPDIR` isolation.**
+The user is likely running their own tmux/forestui session right now. If you
+connect to the default tmux server you will interfere with their live session —
+creating windows, switching their active view, or corrupting their session state.
 
 ```bash
 FUI_TEST_DIR=$(mktemp -d)
