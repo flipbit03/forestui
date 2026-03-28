@@ -60,19 +60,26 @@ class TmuxService:
             return None
         if self._session is None:
             try:
-                # Get session from TMUX environment variable
-                # Format: /socket/path,pid,window_index
-                tmux_env = os.environ.get("TMUX", "")
-                if tmux_env:
-                    # Find the attached session (session_attached is a count > 0)
+                # Use display-message to get the actual session we're running in.
+                # This is critical for grouped sessions where multiple sessions
+                # are attached but we need the one THIS process belongs to.
+                result = self.server.cmd("display-message", "-p", "#{session_id}")
+                current_id = result.stdout[0].strip() if result.stdout else ""
+                if current_id:
+                    for sess in self.server.sessions:
+                        if sess.session_id == current_id:
+                            self._session = sess
+                            break
+                # Fallback: find any attached session
+                if self._session is None:
                     for sess in self.server.sessions:
                         attached = sess.session_attached
                         if attached and int(attached) > 0:
                             self._session = sess
                             break
-                    # Fallback to first session if none found
-                    if self._session is None and self.server.sessions:
-                        self._session = self.server.sessions[0]
+                # Fallback to first session if none found
+                if self._session is None and self.server.sessions:
+                    self._session = self.server.sessions[0]
             except (LibTmuxException, ValueError, TypeError):
                 return None
         return self._session
