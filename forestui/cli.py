@@ -114,13 +114,22 @@ def ensure_tmux(
         # Create a grouped session for independent window navigation.
         # Each terminal gets its own session linked to the same window group,
         # so switching windows in one terminal doesn't affect the other.
+        # We use a hook to set destroy-unattached AFTER the client attaches,
+        # because setting it on a detached session destroys it immediately.
         grouped_name = f"{session_name}-{os.getpid()}"
         subprocess.run(
             ["tmux", "new-session", "-d", "-s", grouped_name, "-t", session_name],
             capture_output=True,
         )
         subprocess.run(
-            ["tmux", "set-option", "-t", grouped_name, "destroy-unattached", "on"],
+            [
+                "tmux",
+                "set-hook",
+                "-t",
+                grouped_name,
+                "client-attached",
+                "set-option destroy-unattached on",
+            ],
             capture_output=True,
         )
         os.execvp("tmux", ["tmux", "attach-session", "-t", grouped_name])
