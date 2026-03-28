@@ -132,6 +132,28 @@ def ensure_tmux(
             ],
             capture_output=True,
         )
+        # Override status-left so the grouped session shows the base session
+        # name instead of the PID-suffixed internal name.
+        status_result = subprocess.run(
+            ["tmux", "show-options", "-g", "status-left"],
+            capture_output=True,
+            text=True,
+        )
+        if status_result.returncode == 0 and status_result.stdout.strip():
+            # Replace #S (session name variable) with the literal base name
+            status_left = status_result.stdout.strip().removeprefix("status-left ")
+            # Strip outer quotes if present
+            if (
+                len(status_left) >= 2
+                and status_left[0] == '"'
+                and status_left[-1] == '"'
+            ):
+                status_left = status_left[1:-1]
+            status_left = status_left.replace("#S", session_name)
+            subprocess.run(
+                ["tmux", "set-option", "-t", grouped_name, "status-left", status_left],
+                capture_output=True,
+            )
         os.execvp("tmux", ["tmux", "attach-session", "-t", grouped_name])
     else:
         # No session: create new one with forestui as initial command
