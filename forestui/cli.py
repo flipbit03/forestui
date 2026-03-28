@@ -97,7 +97,11 @@ def ensure_tmux(
             capture_output=True,
             text=True,
         )
-        forestui_window_exists = "forestui" in (list_result.stdout or "").splitlines()
+        window_names = (list_result.stdout or "").splitlines()
+        forestui_window_exists = any(
+            name == "forestui" or name.startswith("forestui-dev-")
+            for name in window_names
+        )
 
         if not forestui_window_exists:
             # forestui was killed but session remains - create new window
