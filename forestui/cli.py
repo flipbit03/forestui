@@ -151,8 +151,9 @@ def ensure_tmux(
             capture_output=True,
             text=True,
         )
-        if status_result.returncode == 0 and status_result.stdout.strip():
-            status_left = status_result.stdout.strip().replace("#S", session_name)
+        if status_result.returncode == 0 and status_result.stdout.rstrip("\n"):
+            # Only strip the trailing newline, not spaces that are part of the template
+            status_left = status_result.stdout.rstrip("\n").replace("#S", session_name)
             subprocess.run(
                 ["tmux", "set-option", "-t", grouped_name, "status-left", status_left],
                 capture_output=True,
