@@ -60,12 +60,18 @@ tu run --name fui-b --env TMUX_TMPDIR=$FUI_TEST_DIR \
 
 ## How to see the screen
 
+**ALWAYS use PNG mode for screenshots.** Plain text loses colors, highlights, and
+styling — you can't tell which tmux window is active, what's selected, or see
+UI state like notifications. PNG gives you the real terminal with full color.
+
 ```bash
-tu screenshot --name fui        # full screen dump
-tu scrollback --name fui        # if content scrolled off
+tu screenshot --name fui --png -o /tmp/fui-shot.png   # then Read the file to see it
+tu scrollback --name fui                               # if content scrolled off
 ```
 
-The status bar is the last line. Parse it for session name, window list, etc.
+Use the Read tool on the PNG to visually inspect it. The status bar is at the
+bottom — look for the orange-highlighted active window to know which window
+each session is viewing.
 
 ## How to interact
 
