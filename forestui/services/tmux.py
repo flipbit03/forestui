@@ -29,7 +29,6 @@ class TmuxService:
 
     _instance: TmuxService | None = None
     _server: Server | None = None
-    _session: Session | None = None
 
     def __new__(cls) -> TmuxService:
         if cls._instance is None:
@@ -55,27 +54,57 @@ class TmuxService:
 
     @property
     def session(self) -> Session | None:
-        """Get the current tmux session."""
+        """Get the session of the most recently active tmux client.
+
+        Not cached because the active client can change between grouped
+        sessions — the user may be viewing forestui from any terminal.
+        """
         if not self.is_inside_tmux or self.server is None:
             return None
-        if self._session is None:
-            try:
-                # Get session from TMUX environment variable
-                # Format: /socket/path,pid,window_index
-                tmux_env = os.environ.get("TMUX", "")
-                if tmux_env:
-                    # Find the attached session (session_attached is a count > 0)
+        try:
+            # Get our session group so we only consider clients attached to
+            # sessions in the same group — not unrelated tmux sessions.
+            group_result = self.server.cmd("display-message", "-p", "#{session_group}")
+            our_group = group_result.stdout[0].strip() if group_result.stdout else ""
+
+            # Find the most recently active client in our session group.
+            # In grouped sessions, multiple clients are attached to different
+            # sessions sharing the same windows. The user who just triggered
+            # an action is the most recently active client.
+            result = self.server.cmd(
+                "list-clients",
+                "-F",
+                "#{client_activity} #{session_id} #{session_group}",
+            )
+            if result.stdout:
+                best_id: str | None = None
+                best_time = -1
+                for line in result.stdout:
+                    parts = line.strip().split(" ", 2)
+                    if len(parts) == 3:
+                        activity = int(parts[0])
+                        session_id = parts[1]
+                        group = parts[2]
+                        if our_group and group != our_group:
+                            continue
+                        if activity > best_time:
+                            best_time = activity
+                            best_id = session_id
+                if best_id:
                     for sess in self.server.sessions:
-                        attached = sess.session_attached
-                        if attached and int(attached) > 0:
-                            self._session = sess
-                            break
-                    # Fallback to first session if none found
-                    if self._session is None and self.server.sessions:
-                        self._session = self.server.sessions[0]
-            except (LibTmuxException, ValueError, TypeError):
-                return None
-        return self._session
+                        if sess.session_id == best_id:
+                            return sess
+            # Fallback: first attached session
+            for sess in self.server.sessions:
+                attached = sess.session_attached
+                if attached and int(attached) > 0:
+                    return sess
+            # Fallback: first session
+            if self.server.sessions:
+                return self.server.sessions[0]
+        except (LibTmuxException, ValueError, TypeError):
+            return None
+        return None
 
     @property
     def current_window(self) -> Window | None:

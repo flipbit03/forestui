@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -78,24 +79,29 @@ def ensure_tmux(
     if dev_mode:
         forestui_cmd += " --dev"
     if forest_path:
-        forestui_cmd += f" {forest_path}"
+        forestui_cmd += f" {shlex.quote(forest_path)}"
 
     # Check if session already exists
     import subprocess
 
     result = subprocess.run(
-        ["tmux", "has-session", "-t", session_name],
+        ["tmux", "has-session", "-t", f"={session_name}"],
         capture_output=True,
     )
     session_exists = result.returncode == 0
 
     if session_exists:
-        # Session exists: check if forestui window is already running
-        result = subprocess.run(
-            ["tmux", "select-window", "-t", f"{session_name}:forestui"],
+        # Check if forestui window exists (read-only, no side effects)
+        list_result = subprocess.run(
+            ["tmux", "list-windows", "-t", f"={session_name}", "-F", "#{window_name}"],
             capture_output=True,
+            text=True,
         )
-        forestui_window_exists = result.returncode == 0
+        window_names = (list_result.stdout or "").splitlines()
+        forestui_window_exists = any(
+            name == "forestui" or name.startswith("forestui-dev-")
+            for name in window_names
+        )
 
         if not forestui_window_exists:
             # forestui was killed but session remains - create new window
@@ -104,14 +110,55 @@ def ensure_tmux(
                     "tmux",
                     "new-window",
                     "-t",
-                    session_name,
+                    f"={session_name}",
                     "-n",
                     "forestui",
                     forestui_cmd,
                 ],
             )
 
-        os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
+        # Create a grouped session for independent window navigation.
+        # Each terminal gets its own session linked to the same window group,
+        # so switching windows in one terminal doesn't affect the other.
+        grouped_name = f"{session_name}-{os.getpid()}"
+        grouped_result = subprocess.run(
+            ["tmux", "new-session", "-d", "-s", grouped_name, "-t", f"={session_name}"],
+            capture_output=True,
+        )
+        if grouped_result.returncode != 0:
+            # Grouped session creation failed, fall back to direct attach
+            os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
+
+        # Use a hook to set destroy-unattached AFTER the client attaches,
+        # because setting it on a detached session destroys it immediately.
+        # keep-last prevents the last session in the group from being destroyed.
+        subprocess.run(
+            [
+                "tmux",
+                "set-hook",
+                "-t",
+                grouped_name,
+                "client-attached",
+                "set-option destroy-unattached keep-last",
+            ],
+            capture_output=True,
+        )
+        # Override status-left so the grouped session shows the base session
+        # name instead of the PID-suffixed internal name. Uses -gv to get
+        # just the value without the option name prefix or quoting.
+        status_result = subprocess.run(
+            ["tmux", "show-options", "-gv", "status-left"],
+            capture_output=True,
+            text=True,
+        )
+        if status_result.returncode == 0 and status_result.stdout.rstrip("\n"):
+            # Only strip the trailing newline, not spaces that are part of the template
+            status_left = status_result.stdout.rstrip("\n").replace("#S", session_name)
+            subprocess.run(
+                ["tmux", "set-option", "-t", grouped_name, "status-left", status_left],
+                capture_output=True,
+            )
+        os.execvp("tmux", ["tmux", "attach-session", "-t", grouped_name])
     else:
         # No session: create new one with forestui as initial command
         os.execvp("tmux", ["tmux", "new-session", "-s", session_name, forestui_cmd])
