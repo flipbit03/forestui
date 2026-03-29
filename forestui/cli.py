@@ -85,7 +85,7 @@ def ensure_tmux(
     import subprocess
 
     result = subprocess.run(
-        ["tmux", "has-session", "-t", session_name],
+        ["tmux", "has-session", "-t", f"={session_name}"],
         capture_output=True,
     )
     session_exists = result.returncode == 0
@@ -93,7 +93,7 @@ def ensure_tmux(
     if session_exists:
         # Check if forestui window exists (read-only, no side effects)
         list_result = subprocess.run(
-            ["tmux", "list-windows", "-t", session_name, "-F", "#{window_name}"],
+            ["tmux", "list-windows", "-t", f"={session_name}", "-F", "#{window_name}"],
             capture_output=True,
             text=True,
         )
@@ -110,7 +110,7 @@ def ensure_tmux(
                     "tmux",
                     "new-window",
                     "-t",
-                    session_name,
+                    f"={session_name}",
                     "-n",
                     "forestui",
                     forestui_cmd,
@@ -122,7 +122,7 @@ def ensure_tmux(
         # so switching windows in one terminal doesn't affect the other.
         grouped_name = f"{session_name}-{os.getpid()}"
         grouped_result = subprocess.run(
-            ["tmux", "new-session", "-d", "-s", grouped_name, "-t", session_name],
+            ["tmux", "new-session", "-d", "-s", grouped_name, "-t", f"={session_name}"],
             capture_output=True,
         )
         if grouped_result.returncode != 0:
