@@ -1,6 +1,6 @@
 ---
 name: test-forestui
-description: Use tu to visually drive and test forestui in headless terminals. Invoke when developing forestui features, debugging UI issues, or verifying changes — lets you see and interact with the running app yourself.
+description: Use tu to visually drive and test forestui in headless terminals. Invoke PROACTIVELY when fixing behavioral/visual bugs or developing new features — don't wait to be asked. Lint and typecheck can't catch UI regressions, wrong window names, or broken interactions.
 allowed-tools: Bash, Read
 argument-hint: "[what to test or verify]"
 ---
@@ -35,9 +35,10 @@ If no `.tmux.conf`: defaults are prefix `Ctrl+B`, next `Ctrl+B n`, prev `Ctrl+B 
 ## How to launch forestui
 
 **NEVER run `uv run forestui` or any tmux command without `TMUX_TMPDIR` isolation.**
-The user is likely running their own tmux/forestui session right now. If you
-connect to the default tmux server you will interfere with their live session —
-creating windows, switching their active view, or corrupting their session state.
+**NEVER call `tmux` directly from Bash** — not even with `TMUX_TMPDIR` set. The
+user is likely running their own tmux/forestui session right now. Any direct
+`tmux` call risks connecting to (and corrupting) their live session. ALL
+interaction with the test tmux must go through `tu` commands.
 
 ```bash
 FUI_TEST_DIR=$(mktemp -d)
@@ -47,6 +48,32 @@ tu run --name fui --env TMUX_TMPDIR=$FUI_TEST_DIR \
 
 tu wait --name fui --text "forestui" --timeout 15000
 ```
+
+### When you need to detach and reattach
+
+If your test involves detaching from tmux and re-running `forestui` (e.g.,
+testing reattach behavior), do NOT launch forestui directly as the `tu` process.
+Instead, launch a **bash shell** inside `tu` and run forestui from it. This way,
+when tmux detaches, bash gets its prompt back and you can run forestui again:
+
+```bash
+tu run --name fui --env TMUX_TMPDIR=$FUI_TEST_DIR \
+  --cwd <project-root> -- env -u TMUX bash -l
+
+# Wait for bash prompt, then start forestui
+tu wait --name fui --text "\\$" --timeout 5000
+tu type --name fui "uv run forestui"
+tu press --name fui Enter
+
+# ... do your test, detach with Ctrl+A d ...
+# After detach, bash prompt returns. Run forestui again:
+tu wait --name fui --text "\\$" --timeout 5000
+tu type --name fui "uv run forestui"
+tu press --name fui Enter
+```
+
+Why: forestui calls `os.execvp("tmux", ...)` to enter tmux. If forestui IS the
+`tu` process, detaching kills the tu session (no shell to return to).
 
 Need multiple terminals (e.g., testing grouped sessions)? Use the same
 `TMUX_TMPDIR` so they share the same isolated tmux server:
@@ -84,6 +111,11 @@ each session is viewing.
 ### tmux navigation
 
 Use the bindings from `.tmux.conf`. Translate to `tu press` yourself.
+
+**Gotcha — renaming windows.** Check `.tmux.conf` for the rename-window binding.
+If it uses `command-prompt -I "#W"`, the prompt is pre-filled with the current
+window name — press `Ctrl+U` to clear before typing. If it uses
+`command-prompt` without `-I`, the prompt starts empty and you can type directly.
 
 ### Text input
 

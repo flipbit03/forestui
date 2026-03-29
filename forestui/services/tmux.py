@@ -108,13 +108,26 @@ class TmuxService:
 
     @property
     def current_window(self) -> Window | None:
-        """Get the current tmux window."""
-        if self.session is None:
+        """Get the tmux window this process is running in.
+
+        Uses the TMUX_PANE environment variable to find our own window,
+        rather than the session's active window — which may be a different
+        window when forestui is starting up in a background window.
+        """
+        if self.server is None:
+            return None
+        pane_id = os.environ.get("TMUX_PANE")
+        if not pane_id:
             return None
         try:
-            return self.session.active_window
+            for sess in self.server.sessions:
+                for window in sess.windows:
+                    for pane in window.panes:
+                        if pane.pane_id == pane_id:
+                            return window
         except LibTmuxException:
             return None
+        return None
 
     def rename_window(self, name: str) -> bool:
         """Rename the current tmux window."""

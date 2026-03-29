@@ -153,7 +153,14 @@ Each forest has its own `.forestui-config.json` state file.
 
 ## Testing
 
-Currently no test suite. When adding tests:
+**Visual/behavioral verification:** forestui is a TUI app — lint and typecheck
+alone cannot catch visual bugs, wrong window names, broken interactions, or
+UI regressions. When fixing behavioral/visual bugs or developing new features,
+use the `test-forestui` skill to launch forestui in a headless terminal and
+visually verify the fix or feature works. Do this proactively, not only when
+asked.
+
+Currently no unit test suite. When adding tests:
 - Use pytest
 - Place tests in `tests/` directory
 - Add pytest to dev dependencies
@@ -165,7 +172,8 @@ Version is `0.0.0` in source code. Actual versions are derived from git tags at 
 ### Development
 
 1. Create a branch, make changes
-2. Run `make check` and test locally
+2. **Always run `make check` before committing, pushing, or opening a PR.** Do not
+   push code that fails lint or typecheck — fix issues first.
 3. Open a PR and merge to `main`
 
 Running from source (`uv run forestui`) shows version `0.0.0` and auto-enables dev mode.
