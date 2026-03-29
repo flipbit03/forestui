@@ -112,7 +112,7 @@ def ensure_tmux(
                     "-t",
                     f"={session_name}",
                     "-n",
-                    "forestui",
+                    get_window_name(dev_mode),
                     forestui_cmd,
                 ],
             )

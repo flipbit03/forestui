@@ -1,4 +1,4 @@
-.PHONY: lint typecheck check format install dev clean
+.PHONY: lint typecheck format-check check format install dev clean
 
 # Run ruff linter
 lint:
@@ -8,8 +8,12 @@ lint:
 typecheck:
 	uv run mypy forestui/
 
-# Run all checks (lint + typecheck)
-check: lint typecheck
+# Check formatting without modifying files
+format-check:
+	uv run ruff format --check forestui/
+
+# Run all checks (lint + typecheck + format)
+check: lint typecheck format-check
 
 # Format code with ruff
 format:
