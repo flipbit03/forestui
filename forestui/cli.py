@@ -13,7 +13,7 @@ import click
 from forestui import __version__
 
 
-def get_window_name(dev_mode: bool = False) -> str:
+def get_window_name(dev_mode  :  bool = False) -> str:
     """Get the tmux window name based on dev mode flag."""
     if dev_mode:
         from datetime import datetime
