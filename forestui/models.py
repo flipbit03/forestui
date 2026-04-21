@@ -1,7 +1,6 @@
 """Data models for forestui."""
 
 import re
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Self
@@ -12,6 +11,39 @@ from pydantic import BaseModel, Field, field_validator
 
 # Constants for validation
 MAX_CLAUDE_COMMAND_LENGTH = 200
+MAX_BUTTON_LABEL_LENGTH = 20
+MAX_BUTTON_PREFIX_LENGTH = 20
+
+
+def derive_prefix(label: str) -> str:
+    """Derive a tmux-safe window prefix from a button label.
+
+    Lowercase, keep [a-z0-9_-], collapse other runs to '-', strip leading/trailing '-'.
+    """
+    slug = re.sub(r"[^a-z0-9_-]+", "-", label.lower()).strip("-")
+    return slug[:MAX_BUTTON_PREFIX_LENGTH]
+
+
+def validate_button_label(label: str) -> str | None:
+    """Validate a custom button label."""
+    if not label:
+        return "Label cannot be empty"
+    if len(label) > MAX_BUTTON_LABEL_LENGTH:
+        return f"Label too long (max {MAX_BUTTON_LABEL_LENGTH} characters)"
+    if any(c in label for c in "\n\r\t\0"):
+        return "Label cannot contain control characters"
+    return None
+
+
+def validate_button_prefix(prefix: str) -> str | None:
+    """Validate a tmux window prefix."""
+    if not prefix:
+        return "Prefix cannot be empty"
+    if len(prefix) > MAX_BUTTON_PREFIX_LENGTH:
+        return f"Prefix too long (max {MAX_BUTTON_PREFIX_LENGTH} characters)"
+    if not re.fullmatch(r"[a-z0-9_-]+", prefix):
+        return "Prefix must be lowercase letters, digits, '-' or '_'"
+    return None
 
 
 def validate_claude_command(command: str) -> str | None:
@@ -35,27 +67,48 @@ def validate_claude_command(command: str) -> str | None:
     return None
 
 
-def _validate_command_field(v: str | None) -> str | None:
-    """Pydantic field validator for custom_claude_command."""
-    if v is None:
-        return None
-    error = validate_claude_command(v)
-    if error:
-        raise ValueError(error)
-    return v
+class CustomClaudeButton(BaseModel):
+    """A user-configured custom Claude command button.
 
-
-@dataclass
-class ClaudeCommandResult:
-    """Result from ClaudeCommandModal.
-
-    Attributes:
-        command: The command string, or None to clear the setting.
-        cancelled: True if user cancelled the modal.
+    `label` is what's shown on the button. `prefix` is used as the tmux window
+    prefix (e.g., "yolodisc" → "yolodisc:<name>"). `command` is run as-is; if it
+    contains --dangerously-skip-permissions the button is styled red.
     """
 
-    command: str | None
-    cancelled: bool = False
+    label: str
+    prefix: str
+    command: str
+
+    @field_validator("label")
+    @classmethod
+    def _validate_label(cls, v: str) -> str:
+        error = validate_button_label(v)
+        if error:
+            raise ValueError(error)
+        return v
+
+    @field_validator("prefix")
+    @classmethod
+    def _validate_prefix(cls, v: str) -> str:
+        error = validate_button_prefix(v)
+        if error:
+            raise ValueError(error)
+        return v
+
+    @field_validator("command")
+    @classmethod
+    def _validate_command(cls, v: str) -> str:
+        error = validate_claude_command(v)
+        if error:
+            raise ValueError(error)
+        if not v:
+            raise ValueError("Command cannot be empty")
+        return v
+
+    @property
+    def is_yolo_style(self) -> bool:
+        """Whether this button's command enables dangerous permissions bypass."""
+        return "--dangerously-skip-permissions" in self.command
 
 
 class Worktree(BaseModel):
@@ -68,17 +121,10 @@ class Worktree(BaseModel):
     is_archived: bool = False
     sort_order: int | None = None
     last_modified: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    custom_claude_command: str | None = None
     # Branch this worktree was created from (e.g., "origin/main")
     base_branch: str | None = None
     # Git commit ref when the worktree was created
     created_from_ref: str | None = None
-
-    @field_validator("custom_claude_command")
-    @classmethod
-    def validate_command(cls, v: str | None) -> str | None:
-        """Validate custom_claude_command field."""
-        return _validate_command_field(v)
 
     def get_path(self) -> Path:
         """Get the worktree path as a Path object."""
@@ -92,13 +138,6 @@ class Repository(BaseModel):
     name: str
     source_path: str
     worktrees: list[Worktree] = Field(default_factory=list)
-    custom_claude_command: str | None = None
-
-    @field_validator("custom_claude_command")
-    @classmethod
-    def validate_command(cls, v: str | None) -> str | None:
-        """Validate custom_claude_command field."""
-        return _validate_command_field(v)
 
     def get_source_path(self) -> Path:
         """Get the source path as a Path object."""
@@ -156,13 +195,7 @@ class Settings(BaseModel):
     default_terminal: str = ""
     branch_prefix: str = "feat/"
     theme: str = "system"
-    custom_claude_command: str | None = None
-
-    @field_validator("custom_claude_command")
-    @classmethod
-    def validate_command(cls, v: str | None) -> str | None:
-        """Validate custom_claude_command field."""
-        return _validate_command_field(v)
+    custom_buttons: list[CustomClaudeButton] = Field(default_factory=list)
 
     @classmethod
     def default(cls) -> Self:

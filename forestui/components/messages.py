@@ -1,8 +1,8 @@
 """Shared message classes for detail view components."""
 
-from uuid import UUID
-
 from textual.message import Message
+
+from forestui.models import CustomClaudeButton
 
 
 class OpenInEditor(Message):
@@ -63,14 +63,20 @@ class ContinueClaudeYoloSession(Message):
         super().__init__()
 
 
-class ConfigureClaudeCommand(Message):
-    """Request to configure custom Claude command for a repository or worktree."""
+class StartClaudeCustomSession(Message):
+    """Request to start a new Claude session using a custom button."""
 
-    def __init__(
-        self,
-        repo_id: UUID,
-        worktree_id: UUID | None = None,
-    ) -> None:
-        self.repo_id = repo_id
-        self.worktree_id = worktree_id
+    def __init__(self, path: str, button: CustomClaudeButton) -> None:
+        self.path = path
+        self.button = button
+        super().__init__()
+
+
+class ContinueClaudeCustomSession(Message):
+    """Request to continue an existing Claude session using a custom button."""
+
+    def __init__(self, session_id: str, path: str, button: CustomClaudeButton) -> None:
+        self.session_id = session_id
+        self.path = path
+        self.button = button
         super().__init__()
