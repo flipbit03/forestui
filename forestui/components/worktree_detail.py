@@ -11,16 +11,17 @@ from textual.widget import Widget
 from textual.widgets import Button, Input, Label, Rule
 
 from forestui.components.messages import (
-    ConfigureClaudeCommand,
+    ContinueClaudeCustomSession,
     ContinueClaudeSession,
     ContinueClaudeYoloSession,
     OpenInEditor,
     OpenInFileManager,
     OpenInTerminal,
+    StartClaudeCustomSession,
     StartClaudeSession,
     StartClaudeYoloSession,
 )
-from forestui.models import ClaudeSession, Repository, Worktree
+from forestui.models import ClaudeSession, CustomClaudeButton, Repository, Worktree
 
 
 class WorktreeDetail(Widget):
@@ -79,6 +80,7 @@ class WorktreeDetail(Widget):
         commit_hash: str = "",
         commit_time: datetime | None = None,
         has_remote: bool = True,
+        custom_buttons: list[CustomClaudeButton] | None = None,
     ) -> None:
         super().__init__()
         self._repository = repository
@@ -87,6 +89,10 @@ class WorktreeDetail(Widget):
         self._commit_time = commit_time
         self._has_remote = has_remote
         self._sessions: list[ClaudeSession] = []
+        self._custom_buttons: list[CustomClaudeButton] = list(custom_buttons or [])
+        self._buttons_by_prefix: dict[str, CustomClaudeButton] = {
+            b.prefix: b for b in self._custom_buttons
+        }
 
     def compose(self) -> ComposeResult:
         """Compose the worktree detail view."""
@@ -155,16 +161,45 @@ class WorktreeDetail(Widget):
 
             yield Rule()
 
-            # Claude section
+            # Claude section — buttons wrap to multiple rows when they don't fit.
             yield Label("CLAUDE", classes="section-header")
-            with Horizontal(classes="action-row"):
-                yield Button("New Session", id="btn-claude-new", variant="primary")
-                yield Button(
-                    "New Session: YOLO",
-                    id="btn-claude-yolo",
-                    variant="error",
-                    classes="-destructive",
-                )
+            # (label, id, variant, is_destructive)
+            claude_specs: list[tuple[str, str, str, bool]] = [
+                ("New Session", "btn-claude-new", "primary", False),
+                ("New Session: YOLO", "btn-claude-yolo", "error", True),
+            ]
+            for btn in self._custom_buttons:
+                if btn.is_yolo_style:
+                    claude_specs.append(
+                        (btn.label, f"btn-claude-custom-{btn.prefix}", "error", True)
+                    )
+                else:
+                    claude_specs.append(
+                        (
+                            btn.label,
+                            f"btn-claude-custom-{btn.prefix}",
+                            "primary",
+                            False,
+                        )
+                    )
+            for chunk_start in range(0, len(claude_specs), 4):
+                with Horizontal(classes="action-row"):
+                    for label, btn_id, variant, is_dest in claude_specs[
+                        chunk_start : chunk_start + 4
+                    ]:
+                        if is_dest:
+                            yield Button(
+                                label,
+                                id=btn_id,
+                                variant=variant,  # type: ignore[arg-type]
+                                classes="-destructive",
+                            )
+                        else:
+                            yield Button(
+                                label,
+                                id=btn_id,
+                                variant=variant,  # type: ignore[arg-type]
+                            )
 
             # Sessions list (loaded async)
             yield Label("RECENT SESSIONS", classes="section-header")
@@ -193,11 +228,6 @@ class WorktreeDetail(Widget):
             # Manage section
             yield Label("MANAGE", classes="section-header")
             with Horizontal(classes="action-row"):
-                yield Button(
-                    " Custom Claude Command",
-                    id="btn-configure-claude",
-                    variant="default",
-                )
                 if self._worktree.is_archived:
                     yield Button(
                         " Unarchive",
@@ -233,10 +263,6 @@ class WorktreeDetail(Widget):
                 self.post_message(StartClaudeSession(path))
             case "btn-claude-yolo":
                 self.post_message(StartClaudeYoloSession(path))
-            case "btn-configure-claude":
-                self.post_message(
-                    ConfigureClaudeCommand(self._repository.id, self._worktree.id)
-                )
             case "btn-archive":
                 self.post_message(self.ArchiveWorktreeRequested(self._worktree.id))
             case "btn-unarchive":
@@ -253,6 +279,23 @@ class WorktreeDetail(Widget):
             case _ if btn_id.startswith("btn-yolo-"):
                 session_id = btn_id.replace("btn-yolo-", "")
                 self.post_message(ContinueClaudeYoloSession(session_id, path))
+            case _ if btn_id.startswith("btn-claude-custom-"):
+                prefix = btn_id.removeprefix("btn-claude-custom-")
+                custom = self._buttons_by_prefix.get(prefix)
+                if custom:
+                    self.post_message(StartClaudeCustomSession(path, custom))
+            case _ if btn_id.startswith("btn-custom-"):
+                # Format: btn-custom-<prefix>-<session_id>
+                rest = btn_id.removeprefix("btn-custom-")
+                for prefix in self._buttons_by_prefix:
+                    marker = f"{prefix}-"
+                    if rest.startswith(marker):
+                        session_id = rest.removeprefix(marker)
+                        custom = self._buttons_by_prefix[prefix]
+                        self.post_message(
+                            ContinueClaudeCustomSession(session_id, path, custom)
+                        )
+                        break
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle input submission."""
@@ -303,29 +346,58 @@ class WorktreeDetail(Widget):
                         Label(meta, classes="session-meta label-muted")
                     )
 
-                    row = Vertical(
-                        Horizontal(
-                            Vertical(*info_children, classes="session-info"),
-                            Horizontal(
-                                Button(
-                                    "Resume",
-                                    id=f"btn-resume-{session.id}",
-                                    variant="default",
-                                    classes="session-btn",
-                                ),
-                                Button(
-                                    "YOLO",
-                                    id=f"btn-yolo-{session.id}",
-                                    variant="error",
-                                    classes="session-btn -destructive",
-                                ),
-                                classes="session-buttons",
-                            ),
-                            classes="session-header-row",
-                        ),
-                        classes="session-item",
-                    )
-                    container.mount(row)
+                    # (label, id, variant, is_destructive)
+                    btn_specs: list[tuple[str, str, str, bool]] = [
+                        ("Resume", f"btn-resume-{session.id}", "default", False),
+                        ("YOLO", f"btn-yolo-{session.id}", "error", True),
+                    ]
+                    for cbtn in self._custom_buttons:
+                        if cbtn.is_yolo_style:
+                            btn_specs.append(
+                                (
+                                    cbtn.label,
+                                    f"btn-custom-{cbtn.prefix}-{session.id}",
+                                    "error",
+                                    True,
+                                )
+                            )
+                        else:
+                            btn_specs.append(
+                                (
+                                    cbtn.label,
+                                    f"btn-custom-{cbtn.prefix}-{session.id}",
+                                    "primary",
+                                    False,
+                                )
+                            )
+                    children: list[Widget] = [*info_children]
+                    for chunk_start in range(0, len(btn_specs), 4):
+                        row_buttons: list[Button] = []
+                        for label, btn_id, variant, is_dest in btn_specs[
+                            chunk_start : chunk_start + 4
+                        ]:
+                            if is_dest:
+                                row_buttons.append(
+                                    Button(
+                                        label,
+                                        id=btn_id,
+                                        variant=variant,  # type: ignore[arg-type]
+                                        classes="session-btn -destructive",
+                                    )
+                                )
+                            else:
+                                row_buttons.append(
+                                    Button(
+                                        label,
+                                        id=btn_id,
+                                        variant=variant,  # type: ignore[arg-type]
+                                        classes="session-btn",
+                                    )
+                                )
+                        children.append(
+                            Horizontal(*row_buttons, classes="session-buttons")
+                        )
+                    container.mount(Vertical(*children, classes="session-item"))
             else:
                 container.mount(Label("No sessions found", classes="label-muted"))
         except Exception:

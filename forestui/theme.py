@@ -255,9 +255,21 @@ ModalScreen {
     padding: 1 2;
 }
 
+.modal-container.modal-wide {
+    width: 140;
+    max-width: 95%;
+    height: 90%;
+}
+
 .modal-scroll {
+    width: 100%;
     height: auto;
     max-height: 20;
+}
+
+.modal-scroll.modal-scroll-tall {
+    height: 1fr;
+    max-height: 100vh;
 }
 
 .modal-title {

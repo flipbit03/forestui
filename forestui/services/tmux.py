@@ -307,6 +307,7 @@ class TmuxService:
         resume_session_id: str | None = None,
         yolo: bool = False,
         custom_command: str | None = None,
+        custom_prefix: str | None = None,
     ) -> str | None:
         """Create a tmux window with Claude Code.
 
@@ -316,6 +317,9 @@ class TmuxService:
             resume_session_id: Optional session ID to resume
             yolo: If True, add --dangerously-skip-permissions flag
             custom_command: Optional custom Claude command (e.g., "claude --model opus")
+            custom_prefix: Optional tmux window prefix override (for custom buttons).
+                When set, overrides the "claude"/"yolo" prefix and the command is
+                used as-is (no --dangerously-skip-permissions is appended).
 
         Returns:
             The window name if created/selected successfully, None otherwise
@@ -323,9 +327,12 @@ class TmuxService:
         if self.session is None:
             return None
 
-        base_window_name = f"claude:{name}"
-        if yolo:
+        if custom_prefix:
+            base_window_name = f"{custom_prefix}:{name}"
+        elif yolo:
             base_window_name = f"yolo:{name}"
+        else:
+            base_window_name = f"claude:{name}"
 
         try:
             # Always create a new window with unique name (add :2, :3 suffix if needed)
@@ -334,7 +341,8 @@ class TmuxService:
             # Build claude command (closes when claude exits)
             # Use custom_command if provided, otherwise default to "claude"
             cmd = custom_command or "claude"
-            if yolo:
+            # Only append YOLO flag for the built-in YOLO button, not custom buttons
+            if yolo and not custom_prefix:
                 cmd += " --dangerously-skip-permissions"
             if resume_session_id:
                 cmd += f" -r {resume_session_id}"

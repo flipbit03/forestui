@@ -3,11 +3,13 @@
 from pathlib import Path
 from uuid import UUID
 
+from textual import work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.timer import Timer
+from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Input, Label, Select
 
 from forestui.components.branch_search import (
@@ -15,11 +17,16 @@ from forestui.components.branch_search import (
     FuzzyBranchSuggester,
 )
 from forestui.models import (
+    MAX_BUTTON_LABEL_LENGTH,
+    MAX_BUTTON_PREFIX_LENGTH,
     MAX_CLAUDE_COMMAND_LENGTH,
-    ClaudeCommandResult,
+    CustomClaudeButton,
     GitHubIssue,
     Repository,
     Settings,
+    derive_prefix,
+    validate_button_label,
+    validate_button_prefix,
     validate_claude_command,
 )
 
@@ -376,13 +383,14 @@ class SettingsModal(ModalScreen[Settings | None]):
     def __init__(self, settings: Settings) -> None:
         super().__init__()
         self._settings = settings
+        self._custom_buttons: list[CustomClaudeButton] = list(settings.custom_buttons)
 
     def compose(self) -> ComposeResult:
         """Compose the modal UI."""
-        with Vertical(classes="modal-container"):
+        with Vertical(classes="modal-container modal-wide"):
             yield Label(" Settings", classes="modal-title")
 
-            with VerticalScroll(classes="modal-scroll"):
+            with VerticalScroll(classes="modal-scroll modal-scroll-tall"):
                 yield Label("DEFAULT EDITOR", classes="section-header")
                 yield Select(
                     [(name, cmd) for name, cmd in self.EDITORS],
@@ -404,26 +412,30 @@ class SettingsModal(ModalScreen[Settings | None]):
                     id="select-theme",
                 )
 
-                yield Label("CUSTOM CLAUDE COMMAND", classes="section-header")
-                yield Input(
-                    value=self._settings.custom_claude_command or "",
-                    id="input-custom-claude-command",
-                    placeholder="e.g., claude --model opus",
-                    max_length=MAX_CLAUDE_COMMAND_LENGTH,
-                )
+                yield Label("CUSTOM CLAUDE BUTTONS", classes="section-header")
                 yield Label(
-                    "Default command for all repos",
+                    self._buttons_summary(),
+                    id="label-buttons-count",
                     classes="label-muted",
                 )
-                yield Label(
-                    "Can be overridden per-repo",
-                    classes="label-muted",
-                )
-                yield Label("", id="label-claude-error", classes="label-destructive")
+                with Horizontal(classes="action-row"):
+                    yield Button(
+                        "Manage Custom Buttons...",
+                        id="btn-manage-buttons",
+                        variant="default",
+                    )
 
             with Horizontal(classes="modal-buttons"):
                 yield Button("Cancel", id="btn-cancel", variant="default")
                 yield Button("Save", id="btn-save", variant="primary")
+
+    def _buttons_summary(self) -> str:
+        count = len(self._custom_buttons)
+        if count == 0:
+            return "No custom buttons configured"
+        if count == 1:
+            return "1 custom button configured"
+        return f"{count} custom buttons configured"
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses."""
@@ -431,6 +443,20 @@ class SettingsModal(ModalScreen[Settings | None]):
             self.dismiss(None)
         elif event.button.id == "btn-save":
             self._save_settings()
+        elif event.button.id == "btn-manage-buttons":
+            self._manage_buttons()
+
+    @work
+    async def _manage_buttons(self) -> None:
+        """Open the custom-buttons sub-modal and store the returned list."""
+        result = await self.app.push_screen_wait(
+            CustomButtonsModal(self._custom_buttons)
+        )
+        if result is not None:
+            self._custom_buttons = result
+            self.query_one("#label-buttons-count", Label).update(
+                self._buttons_summary()
+            )
 
     def _save_settings(self) -> None:
         """Save the settings."""
@@ -439,24 +465,12 @@ class SettingsModal(ModalScreen[Settings | None]):
         branch_prefix = self.query_one("#input-branch-prefix", Input).value
         theme_select = self.query_one("#select-theme", Select)
         theme = str(theme_select.value) if theme_select.value else "system"
-        custom_claude_command = (
-            self.query_one("#input-custom-claude-command", Input).value.strip() or None
-        )
-
-        # Validate custom claude command
-        error_label = self.query_one("#label-claude-error", Label)
-        if custom_claude_command:
-            error = validate_claude_command(custom_claude_command)
-            if error:
-                error_label.update(f" {error}")
-                return
-        error_label.update("")
 
         new_settings = Settings(
             default_editor=editor,
             branch_prefix=branch_prefix,
             theme=theme,
-            custom_claude_command=custom_claude_command,
+            custom_buttons=self._custom_buttons,
         )
 
         self.dismiss(new_settings)
@@ -735,95 +749,263 @@ class CreateWorktreeFromIssueModal(ModalScreen[tuple[str, str, bool, bool] | Non
         self.dismiss(None)
 
 
-class ClaudeCommandModal(ModalScreen[ClaudeCommandResult]):
-    """Modal for editing custom Claude command for a repository or worktree."""
+class CustomButtonEditModal(ModalScreen[CustomClaudeButton | None]):
+    """Modal for adding or editing a single CustomClaudeButton."""
 
-    BINDINGS = [
-        ("escape", "cancel", "Cancel"),
-    ]
-
-    # Common command presets
-    PRESETS = [
-        ("claude", "claude"),
-        ("opus", "claude --model opus"),
-        ("sonnet", "claude --model sonnet"),
-    ]
+    BINDINGS = [("escape", "cancel", "Cancel")]
 
     def __init__(
         self,
-        name: str,
-        current_command: str | None,
-        *,
-        is_worktree: bool = False,
+        existing: CustomClaudeButton | None,
+        other_labels: set[str],
+        other_prefixes: set[str],
     ) -> None:
         super().__init__()
-        self._name = name
-        self._current_command = current_command
-        self._is_worktree = is_worktree
+        self._existing = existing
+        self._other_labels = other_labels
+        self._other_prefixes = other_prefixes
+        # Track whether prefix should auto-follow the label
+        if existing is None:
+            self._follows = True
+        else:
+            self._follows = existing.prefix == derive_prefix(existing.label)
+        self._suppress_prefix_event = False
 
     def compose(self) -> ComposeResult:
-        """Compose the modal UI."""
-        with Vertical(classes="modal-container"):
-            yield Label(" Custom Claude Command", classes="modal-title")
-            yield Label(f"for {self._name}", classes="label-secondary")
+        title = "Edit Button" if self._existing else "Add Button"
+        label_val = self._existing.label if self._existing else ""
+        prefix_val = self._existing.prefix if self._existing else ""
+        cmd_val = self._existing.command if self._existing else ""
 
-            yield Label("PRESETS", classes="section-header")
-            with Horizontal(classes="action-row"):
-                for label, _cmd in self.PRESETS:
-                    yield Button(label, id=f"btn-preset-{label}", variant="default")
+        with Vertical(classes="modal-container"):
+            yield Label(f" {title}", classes="modal-title")
+
+            yield Label("LABEL", classes="section-header")
+            yield Input(
+                value=label_val,
+                id="input-label",
+                placeholder="e.g., YoloDisc",
+                max_length=MAX_BUTTON_LABEL_LENGTH,
+            )
+            yield Label(
+                "Shown on the button (e.g., 'New Session: YoloDisc')",
+                classes="label-muted",
+            )
+
+            yield Label("TMUX PREFIX", classes="section-header")
+            yield Input(
+                value=prefix_val,
+                id="input-prefix",
+                placeholder="e.g., yolodisc",
+                max_length=MAX_BUTTON_PREFIX_LENGTH,
+            )
+            yield Label(
+                "Window prefix: <prefix>:<worktree>. Auto-derived from label "
+                "until you edit it.",
+                classes="label-muted",
+            )
 
             yield Label("COMMAND", classes="section-header")
             yield Input(
-                value=self._current_command or "",
-                id="input-claude-command",
-                placeholder="e.g., claude --model opus",
+                value=cmd_val,
+                id="input-command",
+                placeholder="e.g., claude --dangerously-skip-permissions",
                 max_length=MAX_CLAUDE_COMMAND_LENGTH,
             )
-            fallback = "repo default" if self._is_worktree else "folder default"
             yield Label(
-                f"Leave empty to use {fallback}",
+                "Run as-is. If it contains --dangerously-skip-permissions "
+                "the button is styled red.",
                 classes="label-muted",
             )
-            yield Label("", id="label-error", classes="label-destructive")
+
+            yield Label("", id="label-edit-error", classes="label-destructive")
 
             with Horizontal(classes="modal-buttons"):
                 yield Button("Cancel", id="btn-cancel", variant="default")
                 yield Button("Save", id="btn-save", variant="primary")
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "input-label":
+            if self._follows:
+                self._suppress_prefix_event = True
+                self.query_one("#input-prefix", Input).value = derive_prefix(
+                    event.value
+                )
+                self._suppress_prefix_event = False
+        elif event.input.id == "input-prefix":
+            if self._suppress_prefix_event:
+                return
+            label = self.query_one("#input-label", Input).value
+            self._follows = event.value == derive_prefix(label)
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Handle button presses."""
-        btn_id = event.button.id or ""
+        if event.button.id == "btn-cancel":
+            self.dismiss(None)
+        elif event.button.id == "btn-save":
+            self._save()
 
-        if btn_id == "btn-cancel":
-            self.dismiss(ClaudeCommandResult(command=None, cancelled=True))
-        elif btn_id == "btn-save":
-            self._save_command()
-        elif btn_id.startswith("btn-preset-"):
-            # Handle preset buttons
-            preset_label = btn_id.replace("btn-preset-", "")
-            for label, cmd in self.PRESETS:
-                if label == preset_label:
-                    self.query_one("#input-claude-command", Input).value = cmd
-                    break
+    def _save(self) -> None:
+        label = self.query_one("#input-label", Input).value.strip()
+        prefix = self.query_one("#input-prefix", Input).value.strip()
+        command = self.query_one("#input-command", Input).value.strip()
+        err_label = self.query_one("#label-edit-error", Label)
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle enter key in input."""
-        if event.input.id == "input-claude-command":
-            self._save_command()
+        for error in (
+            validate_button_label(label),
+            validate_button_prefix(prefix),
+            validate_claude_command(command) if command else "Command cannot be empty",
+        ):
+            if error:
+                err_label.update(f" {error}")
+                return
 
-    def _save_command(self) -> None:
-        """Save the custom command."""
-        command = self.query_one("#input-claude-command", Input).value.strip()
-        error_label = self.query_one("#label-error", Label)
-
-        error = validate_claude_command(command)
-        if error:
-            error_label.update(f" {error}")
+        if label in self._other_labels:
+            err_label.update(" Another button already uses this label")
+            return
+        if prefix in self._other_prefixes:
+            err_label.update(" Another button already uses this prefix")
             return
 
-        # Return None command to clear the setting, or the command string
-        self.dismiss(ClaudeCommandResult(command=command if command else None))
+        err_label.update("")
+        self.dismiss(CustomClaudeButton(label=label, prefix=prefix, command=command))
 
     def action_cancel(self) -> None:
-        """Cancel and close the modal."""
-        self.dismiss(ClaudeCommandResult(command=None, cancelled=True))
+        self.dismiss(None)
+
+
+class CustomButtonsModal(ModalScreen[list[CustomClaudeButton] | None]):
+    """Modal for managing (add/edit/delete/reorder) custom Claude buttons."""
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, buttons: list[CustomClaudeButton]) -> None:
+        super().__init__()
+        # Work on a copy so cancel discards changes
+        self._buttons: list[CustomClaudeButton] = [b.model_copy() for b in buttons]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="modal-container modal-wide"):
+            yield Label(" Custom Claude Buttons", classes="modal-title")
+            yield Label(
+                "Order here matches display order in the Claude section.",
+                classes="label-muted",
+            )
+
+            with VerticalScroll(
+                classes="modal-scroll modal-scroll-tall",
+                id="buttons-list",
+            ):
+                yield from self._build_rows()
+
+            with Horizontal(classes="action-row"):
+                yield Button(" Add Button", id="btn-add", variant="primary")
+
+            with Horizontal(classes="modal-buttons"):
+                yield Button("Cancel", id="btn-cancel", variant="default")
+                yield Button("Save", id="btn-save", variant="primary")
+
+    def _build_rows(self) -> list[Widget]:
+        """Build the concrete widget list for the buttons scroll area."""
+        if not self._buttons:
+            return [Label("No buttons yet. Click Add.", classes="label-muted")]
+        rows: list[Widget] = []
+        last = len(self._buttons) - 1
+        for idx, btn in enumerate(self._buttons):
+            yolo_note = " (YOLO)" if btn.is_yolo_style else ""
+            info = Vertical(
+                Label(f"{btn.label}{yolo_note}", classes="session-title"),
+                Label(f"prefix: {btn.prefix}", classes="session-meta label-muted"),
+                Label(f"$ {btn.command}", classes="session-meta label-muted"),
+                classes="session-info",
+            )
+            buttons = Horizontal(
+                Button(
+                    "↑",
+                    id=f"btn-up-{idx}",
+                    classes="session-btn",
+                    disabled=idx == 0,
+                ),
+                Button(
+                    "↓",
+                    id=f"btn-down-{idx}",
+                    classes="session-btn",
+                    disabled=idx == last,
+                ),
+                Button("Edit", id=f"btn-edit-{idx}", classes="session-btn"),
+                Button(
+                    "Delete",
+                    id=f"btn-delete-{idx}",
+                    classes="session-btn -destructive",
+                    variant="error",
+                ),
+                classes="session-buttons",
+            )
+            rows.append(
+                Vertical(
+                    Horizontal(info, buttons, classes="session-header-row"),
+                    classes="session-item",
+                )
+            )
+        return rows
+
+    def _rerender(self) -> None:
+        """Rebuild the list container after add/edit/delete/reorder."""
+        container = self.query_one("#buttons-list", VerticalScroll)
+        container.remove_children()
+        container.mount_all(self._build_rows())
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        btn_id = event.button.id or ""
+        if btn_id == "btn-cancel":
+            self.dismiss(None)
+        elif btn_id == "btn-save":
+            self.dismiss(self._buttons)
+        elif btn_id == "btn-add":
+            self._add_button()
+        elif btn_id.startswith("btn-up-"):
+            self._swap(int(btn_id.removeprefix("btn-up-")), -1)
+        elif btn_id.startswith("btn-down-"):
+            self._swap(int(btn_id.removeprefix("btn-down-")), 1)
+        elif btn_id.startswith("btn-edit-"):
+            self._edit_button(int(btn_id.removeprefix("btn-edit-")))
+        elif btn_id.startswith("btn-delete-"):
+            idx = int(btn_id.removeprefix("btn-delete-"))
+            self._buttons.pop(idx)
+            self._rerender()
+
+    def _swap(self, idx: int, delta: int) -> None:
+        j = idx + delta
+        if 0 <= j < len(self._buttons):
+            self._buttons[idx], self._buttons[j] = self._buttons[j], self._buttons[idx]
+            self._rerender()
+
+    @work
+    async def _add_button(self) -> None:
+        result = await self.app.push_screen_wait(
+            CustomButtonEditModal(
+                existing=None,
+                other_labels={b.label for b in self._buttons},
+                other_prefixes={b.prefix for b in self._buttons},
+            )
+        )
+        if result is not None:
+            self._buttons.append(result)
+            self._rerender()
+
+    @work
+    async def _edit_button(self, idx: int) -> None:
+        existing = self._buttons[idx]
+        others = [b for i, b in enumerate(self._buttons) if i != idx]
+        result = await self.app.push_screen_wait(
+            CustomButtonEditModal(
+                existing=existing,
+                other_labels={b.label for b in others},
+                other_prefixes={b.prefix for b in others},
+            )
+        )
+        if result is not None:
+            self._buttons[idx] = result
+            self._rerender()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
