@@ -38,4 +38,7 @@ jobs:
         run: uv build
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.13.0
+        # v1.14+ ships twine 7 / packaging 26, which understand the
+        # Metadata-Version 2.5 that hatchling >= 1.32 emits. v1.13 (twine 6)
+        # rejects it with "InvalidDistribution: '2.5' is not a valid metadata version".
+        uses: pypa/gh-action-pypi-publish@v1.14.2
