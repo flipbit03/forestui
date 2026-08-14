@@ -3,10 +3,10 @@
          gh cli: unauth'd         │
 ──────────────────────────────────│  MAIN REPOSITORY
  ▼  alpha                         │  Repository: beta
- └ └─  wt-a                       │  Branch:     main
+ └ └─  wt-a-renamed               │  Branch:     main
  ▼  beta                          │  Commit:     <sha> (<rel>)
-                                  │
-                                  │  ┌────────────────────────┐ ┌───────────────┐
+ ▼  gamma                         │
+ └ └─  gamma-imported             │  ┌────────────────────────┐ ┌───────────────┐
                                   │  │ ⟳ Git Pull (No remote) │ │  Add Worktree │
                                   │  └────────────────────────┘ └───────────────┘
                                   │

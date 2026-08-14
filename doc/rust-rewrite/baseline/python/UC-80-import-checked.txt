@@ -1,4 +1,3 @@
-vim stub .
 
 
 
@@ -24,6 +23,24 @@ vim stub .
 
 
 
+                              ┌──────────────────────────────────────────────────────────────────────────────┐
+                              │                                                                              │
+                              │   Add Repository                                                             │
+                              │                                                                              │
+                              │  Repository Path                                                             │
+                              │  ┌────────────────────────────────────────────────────────────────────────┐  │
+                              │  │  olders/q5/_wy0ccmd4lx3khrz8tlz_g2c0000gn/T/tmp.wEMAwIFEfH/src/gamma   │  │
+                              │  └────────────────────────────────────────────────────────────────────────┘  │
+                              │  Repository: gamma                                                           │
+                              │  ▊▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▎                                          │
+                              │  ▊ ▐X▌ Import existing worktrees  ▎                                          │
+                              │  ▊▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▎                                          │
+                              │                                                                              │
+                              │                        ┌────────┐ ┌────────────────┐                         │
+                              │                        │ Cancel │ │ Add Repository │                         │
+                              │                        └────────┘ └────────────────┘                         │
+                              │                                                                              │
+                              └──────────────────────────────────────────────────────────────────────────────┘
 
 
 
@@ -50,21 +67,4 @@ vim stub .
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-[forestui-<  4:claude:alpha:wt-a  5:yolo:alpha:wt-a  6:term:alpha:wt-a:2  7:edit:beta* 8:claude:beta-"<host>" <clock>
+[forestui-0:forestui-dev-<hhmm>* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:al>"<host>" <clock>

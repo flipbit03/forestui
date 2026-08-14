@@ -98,8 +98,9 @@ seed_sessions() {
 SESSION
   done
 }
+# Repository only. Seeding the worktree too pushes Textual's RENAME inputs off
+# a 70-row screen, and the rename flow then clicks on nothing.
 seed_sessions "$ROOT/src/alpha" 3
-seed_sessions "$ROOT/forest/alpha/wt-a" 2
 
 cat > "$ROOT/home/.config/forestui/settings.json" <<'EOF'
 {"default_editor":"vim","default_terminal":"","branch_prefix":"feat/","theme":"system",

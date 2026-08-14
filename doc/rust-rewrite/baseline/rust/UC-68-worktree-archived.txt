@@ -25,20 +25,20 @@
                                   │ ▐ New Session ▌ ▐ New Session: YOLO ▌ ▐ Opus ▌
                                   │
                                   │ RECENT SESSIONS
-                                  │ ┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐
-                                  │ │ session 2: refactor the detail pane so the cards line up                                            │
-                                  │ │ > and then check it against the python bui...                                                       │
-                                  │ │ 12 days ago • 2 msgs                                                                                │
-                                  │ │ ▐ Resume ▌ ▐ YOLO ▌ ▐ Opus ▌                                                                        │
-                                  │ └─────────────────────────────────────────────────────────────────────────────────────────────────────┘
-                                  │
-                                  │ ┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐
-                                  │ │ session 1: refactor the detail pane so the cards line up                                            │
-                                  │ │ > and then check it against the python bui...                                                       │
-                                  │ │ 13 days ago • 2 msgs                                                                                │
-                                  │ │ ▐ Resume ▌ ▐ YOLO ▌ ▐ Opus ▌                                                                        │
-                                  │ └─────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                  │ No sessions found
                                   │
                                   │ ───────────────────────────────────────────────────────────────────────────────────────────────────────
+                                  │
+                                  │ RENAME
+                                  │ Worktree name  wt-a
+                                  │ Branch name    feat/wt-a
+                                  │
+                                  │ ───────────────────────────────────────────────────────────────────────────────────────────────────────
+                                  │
+                                  │ MANAGE
+                                  │ ▐ Unarchive ▌ ▐ Delete ▌
+                                  │
+                                  │
+                                  │
  q  Quit   a  Add Repo   w  Add Worktree   e  Editor   t  Terminal   o  Files   n  Claude   y  ClaudeYOLO   h  Archive   d  Delete   s  Sett
 [forestui-0:forestui-dev-<hhmm>* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:al>"<host>" <clock>
