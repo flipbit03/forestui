@@ -261,6 +261,7 @@ class ForestApp(App[None]):
             result = self._state.find_worktree(selection.worktree_id)
             if result:
                 repo, worktree = result
+                path_exists = worktree.get_path().exists()
                 # Get commit info
                 commit_hash = ""
                 commit_time = None
@@ -284,6 +285,7 @@ class ForestApp(App[None]):
                         commit_time=commit_time,
                         has_remote=has_remote,
                         custom_buttons=self._settings_service.settings.custom_buttons,
+                        path_exists=path_exists,
                     )
                 )
                 # Fetch sessions in background
