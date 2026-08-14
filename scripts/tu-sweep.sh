@@ -53,6 +53,40 @@ for stub in vim mc claude; do
   chmod +x "$ROOT/bin/$stub"
 done
 
+# A `gh` that answers the four calls both builds make. Without it the GitHub
+# section renders "No issues found" on both sides and the issue rows — card,
+# title, labels, Create WT button — go uncompared, which is exactly how the
+# session cards stayed unexamined for so long.
+cat > "$ROOT/bin/gh" <<'GH'
+#!/bin/sh
+case "$1 $2" in
+  "auth status") echo "Logged in to github.com as sweep-user"; exit 0 ;;
+  "api user")    echo "sweep-user"; exit 0 ;;
+  "repo view")   echo '{"owner":{"login":"sweep-user"},"name":"alpha"}'; exit 0 ;;
+  "issue list")
+    # Only the --assignee query returns rows; the --author one returns none, so
+    # the de-duplication path is exercised too.
+    case "$*" in
+      *--assignee*)
+        cat <<'JSON'
+[{"number":326,"title":"Fansly conversation discovery has no backoff","state":"OPEN",
+  "url":"https://example.invalid/326","createdAt":"2026-08-01T10:00:00Z",
+  "updatedAt":"2026-08-02T10:00:00Z","author":{"login":"sweep-user"},
+  "assignees":[{"login":"sweep-user"}],"labels":[{"name":"bug","color":"ff0000"}]},
+ {"number":298,"title":"Proactive metrics: coalesced FIRE rows overcount","state":"OPEN",
+  "url":"https://example.invalid/298","createdAt":"2026-07-20T10:00:00Z",
+  "updatedAt":"2026-07-21T10:00:00Z","author":{"login":"sweep-user"},
+  "assignees":[],"labels":[{"name":"metrics","color":"00ff00"},{"name":"p2","color":"0000ff"}]}]
+JSON
+        ;;
+      *) echo "[]" ;;
+    esac
+    exit 0 ;;
+esac
+exit 1
+GH
+chmod +x "$ROOT/bin/gh"
+
 cat > "$ROOT/home/.gitconfig" <<'EOF'
 [user]
   name = Test
@@ -191,6 +225,24 @@ tu run --name "$SESS" --size 140x44 \
 sleep 6
 
 capture UC-53 boot-repository-detail
+
+# UC-95/96: the fixture must actually exercise every section, and the capture
+# must be tall enough to show it. A section that falls back to its empty state —
+# or scrolls off the frame — is a section nobody is comparing. The session cards
+# went unexamined that way for days, and the issue rows right behind them.
+tu resize --name "$SESS" 140x140 >/dev/null 2>&1
+sleep 2.0
+capture UC-96 repository-pane-full-height
+tall="$FRAMES/UC-96-repository-pane-full-height.txt"
+
+has_in_tall() { grep -qE "$1" "$tall" 2>/dev/null && echo yes || echo no; }
+assert UC-96 sessions-rendered "yes" "$(has_in_tall 'msgs')"
+assert UC-96 issues-rendered   "yes" "$(has_in_tall '#326|#298')"
+assert UC-96 no-empty-sections "yes" \
+  "$(grep -qE 'No sessions found|No issues found|No repositories' "$tall" && echo no || echo yes)"
+
+tu resize --name "$SESS" 140x44 >/dev/null 2>&1
+sleep 1.5
 
 # UC-90: mouse reporting must be on, but must NOT be any-motion tracking.
 # `EnableMouseCapture` turns on ?1003h, so the terminal reports every pointer
