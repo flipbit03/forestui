@@ -5,16 +5,16 @@
  beta                             │ Branch:     feat/wt-a
                                   │ Based on:   main (<sha>)
                                   │ Commit:     <sha> (<rel>)
-                                  │  ⟳ Git Pull (No remote)
+                                  │ ▐ ⟳ Git Pull (No remote) ▌
                                   │
                                   │ LOCATION
                                   │ <ROOT>/forest/alpha/wt-a
                                   │
                                   │ OPEN IN
-                                  │   Editor    Terminal    Files
+                                  │ ▐ Editor ▌ ▐ Terminal ▌ ▐ Files ▌
                                   │
                                   │ CLAUDE
-                                  │  New Session   New Session: YOLO   Opus
+                                  │ ▐ New Session ▌ ▐ New Session: YOLO ▌ ▐ Opus ▌
                                   │
                                   │ RECENT SESSIONS
                                   │ No sessions found
@@ -24,7 +24,7 @@
                                   │ Branch name    feat/wt-a
                                   │
                                   │ MANAGE
-                                  │   Archive    Delete
+                                  │ ▐ Archive ▌ ▐ Delete ▌
                                   │
                                   │
                                   │

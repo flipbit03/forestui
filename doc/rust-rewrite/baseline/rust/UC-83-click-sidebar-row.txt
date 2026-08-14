@@ -1,14 +1,12 @@
  forestui v0.0.0
-         gh cli: unauth'd           WORKTREE
- alpha                            │ Repository: alpha
- beta                             │ Worktree:   wt-a
- Archived                         │ Branch:     feat/wt-a
-   wt-a (alpha)                   │ Based on:   main (<sha>)
-                                  │ Commit:     <sha> (<rel>)
-                                  │ ▐ ⟳ Git Pull (No remote) ▌
-                                  │
+         gh cli: unauth'd           MAIN REPOSITORY
+ alpha                            │ Repository: beta
+└─ wt-a-renamed [feat/wt-a-v2]    │ Branch:     main
+ beta                             │ Commit:     <sha> (<rel>)
+ gamma                            │ ▐ ⟳ Git Pull (No remote) ▌ ▐ Add Worktree ▌
+└─ gamma-imported [feat/imported] │
                                   │ LOCATION
-                                  │ <ROOT>/forest/alpha/wt-a
+                                  │ <ROOT>/src/beta
                                   │
                                   │ OPEN IN
                                   │ ▐ Editor ▌ ▐ Terminal ▌ ▐ Files ▌
@@ -19,12 +17,14 @@
                                   │ RECENT SESSIONS
                                   │ No sessions found
                                   │
-                                  │ RENAME
-                                  │ Worktree name  wt-a
-                                  │ Branch name    feat/wt-a
+                                  │ MY OPEN GITHUB ISSUES ▐ ↻ ▌
+                                  │ No issues found
                                   │
                                   │ MANAGE
-                                  │ ▐ Unarchive ▌ ▐ Delete ▌
+                                  │ ▐ Remove Repository ▌
+                                  │
+                                  │
+                                  │
                                   │
                                   │
                                   │

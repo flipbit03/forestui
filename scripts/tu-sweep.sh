@@ -61,7 +61,7 @@ cat > "$ROOT/home/.gitconfig" <<'EOF'
   defaultBranch = main
 EOF
 
-for name in alpha beta; do
+for name in alpha beta gamma; do
   d="$ROOT/src/$name"
   mkdir -p "$d"
   git -c init.defaultBranch=main init -q "$d"
@@ -73,6 +73,10 @@ for name in alpha beta; do
 done
 git -C "$ROOT/src/alpha" worktree add -q -b feat/wt-a "$ROOT/forest/alpha/wt-a"
 REF="$(git -C "$ROOT/src/alpha" rev-parse --short HEAD)"
+
+# gamma is deliberately NOT in the config, and owns a worktree OUTSIDE the
+# forest directory — that is what "Import existing worktrees" has to discover.
+git -C "$ROOT/src/gamma" worktree add -q -b feat/imported "$ROOT/outside/gamma-imported"
 
 cat > "$ROOT/home/.config/forestui/settings.json" <<'EOF'
 {"default_editor":"vim","default_terminal":"","branch_prefix":"feat/","theme":"system",
@@ -91,7 +95,9 @@ EOF
 # ---------------------------------------------------------------- helpers
 
 press() { tu press --name "$SESS" "$@" >/dev/null 2>&1; }
-type_()  { tu type  --name "$SESS" "$1" >/dev/null 2>&1; }
+# `--` matters: text starting with a dash is otherwise parsed as a flag,
+# which silently types nothing at all.
+type_()  { tu type  --name "$SESS" -- "$1" >/dev/null 2>&1; }
 focus_app() { press Ctrl+B 0; sleep 0.7; }
 
 # Wait until the screen shows <regex>, rather than sleeping a fixed amount.
@@ -99,15 +105,15 @@ focus_app() { press Ctrl+B 0; sleep 0.7; }
 # two builds at different points in the same interaction.
 await() { tu wait --name "$SESS" --text "$1" --timeout "${2:-12000}" >/dev/null 2>&1; }
 
-# capture <UC-ID> <slug> — one PNG plus one normalised text frame.
+# capture <UC-ID> <slug> [session] — one PNG plus one normalised text frame.
 #
 # Volatile cells (relative times, commit hashes, temp paths, the tmux clock and
 # the session's own dev-mode timestamp) are masked so two runs of the same build
 # diff clean and two builds differ only where behaviour differs.
 capture() {
-  local id="$1" slug="$2"
-  tu screenshot --name "$SESS" --png -o "$SHOTS/$id-$slug.png" >/dev/null 2>&1
-  tu screenshot --name "$SESS" 2>/dev/null | ROOT="$ROOT" python3 -c '
+  local id="$1" slug="$2" sess="${3:-$SESS}"
+  tu screenshot --name "$sess" --png -o "$SHOTS/$id-$slug.png" >/dev/null 2>&1
+  tu screenshot --name "$sess" 2>/dev/null | ROOT="$ROOT" python3 -c '
 import json, os, re, sys
 root = os.environ["ROOT"]
 text = json.load(sys.stdin)["content"]
@@ -121,6 +127,21 @@ text = re.sub(r"\"[0-9a-f-]{8,}\"", "\"<host>\"", text)
 print("\n".join(line.rstrip() for line in text.splitlines()))
 ' > "$FRAMES/$id-$slug.txt"
   printf '  %s %s\n' "$id" "$slug"
+}
+
+# assert <UC-ID> <description> <expected> <actual>
+#
+# Screens prove what the user sees; these prove what actually happened on disk.
+# Both builds write the same file, so the outcomes diff as easily as the frames.
+ASSERTIONS="$FRAMES/ASSERTIONS.txt"
+: > "$ASSERTIONS"
+assert() {
+  local id="$1" what="$2" expected="$3" actual="$4" verdict=FAIL
+  [ "$expected" = "$actual" ] && verdict=PASS
+  printf '%-4s %-9s %-46s expected=%-28s actual=%s\n' \
+    "$verdict" "$id" "$what" "$expected" "$actual" >> "$ASSERTIONS"
+  [ "$verdict" = PASS ] || printf '    !! %s %s: expected %s, got %s\n' \
+    "$id" "$what" "$expected" "$actual" >&2
 }
 
 # ---------------------------------------------------------------- run
@@ -196,4 +217,212 @@ capture UC-69 worktree-unarchived
 focus_app; press r; sleep 1.5
 capture UC-70 refresh
 
+# ------------------------------------------------- flows (UC-78 .. UC-82)
+#
+# Multi-step flows. Unlike the single-key sweep these also assert on disk, in
+# ASSERTIONS.txt, because the interesting part of a rename or an import is what
+# it did to the worktree and the config — not only what the screen said.
+#
+# The two builds reach the same controls differently: the Rust detail pane is a
+# keyboard focus ring, the Textual one is a scrollable pane of mouse-first
+# widgets (ratatui here ignores mouse entirely). Each flow therefore branches on
+# $LABEL for the *interaction* while asserting the same *outcome*.
+
+cfg() { python3 -c "
+import json,sys
+d=json.load(open('$ROOT/forest/.forestui-config.json'))
+print(eval(sys.argv[1], {'d': d}))" "$1" 2>/dev/null || echo "<unreadable>"; }
+
+# A taller terminal so the RENAME section is on screen in both builds; the
+# Textual layout needs roughly 60 rows to reach it without scrolling.
+tu resize --name "$SESS" 140x70 >/dev/null 2>&1; sleep 1.5
+focus_app
+
+# --- UC-78 / UC-79: rename the worktree, then its branch ---------------------
+#
+# Walk to the top first. Earlier phases moved the cursor, and a relative Down
+# from wherever it happened to be landed on the wrong row — which silently made
+# this flow rename nothing at all.
+for _ in 1 2 3 4 5; do press Up; sleep 0.2; done
+sleep 1.0
+press Down; sleep 1.5
+await "WORKTREE"
+capture UC-78 rename-before
+
+if [ "$LABEL" = "rust" ]; then
+  # Click the field rather than counting Tab/Down steps: the focus ring's length
+  # depends on custom buttons and sessions, and after an earlier action focus may
+  # already be in the detail pane, so a blind Tab toggles the wrong way.
+  tu mouse click --name "$SESS" --on-text "Worktree name" >/dev/null 2>&1
+  sleep 0.8; press End; type_ "-renamed"; sleep 0.8
+else
+  # Textual: click into the pre-filled Input, then append. The double border
+  # (`│  │`) is what distinguishes the input box from the label of the same name
+  # elsewhere on screen, so target that rather than an occurrence count.
+  tu mouse click --name "$SESS" --on-regex "│  │  wt-a" >/dev/null 2>&1
+  sleep 0.8; press End; type_ "-renamed"; sleep 0.8
+fi
+capture UC-78 rename-typed
+press Enter; sleep 3.5
+capture UC-78 rename-after
+
+assert UC-78 wt-name "wt-a-renamed" "$(cfg "d['repositories'][0]['worktrees'][0]['name']")"
+assert UC-78 wt-dir-exists "yes" "$([ -d "$ROOT/forest/alpha/wt-a-renamed" ] && echo yes || echo no)"
+assert UC-78 old-dir-gone "yes" "$([ -d "$ROOT/forest/alpha/wt-a" ] && echo no || echo yes)"
+assert UC-78 git-worktree-ok "yes" \
+  "$(git -C "$ROOT/forest/alpha/wt-a-renamed" rev-parse --git-dir >/dev/null 2>&1 && echo yes || echo no)"
+
+focus_app
+if [ "$LABEL" = "rust" ]; then
+  tu mouse click --name "$SESS" --on-text "Branch name" >/dev/null 2>&1
+  sleep 0.8; press End; type_ "-v2"; sleep 0.8
+else
+  tu mouse click --name "$SESS" --on-regex "│  │  feat/wt-a" >/dev/null 2>&1
+  sleep 0.8; press End; type_ "-v2"; sleep 0.8
+fi
+press Enter; sleep 3.5
+capture UC-79 rename-branch-after
+
+assert UC-79 branch-in-config "feat/wt-a-v2" "$(cfg "d['repositories'][0]['worktrees'][0]['branch']")"
+assert UC-79 branch-checked-out "feat/wt-a-v2" \
+  "$(git -C "$ROOT/forest/alpha/wt-a-renamed" branch --show-current 2>/dev/null || echo '<none>')"
+
+# --- UC-80: add a repository with "Import existing worktrees" ----------------
+focus_app
+press a; await "Repository Path"; sleep 0.8
+type_ "$ROOT/src/gamma"; sleep 1.0
+if [ "$LABEL" = "rust" ]; then
+  press Tab; sleep 0.4          # focus 1 = checkbox
+  press Space; sleep 0.4
+else
+  tu mouse click --name "$SESS" --on-text "Import existing worktrees" >/dev/null 2>&1
+  sleep 0.6
+fi
+capture UC-80 import-checked
+if [ "$LABEL" = "rust" ]; then
+  press Tab; sleep 0.4; press Enter
+else
+  tu mouse click --name "$SESS" --on-regex "│ Add Repository │" >/dev/null 2>&1
+fi
+sleep 4
+capture UC-80 import-after
+
+assert UC-80 gamma-tracked "gamma" "$(cfg "[r['name'] for r in d['repositories']][-1]")"
+assert UC-80 imported-worktree "['feat/imported']" \
+  "$(cfg "[w['branch'] for w in d['repositories'][-1]['worktrees']]")"
+
+tu resize --name "$SESS" 140x44 >/dev/null 2>&1; sleep 1
+
+# --- UC-81: a second terminal joins as a grouped session ---------------------
+#
+# Same TMUX_TMPDIR means the same tmux server, so the second instance joins the
+# window group instead of starting its own. Both terminals must see the same
+# windows while navigating them independently.
+SESS2="$SESS-b"
+tu kill --name "$SESS2" >/dev/null 2>&1
+tu run --name "$SESS2" --size 140x44 \
+  --env TMUX_TMPDIR="$TMUXDIR" \
+  --env HOME="$ROOT/home" \
+  --env PATH="$CMD_DIR:$ROOT/bin:$(dirname "$(command -v tmux)"):/usr/bin:/bin:/usr/sbin:/sbin" \
+  --env FORESTUI_NO_AUTO_UPDATE=1 \
+  --cwd "$REPO" \
+  -- env -u TMUX "${FUI_CMD[@]}" "$ROOT/forest" >/dev/null 2>&1
+sleep 7
+capture UC-81 grouped-terminal-b "$SESS2"
+capture UC-81 grouped-terminal-a "$SESS"
+
+winlist() {
+  tu screenshot --name "$1" 2>/dev/null | python3 -c "
+import json,sys,re
+line=json.load(sys.stdin)['content'].splitlines()[-1]
+print(len(re.findall(r'\s\d+:', line)))"
+}
+assert UC-81 both-see-same-window-count "$(winlist "$SESS")" "$(winlist "$SESS2")"
+
+# Terminal B switches window; terminal A must not follow.
+a_before="$(tu screenshot --name "$SESS" 2>/dev/null | python3 -c "
+import json,sys,re
+line=json.load(sys.stdin)['content'].splitlines()[-1]
+m=re.search(r'(\d+):\S*\*', line); print(m.group(1) if m else '?')")"
+tu press --name "$SESS2" Ctrl+B n >/dev/null 2>&1; sleep 2
+a_after="$(tu screenshot --name "$SESS" 2>/dev/null | python3 -c "
+import json,sys,re
+line=json.load(sys.stdin)['content'].splitlines()[-1]
+m=re.search(r'(\d+):\S*\*', line); print(m.group(1) if m else '?')")"
+capture UC-81 grouped-b-switched "$SESS2"
+capture UC-81 grouped-a-unmoved "$SESS"
+assert UC-81 terminal-a-stayed-put "$a_before" "$a_after"
+
+tu kill --name "$SESS2" >/dev/null 2>&1
+
+# --- UC-82: detach, then relaunch and reattach -------------------------------
+#
+# Launching through a login shell so the shell survives the detach; if forestui
+# were the tu process itself, detaching would kill the session outright.
+SESS3="$SESS-c"
+tu kill --name "$SESS3" >/dev/null 2>&1
+tu run --name "$SESS3" --size 140x44 \
+  --env TMUX_TMPDIR="$TMUXDIR" \
+  --env HOME="$ROOT/home" \
+  --env PATH="$CMD_DIR:$ROOT/bin:$(dirname "$(command -v tmux)"):/usr/bin:/bin:/usr/sbin:/sbin" \
+  --env FORESTUI_NO_AUTO_UPDATE=1 \
+  --cwd "$REPO" \
+  -- env -u TMUX bash --noprofile --norc >/dev/null 2>&1
+sleep 2
+tu type --name "$SESS3" "${FUI_CMD[*]} $ROOT/forest" >/dev/null 2>&1
+tu press --name "$SESS3" Enter >/dev/null 2>&1
+tu wait --name "$SESS3" --text "MAIN REPOSITORY|WORKTREE|No repositories" --timeout 15000 >/dev/null 2>&1
+sleep 2
+capture UC-82 reattach-first-run "$SESS3"
+
+tu press --name "$SESS3" Ctrl+B d >/dev/null 2>&1; sleep 2
+capture UC-82 reattach-detached "$SESS3"
+
+tu type --name "$SESS3" "${FUI_CMD[*]} $ROOT/forest" >/dev/null 2>&1
+tu press --name "$SESS3" Enter >/dev/null 2>&1
+tu wait --name "$SESS3" --text "MAIN REPOSITORY|WORKTREE|No repositories" --timeout 15000 >/dev/null 2>&1
+sleep 2
+capture UC-82 reattach-second-run "$SESS3"
+
+# Reattaching must not leave a second forestui window behind.
+fui_windows="$(tu screenshot --name "$SESS3" 2>/dev/null | python3 -c "
+import json,sys,re
+line=json.load(sys.stdin)['content'].splitlines()[-1]
+print(len(re.findall(r'forestui(-dev-\d+)?[-*]?\s', line)))")"
+assert UC-82 single-forestui-window "1" "$fui_windows"
+
+tu kill --name "$SESS3" >/dev/null 2>&1
+
+# --- UC-83 .. UC-86: mouse ---------------------------------------------------
+#
+# Textual is mouse-first; ratatui has no built-in notion of a clickable widget,
+# so the Rust build records a rectangle per control each frame and resolves
+# clicks against that. Both builds are driven the same way here, by clicking on
+# label text, which is what a user actually does.
+
+screen_has() {
+  tu screenshot --name "$SESS" 2>/dev/null | python3 -c "
+import json,re,sys
+print('yes' if re.search(sys.argv[1], json.load(sys.stdin)['content']) else 'no')" "$1"
+}
+click_text() { tu mouse click --name "$SESS" --on-text "$1" >/dev/null 2>&1; }
+
+focus_app
+click_text "beta"; sleep 2
+capture UC-83 click-sidebar-row
+assert UC-83 detail-follows-click "yes" "$(screen_has 'Repository: beta')"
+
+focus_app
+click_text "Terminal"; sleep 3
+capture UC-84 click-detail-control
+assert UC-84 terminal-window-opened "yes" "$(screen_has 'term:beta')"
+
+focus_app
+press a; await "Repository Path"; sleep 0.8
+click_text "Cancel"; sleep 1.5
+capture UC-86 click-modal-cancel
+assert UC-86 modal-dismissed-by-click "no" "$(screen_has 'Repository Path')"
+
 echo "done: $LABEL"
+echo "assertions:"
+sed 's/^/  /' "$ASSERTIONS"

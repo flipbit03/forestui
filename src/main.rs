@@ -13,6 +13,7 @@ mod util;
 
 use app::App;
 use clap::Parser;
+use ratatui::crossterm;
 use std::io::Write;
 
 fn main() -> anyhow::Result<()> {
@@ -44,10 +45,13 @@ async fn run() -> anyhow::Result<()> {
     let mut app = App::new(tx, cli::VERSION.to_string());
 
     let mut terminal = ratatui::init();
+    // ratatui::init() does not turn the mouse on; without this every click is
+    // invisible to the app and only the keyboard works.
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
     app.on_start();
 
     let outcome = loop {
-        if let Err(error) = terminal.draw(|frame| ui::draw(frame, &app)) {
+        if let Err(error) = terminal.draw(|frame| ui::draw(frame, &mut app)) {
             break Err(anyhow::Error::from(error));
         }
         let Some(event) = rx.recv().await else {
@@ -59,6 +63,7 @@ async fn run() -> anyhow::Result<()> {
         }
     };
 
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
     ratatui::restore();
     outcome
 }

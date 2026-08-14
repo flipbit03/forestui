@@ -68,18 +68,32 @@ pub fn cursor_unfocused() -> Style {
     Style::default().bg(BG_SELECTED).fg(TEXT_PRIMARY)
 }
 
+/// Background of a control ("button"), also used to draw its rounded caps.
+///
+/// The unfocused destructive shade matches the Textual build's
+/// `Button.-destructive` background, so a Delete button still reads as dangerous
+/// when the cursor is elsewhere.
+pub fn action_bg(focused: bool, destructive_action: bool) -> Color {
+    match (focused, destructive_action) {
+        (true, true) => Color::Rgb(0x4D, 0x28, 0x28),
+        (true, false) => ACCENT_DARK,
+        (false, true) => Color::Rgb(0x3D, 0x20, 0x20),
+        (false, false) => BG_ELEVATED,
+    }
+}
+
 /// Style for an actionable item ("button") in the detail pane.
 pub fn action(focused: bool, destructive_action: bool) -> Style {
-    match (focused, destructive_action) {
-        (true, true) => Style::default()
-            .bg(Color::Rgb(0x4D, 0x28, 0x28))
-            .fg(DESTRUCTIVE)
-            .add_modifier(Modifier::BOLD),
-        (true, false) => Style::default()
-            .bg(ACCENT_DARK)
-            .fg(TEXT_PRIMARY)
-            .add_modifier(Modifier::BOLD),
-        (false, true) => Style::default().fg(DESTRUCTIVE),
-        (false, false) => Style::default().bg(BG_ELEVATED).fg(TEXT_PRIMARY),
+    let style = Style::default()
+        .bg(action_bg(focused, destructive_action))
+        .fg(if destructive_action {
+            DESTRUCTIVE
+        } else {
+            TEXT_PRIMARY
+        });
+    if focused {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
     }
 }

@@ -1,14 +1,14 @@
  forestui v0.0.0
          gh cli: unauth'd           WORKTREE
  alpha                            │ Repository: alpha
- beta                             │ Worktree:   wt-a
- Archived                         │ Branch:     feat/wt-a
-   wt-a (alpha)                   │ Based on:   main (<sha>)
+└─ wt-a-renamed [feat/wt-a]       │ Worktree:   wt-a-renamed
+ beta                             │ Branch:     feat/wt-a
+                                  │ Based on:   main (<sha>)
                                   │ Commit:     <sha> (<rel>)
                                   │ ▐ ⟳ Git Pull (No remote) ▌
                                   │
                                   │ LOCATION
-                                  │ <ROOT>/forest/alpha/wt-a
+                                  │ <ROOT>/forest/alpha/wt-a-renamed
                                   │
                                   │ OPEN IN
                                   │ ▐ Editor ▌ ▐ Terminal ▌ ▐ Files ▌
@@ -20,11 +20,37 @@
                                   │ No sessions found
                                   │
                                   │ RENAME
-                                  │ Worktree name  wt-a
+                                  │ Worktree name  wt-a-renamed
                                   │ Branch name    feat/wt-a
                                   │
                                   │ MANAGE
-                                  │ ▐ Unarchive ▌ ▐ Delete ▌
+                                  │ ▐ Archive ▌ ▐ Delete ▌
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
                                   │
                                   │
                                   │

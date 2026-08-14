@@ -1,12 +1,12 @@
  forestui v0.0.0
          gh cli: unauth'd           MAIN REPOSITORY
- alpha                            │ Repository: alpha
-└─ wt-a [feat/wt-a]               │ Branch:     main
+ alpha                            │ Repository: gamma
+└─ wt-a-renamed [feat/wt-a-v2]    │ Branch:     main
  beta                             │ Commit:     <sha> (<rel>)
-                                  │ ▐ ⟳ Git Pull (No remote) ▌ ▐ Add Worktree ▌
-                                  │
+ gamma                            │ ▐ ⟳ Git Pull (No remote) ▌ ▐ Add Worktree ▌
+└─ gamma-imported [feat/imported] │
                                   │ LOCATION
-                                  │ <ROOT>/src/alpha
+                                  │ <ROOT>/src/gamma
                                   │
                                   │ OPEN IN
                                   │ ▐ Editor ▌ ▐ Terminal ▌ ▐ Files ▌
@@ -40,5 +40,31 @@
                                   │
                                   │
                                   │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │                                            Imported 1 worktrees
+                                  │
  q  Quit   a  Add Repo   w  Add Worktree   e  Editor   t  Terminal   o  Files   n  Claude   y  ClaudeYOLO   h  Archive   d  Delete   s  Sett
-[forestui-0:forestui-dev-<hhmm>*                                                                       "<host>" <clock>
+[forestui-0:forestui-dev-<hhmm>* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:al>"<host>" <clock>

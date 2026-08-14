@@ -5,27 +5,27 @@
  beta                             │ Branch:     feat/wt-a
                                   │ Based on:   main (<sha>)
                                   │ Commit:     <sha> (<rel>)
-                                  │  ⟳ Git Pull (No remote)
+                                  │ ▐ ⟳ Git Pull (No remote) ▌
                                   │
                                   │ LOCATION
                                   │ <ROOT>/forest/alpha/wt-a
                                   │
                                   │ OPEN IN
-                                  │   Editor    Terminal    Files
+                                  │ ▐ Editor ▌ ▐ Terminal ▌ ▐ Files ▌
 ┌ Settings ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │DEFAULT EDITOR                                                                                                                            │
-│ ◂ Vim (tmux) ▸                                                                                                                           │
+│▐ ◂ Vim (tmux) ▸ ▌                                                                                                                        │
 │BRANCH PREFIX                                                                                                                             │
 │┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐│
 ││feat/                                                                                                                                   ││
 │└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘│
 │THEME                                                                                                                                     │
-│ ◂ System ▸                                                                                                                               │
+│▐ ◂ System ▸ ▌                                                                                                                            │
 │CUSTOM CLAUDE BUTTONS                                                                                                                     │
 │1 custom button configured                                                                                                                │
-│ Manage Custom Buttons...                                                                                                                 │
+│▐ Manage Custom Buttons... ▌                                                                                                              │
 │                                                                                                                                          │
-│ Save    Cancel                                                                                                                           │
+│▐ Save ▌  ▐ Cancel ▌                                                                                                                      │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
                                   │
                                   │

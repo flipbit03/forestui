@@ -5,7 +5,7 @@
  beta                             │ Branch:     feat/wt-a
                                   │ Based on:   main (<sha>)
                                   │ Commit:     <sha> (<rel>)
-                                  │  ⟳ Git Pull (No remote)
+                                  │ ▐ ⟳ Git Pull (No remote) ▌
                                   │
                                   │ LOCATION
                                   │ <ROOT>/forest/alpha/wt-a
@@ -19,13 +19,13 @@
                               │└────────────────────────────────────────────────────────────────────────────┘│
                               │                                                                              │
                               │Branch                                                                        │
-                              │◂ New Branch   Existing ▸                                                     │
+                              │◂  ▐ New Branch ▌  ▐ Existing ▌  ▸                                            │
                               │┌────────────────────────────────────────────────────────────────────────────┐│
                               ││feat/my-feature                                                             ││
                               │└────────────────────────────────────────────────────────────────────────────┘│
                               │                                                                              │
                               │                                                                              │
-                              │ Create Worktree    Cancel                                                    │
+                              │▐ Create Worktree ▌  ▐ Cancel ▌                                               │
                               └──────────────────────────────────────────────────────────────────────────────┘
                                   │
                                   │

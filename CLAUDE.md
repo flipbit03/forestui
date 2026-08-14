@@ -94,6 +94,18 @@ objects and no CSS. Two consequences shape the code:
    must stay green.
 2. **Layout is `Layout`/`Constraint`, not stylesheets.** Sizes are computed per
    frame; nothing is "auto height".
+3. **Mouse support is manual.** There is no widget tree to hit-test against, so
+   every frame the renderers record the rectangle of each clickable thing via
+   `App::push_hit(rect, HitTarget::…)`, and `App::handle_mouse` resolves a click
+   against that list (last recorded wins, so a modal takes clicks from the panes
+   it covers). A control that is drawn but never recorded is dead to the mouse —
+   that was a real regression: the first Rust build enabled no mouse capture at
+   all and every click did nothing. `main.rs` must keep `EnableMouseCapture`.
+
+Controls are drawn with `ui::button()`, which renders a filled pill with rounded
+half-block caps so they read as buttons rather than plain labels. Use
+`ui::button_width()` for the rectangle you record, so the hit region matches
+what was drawn.
 
 ### Async and the event loop
 Everything funnels through one `mpsc::UnboundedReceiver<AppEvent>` in

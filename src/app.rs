@@ -103,6 +103,45 @@ pub struct Notification {
     pub created: Instant,
 }
 
+/// Something a mouse click can land on.
+///
+/// Immediate mode keeps no widget tree, so there is nothing to ask "what is at
+/// this cell?". Each frame the renderers record the rectangle of every clickable
+/// thing, and clicks are resolved against that list.
+/// What clicking a modal control should do.
+///
+/// Not every control activates: a click that focuses a text field must not also
+/// submit the modal, and clicking `◂ value ▸` should advance the value rather
+/// than accept the dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModalClick {
+    /// Buttons and checkboxes: focus, then activate.
+    Activate,
+    /// Text inputs: focus only.
+    Focus,
+    /// A `◂ value ▸` cycle: focus, then advance one step.
+    Cycle,
+    /// A row of a list: focus the list and select that row.
+    Row(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HitTarget {
+    SidebarRow(usize),
+    DetailItem(usize),
+    /// Focus index within the modal on top of the stack, and what a click does.
+    ModalControl {
+        index: usize,
+        click: ModalClick,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Hit {
+    pub rect: ratatui::layout::Rect,
+    pub target: HitTarget,
+}
+
 pub struct App {
     pub state: AppState,
     pub settings: Settings,
@@ -125,6 +164,9 @@ pub struct App {
     pub spinner_index: usize,
     pub last_issue_refresh: Instant,
     pub should_quit: bool,
+
+    /// Clickable regions recorded by the renderers for the current frame.
+    pub hits: Vec<Hit>,
 
     pub name_input: TextInput,
     pub branch_input: TextInput,
@@ -164,6 +206,7 @@ impl App {
             spinner_index: 0,
             last_issue_refresh: Instant::now(),
             should_quit: false,
+            hits: Vec::new(),
             name_input: TextInput::new(""),
             branch_input: TextInput::new(""),
             rename_target: None,
@@ -531,10 +574,126 @@ impl App {
         use ratatui::crossterm::event::{Event, KeyEventKind};
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key),
+            Event::Mouse(mouse) => self.handle_mouse(mouse),
             // tmux focus-events let the app refresh when the user comes back.
             Event::FocusGained => self.reload_detail(),
             _ => {}
         }
+    }
+
+    // -------------------------------------------------------------------- mouse
+
+    /// Drop the previous frame's clickable regions. Called at the start of draw.
+    pub fn clear_hits(&mut self) {
+        self.hits.clear();
+    }
+
+    pub fn push_hit(&mut self, rect: ratatui::layout::Rect, target: HitTarget) {
+        self.hits.push(Hit { rect, target });
+    }
+
+    /// Topmost target at a cell. Later hits win, so a modal drawn over the panes
+    /// takes the click rather than whatever it covers.
+    pub fn hit_at(&self, column: u16, row: u16) -> Option<HitTarget> {
+        self.hits
+            .iter()
+            .rev()
+            .find(|hit| {
+                let r = hit.rect;
+                column >= r.x && column < r.x + r.width && row >= r.y && row < r.y + r.height
+            })
+            .map(|hit| hit.target)
+    }
+
+    pub fn handle_mouse(&mut self, mouse: ratatui::crossterm::event::MouseEvent) {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+
+        match mouse.kind {
+            MouseEventKind::ScrollDown => {
+                self.scroll_focused(1);
+                return;
+            }
+            MouseEventKind::ScrollUp => {
+                self.scroll_focused(-1);
+                return;
+            }
+            MouseEventKind::Down(MouseButton::Left) => {}
+            _ => return,
+        }
+
+        let Some(target) = self.hit_at(mouse.column, mouse.row) else {
+            return;
+        };
+
+        // A modal owns every click while it is open, including the ones that
+        // land on the panes behind it.
+        if !self.modals.is_empty() {
+            if let HitTarget::ModalControl { index, click } = target {
+                self.click_modal_control(index, click);
+            }
+            return;
+        }
+
+        match target {
+            HitTarget::SidebarRow(index) => {
+                self.focus = Focus::Sidebar;
+                self.sidebar_index = index;
+                self.select_current_row();
+            }
+            HitTarget::DetailItem(index) => {
+                self.focus = Focus::Detail;
+                self.detail_index = index;
+                if let Some(DetailItem::Action(action)) = self.detail_items().get(index).cloned() {
+                    self.run_action(action);
+                }
+            }
+            HitTarget::ModalControl { .. } => {}
+        }
+    }
+
+    /// Move the focus ring of whichever pane has focus, for the scroll wheel.
+    fn scroll_focused(&mut self, delta: isize) {
+        match self.focus {
+            Focus::Sidebar => self.move_sidebar(delta),
+            Focus::Detail => {
+                let len = self.detail_items().len();
+                if len == 0 {
+                    return;
+                }
+                let next = (self.detail_index as isize + delta).clamp(0, len as isize - 1);
+                self.detail_index = next as usize;
+            }
+        }
+    }
+
+    /// Apply a click to a modal control: always focus it, then do whatever that
+    /// kind of control does when driven from the keyboard.
+    fn click_modal_control(&mut self, index: usize, click: ModalClick) {
+        use ratatui::crossterm::event::KeyCode;
+
+        if let Some(modal) = self.modals.last_mut() {
+            modal.set_focus(index);
+            if let ModalClick::Row(row) = click {
+                modal.set_row(row);
+            }
+        }
+        match click {
+            ModalClick::Activate => self.send_modal_key(KeyCode::Enter),
+            ModalClick::Cycle => self.send_modal_key(KeyCode::Right),
+            // Focusing a field must not submit the dialog, and selecting a row
+            // is already done above.
+            ModalClick::Focus | ModalClick::Row(_) => {}
+        }
+    }
+
+    fn send_modal_key(&mut self, code: ratatui::crossterm::event::KeyCode) {
+        use ratatui::crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+        self.handle_modal_key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
     }
 
     // --------------------------------------------------------------------- keys
@@ -1607,6 +1766,226 @@ mod tests {
             sessions: vec![],
         });
         assert!(app.sessions.is_some());
+    }
+
+    fn click(column: u16, row: u16) -> ratatui::crossterm::event::MouseEvent {
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn rect(x: u16, y: u16, width: u16, height: u16) -> ratatui::layout::Rect {
+        ratatui::layout::Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[tokio::test]
+    async fn hit_at_prefers_the_last_recorded_region() {
+        let (_dir, mut app) = app_with_fixture();
+        app.push_hit(rect(0, 0, 10, 1), HitTarget::SidebarRow(3));
+        // A modal drawn afterwards covers the same cell and must win.
+        app.push_hit(
+            rect(0, 0, 10, 1),
+            HitTarget::ModalControl {
+                index: 1,
+                click: ModalClick::Activate,
+            },
+        );
+
+        assert_eq!(
+            app.hit_at(5, 0),
+            Some(HitTarget::ModalControl {
+                index: 1,
+                click: ModalClick::Activate
+            })
+        );
+        assert_eq!(app.hit_at(50, 0), None, "outside every region");
+        assert_eq!(app.hit_at(5, 9), None, "wrong row");
+    }
+
+    #[tokio::test]
+    async fn clicking_a_sidebar_row_selects_it() {
+        let (_dir, mut app) = app_with_fixture();
+        assert!(app.state.selection.is_repository());
+
+        app.push_hit(rect(0, 1, 30, 1), HitTarget::SidebarRow(1));
+        app.handle_mouse(click(4, 1));
+
+        assert_eq!(app.sidebar_index, 1);
+        assert!(app.state.selection.is_worktree());
+        assert_eq!(app.focus, Focus::Sidebar);
+    }
+
+    #[tokio::test]
+    async fn clicking_a_detail_control_focuses_and_runs_it() {
+        let (_dir, mut app) = app_with_fixture();
+        app.sessions = Some(Vec::new());
+        app.issues = Some(Vec::new());
+
+        let index = app
+            .detail_items()
+            .iter()
+            .position(|item| *item == DetailItem::Action(Action::Terminal))
+            .expect("terminal control present");
+        app.push_hit(rect(40, 5, 12, 1), HitTarget::DetailItem(index));
+        app.handle_mouse(click(45, 5));
+
+        assert_eq!(app.focus, Focus::Detail);
+        assert_eq!(app.detail_index, index);
+        // The fixture's directories do not exist, so the action refuses loudly
+        // rather than silently opening a window somewhere else.
+        assert_eq!(app.notifications.len(), 1);
+        assert!(app.notifications[0].text.contains("no longer exists"));
+    }
+
+    #[tokio::test]
+    async fn clicking_a_detail_field_only_moves_focus() {
+        let (_dir, mut app) = app_with_fixture();
+        app.handle_key(key(KeyCode::Down));
+        app.sessions = Some(Vec::new());
+
+        let index = app
+            .detail_items()
+            .iter()
+            .position(|item| *item == DetailItem::Field(Field::BranchName))
+            .expect("rename field present");
+        app.push_hit(rect(40, 9, 20, 1), HitTarget::DetailItem(index));
+        app.handle_mouse(click(42, 9));
+
+        assert_eq!(app.detail_index, index);
+        assert!(app.notifications.is_empty(), "a field is not an action");
+    }
+
+    #[tokio::test]
+    async fn a_modal_swallows_clicks_on_the_panes_behind_it() {
+        let (_dir, mut app) = app_with_fixture();
+        app.handle_key(key(KeyCode::Char('a')));
+        assert_eq!(app.modals.len(), 1);
+
+        let before = app.sidebar_index;
+        app.push_hit(rect(0, 1, 30, 1), HitTarget::SidebarRow(1));
+        app.handle_mouse(click(4, 1));
+
+        assert_eq!(app.sidebar_index, before, "the modal keeps the click");
+        assert_eq!(app.modals.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn clicking_confirm_delete_runs_the_deletion() {
+        let (_dir, mut app) = app_with_fixture();
+        app.handle_key(key(KeyCode::Down));
+        let worktree_id = app.state.selection.worktree_id.expect("worktree selected");
+        app.handle_key(key(KeyCode::Char('d')));
+        assert!(matches!(app.modals.last(), Some(Modal::Confirm(_))));
+
+        // Index 1 is Delete; index 0 would be Cancel.
+        app.push_hit(
+            rect(10, 10, 10, 1),
+            HitTarget::ModalControl {
+                index: 1,
+                click: ModalClick::Activate,
+            },
+        );
+        app.handle_mouse(click(12, 10));
+
+        assert!(app.modals.is_empty());
+        assert!(app.state.find_worktree(worktree_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn clicking_a_field_or_cycle_does_not_submit_the_modal() {
+        let (_dir, mut app) = app_with_fixture();
+        app.handle_key(key(KeyCode::Char('s')));
+        assert_eq!(app.modals.len(), 1);
+
+        // Focus index 1 is the branch-prefix input. Clicking it must focus, not save.
+        app.push_hit(
+            rect(0, 0, 10, 3),
+            HitTarget::ModalControl {
+                index: 1,
+                click: ModalClick::Focus,
+            },
+        );
+        app.handle_mouse(click(2, 1));
+        assert_eq!(app.modals.len(), 1, "clicking a field closed the dialog");
+
+        // Index 0 is the editor cycle: clicking advances it, still without saving.
+        let before = match app.modals.last() {
+            Some(Modal::Settings(m)) => m.editor_index,
+            _ => panic!("settings modal expected"),
+        };
+        app.push_hit(
+            rect(0, 5, 20, 1),
+            HitTarget::ModalControl {
+                index: 0,
+                click: ModalClick::Cycle,
+            },
+        );
+        app.handle_mouse(click(3, 5));
+        assert_eq!(app.modals.len(), 1, "clicking a cycle closed the dialog");
+        match app.modals.last() {
+            Some(Modal::Settings(m)) => assert_ne!(m.editor_index, before, "cycle did not advance"),
+            _ => panic!("settings modal expected"),
+        }
+    }
+
+    #[tokio::test]
+    async fn clicking_a_branch_row_selects_that_row() {
+        use crate::modal::AddWorktreeModal;
+        let (_dir, mut app) = app_with_fixture();
+        let repo = app.state.repositories()[0].clone();
+        let branches = vec!["main".into(), "release-2".into(), "feat/other".into()];
+        let mut modal = AddWorktreeModal::new(
+            &repo,
+            branches,
+            vec![],
+            PathBuf::from("/forest"),
+            "feat/".into(),
+        );
+        modal.new_branch = false;
+        app.modals.push(Modal::AddWorktree(Box::new(modal)));
+
+        app.push_hit(
+            rect(0, 7, 40, 1),
+            HitTarget::ModalControl {
+                index: 3,
+                click: ModalClick::Row(2),
+            },
+        );
+        app.handle_mouse(click(5, 7));
+
+        match app.modals.last() {
+            Some(Modal::AddWorktree(m)) => {
+                assert_eq!(m.search_index, 2, "the clicked row was not selected");
+                assert_eq!(m.focus, 3, "focus did not move to the results list");
+            }
+            _ => panic!("add-worktree modal expected"),
+        }
+    }
+
+    #[tokio::test]
+    async fn scroll_wheel_moves_the_focused_pane() {
+        use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+        let (_dir, mut app) = app_with_fixture();
+        let wheel = |kind| MouseEvent {
+            kind,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        app.handle_mouse(wheel(MouseEventKind::ScrollDown));
+        assert_eq!(app.sidebar_index, 1);
+        app.handle_mouse(wheel(MouseEventKind::ScrollUp));
+        assert_eq!(app.sidebar_index, 0);
     }
 
     #[tokio::test]

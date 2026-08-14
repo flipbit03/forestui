@@ -120,6 +120,42 @@ impl Modal {
         }
     }
 
+    /// Move this modal's focus to `index`, as a click on that control does.
+    ///
+    /// The list-style modals do not have a focus ring, so the index means the
+    /// selected row for Custom Buttons and the choice for Confirm.
+    pub fn set_focus(&mut self, index: usize) {
+        match self {
+            Modal::AddRepository(m) => m.focus = index.min(AddRepositoryModal::FIELDS - 1),
+            Modal::AddWorktree(m) => m.focus = index.min(m.field_count() - 1),
+            Modal::CreateFromIssue(m) => m.focus = index.min(CreateFromIssueModal::FIELDS - 1),
+            Modal::Settings(m) => m.focus = index.min(SettingsModal::FIELDS - 1),
+            Modal::EditButton(m) => m.focus = index.min(EditButtonModal::FIELDS - 1),
+            Modal::CustomButtons(m) => {
+                if !m.buttons.is_empty() {
+                    m.selected = index.min(m.buttons.len() - 1);
+                }
+            }
+            Modal::Confirm(m) => m.confirm_focused = index == 1,
+        }
+    }
+
+    /// Select a row in whichever list this modal shows, for a click on it.
+    pub fn set_row(&mut self, row: usize) {
+        match self {
+            Modal::AddWorktree(m) => {
+                let count = m.matches().len();
+                if count > 0 {
+                    m.search_index = row.min(count - 1);
+                }
+            }
+            Modal::CustomButtons(m) if !m.buttons.is_empty() => {
+                m.selected = row.min(m.buttons.len() - 1);
+            }
+            _ => {}
+        }
+    }
+
     /// Advance any spinner this modal owns.
     pub fn tick(&mut self) {
         if let Modal::CreateFromIssue(m) = self

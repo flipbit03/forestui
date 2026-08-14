@@ -1,27 +1,40 @@
  forestui v0.0.0
          gh cli: unauth'd           WORKTREE
  alpha                            │ Repository: alpha
-└─ wt-a [feat/wt-a]               │ Worktree:   wt-a
- beta                             │ Branch:     feat/wt-a
+└─ wt-a-renamed [feat/wt-a-v2]    │ Worktree:   wt-a-renamed
+ beta                             │ Branch:     feat/wt-a-v2
                                   │ Based on:   main (<sha>)
                                   │ Commit:     <sha> (<rel>)
                                   │ ▐ ⟳ Git Pull (No remote) ▌
                                   │
                                   │ LOCATION
-                                  │ <ROOT>/forest/alpha/wt-a
+                                  │ <ROOT>/forest/alpha/wt-a-renamed
                                   │
                                   │ OPEN IN
                                   │ ▐ Editor ▌ ▐ Terminal ▌ ▐ Files ▌
                                   │
                                   │ CLAUDE
+                                  │ ▐ New Session ▌ ▐ New Session: YOLO ▌ ▐ Opus ▌
+                                  │
+                                  │ RECENT SESSIONS
+                                  │ No sessions found
+                                  │
+                                  │ RENAME
+                                  │ Worktree name  wt-a-renamed
+                                  │ Branch name    feat/wt-a-v2
+                                  │
+                                  │ MANAGE
+                                  │ ▐ Archive ▌ ▐ Delete ▌
+                                  │
+                                  │
                               ┌ Add Repository ──────────────────────────────────────────────────────────────┐
                               │Repository Path                                                               │
                               │┌────────────────────────────────────────────────────────────────────────────┐│
-                              ││Enter path or paste from clipboard...                                       ││
+                              ││<ROOT>/src/gamma   ││
                               │└────────────────────────────────────────────────────────────────────────────┘│
+                              │Repository: gamma                                                             │
                               │                                                                              │
-                              │                                                                              │
-                              │▐ [ ] Import existing worktrees ▌                                             │
+                              │▐ [x] Import existing worktrees ▌                                             │
                               │                                                                              │
                               │▐ Add Repository ▌  ▐ Cancel ▌                                                │
                               └──────────────────────────────────────────────────────────────────────────────┘
@@ -40,5 +53,18 @@
                                   │
                                   │
                                   │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
  q  Quit   a  Add Repo   w  Add Worktree   e  Editor   t  Terminal   o  Files   n  Claude   y  ClaudeYOLO   h  Archive   d  Delete   s  Sett
-[forestui-0:forestui-dev-<hhmm>*                                                                       "<host>" <clock>
+[forestui-0:forestui-dev-<hhmm>* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:al>"<host>" <clock>

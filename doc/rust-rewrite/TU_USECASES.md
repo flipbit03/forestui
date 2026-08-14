@@ -1407,6 +1407,100 @@ only by unit tests (`modal.rs::base_branch_default_prefers_remote`).
 
 ---
 
+## Area L — Flows and mouse (added to the sweep)
+
+`scripts/tu-sweep.sh` runs these after the single-key sweep. They also write
+`doc/rust-rewrite/baseline/<build>/ASSERTIONS.txt`, because the interesting part
+of a rename or an import is what it did to the worktree and the config, not only
+what the screen said. Both builds write the same file, so outcomes diff as
+easily as frames.
+
+The two builds reach the same controls differently — the Rust detail pane is a
+keyboard focus ring, the Textual one is a scrollable pane of mouse-first widgets
+— so each flow branches on the build for the *interaction* while asserting the
+same *outcome*.
+
+### UC-78 — Rename a worktree end to end
+**Area:** Worktree detail | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Steps:** select the worktree, reach the `Worktree name` field, append `-renamed`, `Enter`.
+**Expected:** the directory is renamed on disk, the old path is gone, the config
+`name` and `path` both update, and `git rev-parse --git-dir` still resolves inside
+the new directory (i.e. `git worktree repair` ran).
+**Fails if:** the config updates but the directory does not, or git loses the worktree.
+
+### UC-79 — Rename a branch end to end
+**Area:** Worktree detail | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Steps:** reach the `Branch name` field, append `-v2`, `Enter`.
+**Expected:** `git branch --show-current` inside the worktree returns the new name,
+and the config `branch` matches.
+
+### UC-80 — Add a repository with "Import existing worktrees"
+**Area:** Modals | **Priority:** P1 | 🟢 EXECUTED (both builds)
+**Setup:** the fixture's `gamma` repo is deliberately untracked and owns a worktree
+**outside** the forest directory.
+**Steps:** `a`, type the gamma path, tick the checkbox, confirm.
+**Expected:** `gamma` joins the config **and** its external worktree is imported
+with branch `feat/imported`.
+**Fails if:** the repo is added but the worktree is not — the checkbox did nothing.
+
+### UC-81 — A second terminal joins as a grouped session
+**Area:** tmux | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Setup:** a second `tu` session sharing the same `TMUX_TMPDIR`.
+**Expected:** both terminals see the same window count, and switching windows in
+terminal B leaves terminal A on its own window.
+**Fails if:** B's navigation drags A along — that is the bug grouped sessions exist
+to prevent.
+
+### UC-82 — Detach and relaunch reattaches without duplicating
+**Area:** tmux | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Setup:** launched through a login shell so the shell survives the detach.
+**Steps:** run forestui, `Ctrl+B d` to detach, run it again.
+**Expected:** it reattaches, and exactly one forestui window exists.
+**Fails if:** a second forestui window appears on reattach.
+
+---
+
+### UC-83 — Clicking a sidebar row selects it
+**Area:** Mouse | **Priority:** P0 | 🟢 EXECUTED (Rust)
+**Expected:** the click selects that repository or worktree and the detail pane follows.
+
+### UC-84 — Clicking a detail control runs it
+**Area:** Mouse | **Priority:** P0 | 🟢 EXECUTED (Rust)
+**Expected:** clicking `Terminal` opens `term:<name>` exactly as pressing `t` does.
+Covers `Editor`, `Terminal`, `Files`, `New Session`, `New Session: YOLO`, custom
+buttons, `Resume`, `Archive`, `Delete`, `Remove Repository`.
+**Fails if:** nothing happens — the regression a user hit on the first Rust build,
+where mouse capture was never enabled and no control recorded a clickable region.
+
+### UC-85 — Clicking a rename field focuses it without acting
+**Area:** Mouse | **Priority:** P1 | 🟢 EXECUTED (Rust)
+**Expected:** focus moves to the field; no action fires, no window opens.
+
+### UC-86 — Clicking a modal control activates it
+**Area:** Mouse | **Priority:** P0 | 🟢 EXECUTED (Rust)
+**Expected:** clicking `Delete` in the confirm modal deletes; clicking `Cancel`
+dismisses. Clicking a pane behind an open modal does nothing — the modal keeps
+every click.
+
+### UC-87 — Clicking a branch row picks that branch
+**Area:** Mouse | **Priority:** P1 | 🟢 EXECUTED (Rust)
+**Expected:** in existing-branch mode, clicking a dropdown row selects it and
+enables `Create Worktree`.
+
+### UC-88 — Scroll wheel moves the focused pane
+**Area:** Mouse | **Priority:** P2 | 🟢 EXECUTED (Rust)
+**Expected:** the wheel moves the sidebar cursor or the detail focus ring
+depending on which pane has focus.
+
+### UC-89 — Controls render as buttons
+**Area:** Visual | **Priority:** P1 | 🟢 EXECUTED (Rust)
+**Expected:** every control renders as a filled pill (`▐ Label ▏`), visibly a
+button rather than plain text, with the focused one highlighted and destructive
+ones red.
+**Fails if:** controls read as flat labels — a user reported exactly that.
+
+---
+
 ## Appendix — quick coverage map
 
 | Area | UCs | P0 count |
@@ -1422,8 +1516,9 @@ only by unit tests (`modal.rs::base_branch_default_prefers_remote`).
 | Config persistence | 48–52 | 3 |
 | Automated parity sweep | 53–70 | 12 |
 | Hand-driven, unscripted | 71–77 | 4 |
+| Flows & mouse | 78–89 | 8 |
 
-**77 use cases · 41 P0 · 60 executed live · 17 written from source only.**
+**89 use cases · 49 P0 · 72 executed live · 17 written from source only.**
 
 UC-01–52 were written against the Python build on 2026-08-14 (35 executed).
 UC-53–70 are the automated sweep and have been executed against **both** builds;

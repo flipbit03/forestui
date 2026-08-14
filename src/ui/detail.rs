@@ -2,15 +2,17 @@
 //!
 //! The pane is immediate-mode, so there is nothing that remembers where a
 //! control was drawn. Instead every frame walks the controls in exactly the
-//! order `App::detail_items()` produces them and records the row each one
+//! order `App::detail_items()` produces them and records the cells each one
 //! landed on. Renderer and key handler therefore agree on what item N is, which
-//! is the whole reason `Enter` fires the action the cursor is sitting on. Any
-//! new control here needs a matching entry there, in the same position.
+//! is the whole reason `Enter` fires the action the cursor is sitting on, and
+//! the recorded cells are what a click resolves against. Any new control here
+//! needs a matching entry there, in the same position.
 
-use crate::app::{App, Focus};
+use crate::app::{App, Focus, HitTarget};
 use crate::models::{ClaudeSession, GitHubIssue};
 use crate::theme;
 use crate::ui::widgets::{TextInput, centered_rect};
+use crate::ui::{button, button_width};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -23,7 +25,7 @@ const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
 /// Width of the label column in the rename section.
 const FIELD_LABEL_WIDTH: usize = 14;
 
-pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
+pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -41,6 +43,26 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     };
     let offset = pane.scroll_offset(inner.height);
     frame.render_widget(Paragraph::new(pane.lines).scroll((offset, 0)), inner);
+
+    // The scroll offset decides which line ends up on which screen row, so this
+    // is the earliest the clickable regions can be worked out.
+    for (index, item) in pane.items.iter().enumerate() {
+        let Some(row) = item.line.checked_sub(offset) else {
+            continue;
+        };
+        if row >= inner.height {
+            break;
+        }
+        app.push_hit(
+            Rect {
+                x: inner.x + item.x,
+                y: inner.y + row,
+                width: item.width,
+                height: 1,
+            },
+            HitTarget::DetailItem(index),
+        );
+    }
 }
 
 /// Render the pane for the current selection, or `None` for the empty state.
@@ -61,11 +83,44 @@ fn build(app: &App) -> Option<Pane> {
     Some(pane)
 }
 
-/// Content under construction: the lines to render plus the row each focusable
-/// item claimed, in `App::detail_items()` order.
+/// Where a focusable item landed. The line alone would not do: `Editor`,
+/// `Terminal` and `Files` share one, so a click needs the x extent too.
+struct Item {
+    line: u16,
+    x: u16,
+    width: u16,
+}
+
+/// A control ("button") waiting to be laid out.
+struct Control {
+    label: String,
+    destructive: bool,
+    /// A control that cannot run still occupies a slot in `detail_items()`.
+    enabled: bool,
+}
+
+impl Control {
+    fn new(label: impl Into<String>, destructive: bool) -> Self {
+        Self {
+            label: label.into(),
+            destructive,
+            enabled: true,
+        }
+    }
+
+    fn disabled(label: impl Into<String>) -> Self {
+        Self {
+            enabled: false,
+            ..Self::new(label, false)
+        }
+    }
+}
+
+/// Content under construction: the lines to render plus the cells each
+/// focusable item claimed, in `App::detail_items()` order.
 struct Pane {
     lines: Vec<Line<'static>>,
-    item_rows: Vec<u16>,
+    items: Vec<Item>,
     /// Index of the focused item, or `None` while the sidebar owns focus.
     focused: Option<usize>,
 }
@@ -74,7 +129,7 @@ impl Pane {
     fn new(focused: Option<usize>) -> Self {
         Self {
             lines: Vec::new(),
-            item_rows: Vec::new(),
+            items: Vec::new(),
             focused,
         }
     }
@@ -101,52 +156,66 @@ impl Pane {
         self.lines.push(Line::from(spans));
     }
 
-    /// Claim the next focusable slot for the line that is about to be pushed,
-    /// returning whether it is the focused one. Callers must push that line
-    /// before adding any other, or the recorded row drifts from the content.
-    fn claim(&mut self) -> bool {
-        let focused = self.focused == Some(self.item_rows.len());
-        self.item_rows.push(row_index(self.lines.len()));
+    /// Claim the next focusable slot at `x` on the line that is about to be
+    /// pushed, returning whether it is the focused one. Callers must push that
+    /// line before adding any other, or the recorded cells drift from the
+    /// content.
+    fn claim(&mut self, x: u16, width: u16) -> bool {
+        let focused = self.focused == Some(self.items.len());
+        self.items.push(Item {
+            line: as_u16(self.lines.len()),
+            x,
+            width,
+        });
         focused
     }
 
-    /// A control ("button"). The padding mirrors Textual's button chrome; the
-    /// label itself is verbatim so the wording matches the Python build.
-    fn control(&mut self, label: &str, destructive: bool) -> Span<'static> {
-        let focused = self.claim();
-        Span::styled(format!(" {label} "), theme::action(focused, destructive))
+    /// Lay out a row of controls after `lead`, which is whatever non-clickable
+    /// text shares the line. Each control's extent is recorded as it is placed,
+    /// because that running x offset is the only place it is ever known.
+    fn controls(&mut self, lead: Vec<Span<'static>>, controls: &[Control]) {
+        let mut spans = lead;
+        let mut x = as_u16(spans.iter().map(Span::width).sum());
+        for (index, control) in controls.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::raw(" "));
+                x = x.saturating_add(1);
+            }
+            let width = button_width(&control.label);
+            let focused = self.claim(x, width);
+            let mut pill = button(&control.label, focused, control.destructive);
+            // A control that cannot run keeps the pill and its width, so neither
+            // the layout nor the hit region shifts; it only loses its colour —
+            // except under the cursor, which has to stay visible.
+            if !control.enabled && !focused {
+                for span in &mut pill {
+                    span.style = theme::muted();
+                }
+            }
+            spans.append(&mut pill);
+            x = x.saturating_add(width);
+        }
+        self.lines.push(Line::from(spans));
     }
 
-    /// A control that cannot run. It still occupies a slot in `detail_items()`,
-    /// so it keeps its place in the sequence and only loses its colour — except
-    /// while focused, where the cursor has to stay visible.
-    fn disabled_control(&mut self, label: &str) -> Span<'static> {
-        let focused = self.claim();
-        let style = if focused {
-            theme::action(true, false)
-        } else {
-            theme::muted()
-        };
-        Span::styled(format!(" {label} "), style)
-    }
-
-    /// Offset that keeps the focused control on screen. `draw` only sees
-    /// `&App`, so this is derived per frame rather than stored on the app.
+    /// Offset that keeps the focused control on screen. `draw` builds the pane
+    /// fresh each frame, so this is derived rather than stored on the app.
     fn scroll_offset(&self, height: u16) -> u16 {
         let Some(row) = self
             .focused
-            .and_then(|index| self.item_rows.get(index))
-            .copied()
+            .and_then(|index| self.items.get(index))
+            .map(|item| item.line)
         else {
             return 0;
         };
-        let max = row_index(self.lines.len()).saturating_sub(height);
+        let max = as_u16(self.lines.len()).saturating_sub(height);
         // Aim to keep two lines of context below the cursor where there is room.
         row.saturating_add(3).saturating_sub(height).min(max)
     }
 }
 
-fn row_index(len: usize) -> u16 {
+/// Terminal geometry is `u16` while content lengths are `usize`.
+fn as_u16(len: usize) -> u16 {
     u16::try_from(len).unwrap_or(u16::MAX)
 }
 
@@ -166,9 +235,13 @@ fn repository(pane: &mut Pane, app: &App) {
     }
     commit_line(pane, app);
 
-    let sync = sync_control(pane, app, false);
-    let add = pane.control(" Add Worktree", false);
-    pane.row(vec![sync, Span::raw(" "), add]);
+    pane.controls(
+        Vec::new(),
+        &[
+            sync_control(app, false),
+            Control::new("Add Worktree", false),
+        ],
+    );
 
     pane.section("LOCATION");
     pane.text(path.to_string(), theme::secondary());
@@ -179,8 +252,7 @@ fn repository(pane: &mut Pane, app: &App) {
     issues(pane, app);
 
     pane.section("MANAGE");
-    let remove = pane.control(" Remove Repository", true);
-    pane.row(vec![remove]);
+    pane.controls(Vec::new(), &[Control::new("Remove Repository", true)]);
 }
 
 fn worktree(pane: &mut Pane, app: &App) {
@@ -213,8 +285,7 @@ fn worktree(pane: &mut Pane, app: &App) {
     }
     commit_line(pane, app);
 
-    let sync = sync_control(pane, app, !app.meta.path_exists);
-    pane.row(vec![sync]);
+    pane.controls(Vec::new(), &[sync_control(app, !app.meta.path_exists)]);
 
     pane.section("LOCATION");
     if app.meta.path_exists {
@@ -235,9 +306,13 @@ fn worktree(pane: &mut Pane, app: &App) {
     field(pane, "Branch name", &app.branch_input);
 
     pane.section("MANAGE");
-    let toggle = pane.control(if archived { " Unarchive" } else { " Archive" }, false);
-    let delete = pane.control(" Delete", true);
-    pane.row(vec![toggle, Span::raw(" "), delete]);
+    pane.controls(
+        Vec::new(),
+        &[
+            Control::new(if archived { "Unarchive" } else { "Archive" }, false),
+            Control::new("Delete", true),
+        ],
+    );
 }
 
 // ------------------------------------------------------------------ sections
@@ -255,42 +330,45 @@ fn commit_line(pane: &mut Pane, app: &App) {
 
 /// The `⟳ Git Pull` control. Disabled when there is no remote to pull from, or
 /// — for worktrees — when the directory is gone.
-fn sync_control(pane: &mut Pane, app: &App, missing_directory: bool) -> Span<'static> {
+fn sync_control(app: &App, missing_directory: bool) -> Control {
     if missing_directory {
-        pane.disabled_control("⟳ Git Pull (Directory missing)")
+        Control::disabled("⟳ Git Pull (Directory missing)")
     } else if app.meta.has_remote {
-        pane.control("⟳ Git Pull", false)
+        Control::new("⟳ Git Pull", false)
     } else {
-        pane.disabled_control("⟳ Git Pull (No remote)")
+        Control::disabled("⟳ Git Pull (No remote)")
     }
 }
 
 fn open_in(pane: &mut Pane) {
     pane.section("OPEN IN");
-    let editor = pane.control(" Editor", false);
-    let terminal = pane.control(" Terminal", false);
-    let files = pane.control(" Files", false);
-    pane.row(vec![
-        editor,
-        Span::raw(" "),
-        terminal,
-        Span::raw(" "),
-        files,
-    ]);
+    pane.controls(
+        Vec::new(),
+        &[
+            Control::new("Editor", false),
+            Control::new("Terminal", false),
+            Control::new("Files", false),
+        ],
+    );
 }
 
 fn claude(pane: &mut Pane, app: &App) {
     pane.section("CLAUDE");
-    let mut spans = vec![
-        pane.control("New Session", false),
-        Span::raw(" "),
-        pane.control("New Session: YOLO", true),
+    let mut controls = vec![
+        Control::new("New Session", false),
+        Control::new("New Session: YOLO", true),
     ];
-    for button in &app.settings.custom_buttons {
-        spans.push(Span::raw(" "));
-        spans.push(pane.control(&button.label, button.is_yolo_style()));
-    }
-    pane.row(spans);
+    controls.extend(custom_controls(app));
+    pane.controls(Vec::new(), &controls);
+}
+
+/// The user's own Claude buttons, which follow both the new-session and the
+/// resume controls.
+fn custom_controls(app: &App) -> impl Iterator<Item = Control> + '_ {
+    app.settings
+        .custom_buttons
+        .iter()
+        .map(|custom| Control::new(custom.label.as_str(), custom.is_yolo_style()))
 }
 
 fn sessions(pane: &mut Pane, app: &App) {
@@ -328,16 +406,9 @@ fn session_item(pane: &mut Pane, app: &App, session: &ClaudeSession) {
         theme::muted(),
     );
 
-    let mut spans = vec![
-        pane.control("Resume", false),
-        Span::raw(" "),
-        pane.control("YOLO", true),
-    ];
-    for button in &app.settings.custom_buttons {
-        spans.push(Span::raw(" "));
-        spans.push(pane.control(&button.label, button.is_yolo_style()));
-    }
-    pane.row(spans);
+    let mut controls = vec![Control::new("Resume", false), Control::new("YOLO", true)];
+    controls.extend(custom_controls(app));
+    pane.controls(Vec::new(), &controls);
 }
 
 fn issues(pane: &mut Pane, app: &App) {
@@ -348,9 +419,13 @@ fn issues(pane: &mut Pane, app: &App) {
         Some(_) => "↻".to_string(),
         None => SPINNER[app.spinner_index % SPINNER.len()].to_string(),
     };
-    let header = Span::styled("MY OPEN GITHUB ISSUES", theme::section_header());
-    let refresh = pane.control(&label, false);
-    pane.row(vec![header, Span::raw(" "), refresh]);
+    pane.controls(
+        vec![
+            Span::styled("MY OPEN GITHUB ISSUES", theme::section_header()),
+            Span::raw(" "),
+        ],
+        &[Control::new(label, false)],
+    );
 
     let Some(list) = app.issues.as_deref() else {
         pane.text("Loading...", theme::muted());
@@ -385,17 +460,19 @@ fn issue_item(pane: &mut Pane, issue: &GitHubIssue) {
     if !labels.is_empty() {
         meta.push_str(&format!(" • {}", labels.join(", ")));
     }
-    let create = pane.control("Create WT", false);
-    pane.row(vec![
-        Span::styled(format!("{meta}  "), theme::muted()),
-        create,
-    ]);
+    pane.controls(
+        vec![Span::styled(format!("{meta}  "), theme::muted())],
+        &[Control::new("Create WT", false)],
+    );
 }
 
 /// A rename field. The caret is drawn in the text because the pane renders as
 /// one scrolled paragraph and has no real terminal cursor to place.
 fn field(pane: &mut Pane, label: &str, input: &TextInput) {
-    let focused = pane.claim();
+    // Measured without consulting focus: the caret only ever occupies the one
+    // trailing cell already counted here, so the click target is stable.
+    let width = as_u16(FIELD_LABEL_WIDTH + 2 + input.value().chars().count());
+    let focused = pane.claim(0, width);
     let mut spans = vec![Span::styled(
         format!("{label:<FIELD_LABEL_WIDTH$} "),
         theme::secondary(),
@@ -436,13 +513,14 @@ fn empty_state(frame: &mut Frame, area: Rect) {
             theme::muted(),
         )),
     ];
-    let rect = centered_rect(area.width, row_index(lines.len()), area);
+    let rect = centered_rect(area.width, as_u16(lines.len()), area);
     frame.render_widget(Paragraph::new(lines).centered(), rect);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{Action, DetailItem, Field};
     use crate::event;
     use crate::models::{CustomClaudeButton, Repository, Settings, Worktree};
     use crate::services::settings as settings_service;
@@ -504,12 +582,39 @@ mod tests {
         .expect("issue fixture parses")
     }
 
-    fn render(app: &App) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(100, 40)).expect("test terminal");
+    /// One frame into a throwaway terminal. `crate::ui::draw` is what clears
+    /// hits in the real app, so the test does it here.
+    fn render_buffer(app: &mut App, width: u16, height: u16) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        app.clear_hits();
         terminal
             .draw(|frame| draw(frame, app, frame.area()))
             .expect("draw");
-        buffer_text(terminal.backend().buffer())
+        terminal.backend().buffer().clone()
+    }
+
+    fn render(app: &mut App) -> String {
+        buffer_text(&render_buffer(app, 100, 40))
+    }
+
+    /// Cell of the first occurrence of `needle`. Byte offsets would not do: the
+    /// pill caps around every control are multi-byte.
+    fn find_cell(buffer: &Buffer, needle: &str) -> (u16, u16) {
+        let width = buffer.area.width as usize;
+        for (y, row) in buffer.content.chunks(width).enumerate() {
+            let line: String = row.iter().map(|cell| cell.symbol()).collect();
+            if let Some(byte) = line.find(needle) {
+                return (as_u16(line[..byte].chars().count()), as_u16(y));
+            }
+        }
+        panic!("{needle:?} is not on screen");
+    }
+
+    fn detail_hits(app: &App) -> usize {
+        app.hits
+            .iter()
+            .filter(|hit| matches!(hit.target, HitTarget::DetailItem(_)))
+            .count()
     }
 
     fn buffer_text(buffer: &Buffer) -> String {
@@ -525,8 +630,8 @@ mod tests {
     #[tokio::test]
     async fn empty_state_is_visible() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let app = test_app(&dir);
-        let screen = render(&app);
+        let mut app = test_app(&dir);
+        let screen = render(&mut app);
 
         // The Textual build laid this out into zero height and showed nothing.
         assert!(screen.contains("forestui"), "{screen}");
@@ -546,7 +651,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut app = test_app(&dir);
         with_repository(&mut app);
-        let screen = render(&app);
+        let screen = render(&mut app);
 
         assert!(screen.contains("MAIN REPOSITORY"), "{screen}");
         assert!(screen.contains("Repository: demo"), "{screen}");
@@ -566,7 +671,7 @@ mod tests {
             path_exists: false,
             ..event::DetailMeta::default()
         };
-        let screen = render(&app);
+        let screen = render(&mut app);
 
         assert!(screen.contains("⚠ MISSING"), "{screen}");
         assert!(screen.contains("(missing)"), "{screen}");
@@ -599,7 +704,7 @@ mod tests {
                 app.issues = issues.clone();
                 let pane = build(&app).expect("repository pane");
                 assert_eq!(
-                    pane.item_rows.len(),
+                    pane.items.len(),
                     app.detail_items().len(),
                     "repository, {} sessions, {} issues",
                     app.sessions.as_ref().map_or(-1, |s| s.len() as i64),
@@ -615,7 +720,7 @@ mod tests {
             app.sessions = sessions.clone();
             let pane = build(&app).expect("worktree pane");
             assert_eq!(
-                pane.item_rows.len(),
+                pane.items.len(),
                 app.detail_items().len(),
                 "worktree, {} sessions",
                 app.sessions.as_ref().map_or(-1, |s| s.len() as i64),
@@ -635,7 +740,7 @@ mod tests {
 
         let pane = build(&app).expect("repository pane");
         let offset = pane.scroll_offset(20);
-        let row = pane.item_rows[app.detail_index];
+        let row = pane.items[app.detail_index].line;
         assert!(
             row >= offset && row < offset + 20,
             "row {row}, offset {offset}"
@@ -645,5 +750,65 @@ mod tests {
         app.focus = Focus::Sidebar;
         let pane = build(&app).expect("repository pane");
         assert_eq!(pane.scroll_offset(20), 0);
+    }
+
+    /// Clicking a control has to reach the item drawn under the pointer, which
+    /// is what the bug report said was broken.
+    #[tokio::test]
+    async fn clicking_a_control_maps_to_its_item() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = test_app(&dir);
+        with_worktree(&mut app);
+        app.sessions = Some(vec![a_session()]);
+        let buffer = render_buffer(&mut app, 100, 40);
+
+        let index_of = |item: &DetailItem| {
+            app.detail_items()
+                .iter()
+                .position(|candidate| candidate == item)
+                .expect("item is rendered")
+        };
+
+        // Editor, Terminal and Files share a line, so getting these three right
+        // is what proves the x extents are, and not just the rows.
+        for (label, item) in [
+            ("Editor", DetailItem::Action(Action::Editor)),
+            ("Terminal", DetailItem::Action(Action::Terminal)),
+            ("Files", DetailItem::Action(Action::Files)),
+            ("Resume", DetailItem::Action(Action::ResumeSession(0))),
+            ("Delete", DetailItem::Action(Action::Delete)),
+            ("Worktree name", DetailItem::Field(Field::WorktreeName)),
+        ] {
+            let (x, y) = find_cell(&buffer, label);
+            assert_eq!(
+                app.hit_at(x, y),
+                Some(HitTarget::DetailItem(index_of(&item))),
+                "{label} at {x},{y}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn every_focusable_item_is_clickable_when_visible() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = test_app(&dir);
+        app.settings.custom_buttons = vec![CustomClaudeButton {
+            label: "Opus".into(),
+            prefix: "opus".into(),
+            command: "claude --model opus".into(),
+        }];
+        app.sessions = Some(vec![a_session()]);
+        app.issues = Some(vec![an_issue()]);
+
+        with_worktree(&mut app);
+        // Tall and wide enough that nothing is scrolled or clipped away.
+        render_buffer(&mut app, 120, 60);
+        assert_eq!(detail_hits(&app), app.detail_items().len(), "worktree");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        app.state = AppState::load_from(dir.path().join(".forestui-config.json"));
+        with_repository(&mut app);
+        render_buffer(&mut app, 120, 60);
+        assert_eq!(detail_hits(&app), app.detail_items().len(), "repository");
     }
 }

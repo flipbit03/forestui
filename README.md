@@ -99,6 +99,13 @@ In modals: `Tab` / `Shift+Tab` move between fields, `Enter` activates, `Esc`
 cancels. Confirmation dialogs also accept `y` and `n`. The custom-buttons
 manager uses `a` add, `e` edit, `d` delete, `K` / `J` reorder, `s` save.
 
+### Mouse
+
+The mouse works everywhere the keyboard does: click a repository or worktree in
+the sidebar to select it, click a control in the detail pane to run it, click a
+field to focus it, and click any modal button. The scroll wheel moves the
+focused pane.
+
 ### TUI Editor Integration
 
 When your default editor is a TUI editor (vim, nvim, helix, nano, etc.),

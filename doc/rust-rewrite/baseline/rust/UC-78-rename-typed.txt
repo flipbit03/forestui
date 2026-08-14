@@ -15,15 +15,15 @@
                                   │
                                   │ CLAUDE
                                   │ ▐ New Session ▌ ▐ New Session: YOLO ▌ ▐ Opus ▌
-                              ┌  ────────────────────────────────────────────────────────────────────────────┐
-                              │Delete Worktree                                                               │
-                              │                                                                              │
-                              │Permanently delete 'wt-a'?                                                    │
-                              │                                                                              │
-                              │▐ Cancel ▌  ▐ Delete ▌                                                        │
-                              │                                                                              │
-                              │y confirm · n / Esc cancel                                                    │
-                              └──────────────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  │ RECENT SESSIONS
+                                  │ No sessions found
+                                  │
+                                  │ RENAME
+                                  │ Worktree name  wt-a-renamed
+                                  │ Branch name    feat/wt-a
+                                  │
+                                  │ MANAGE
                                   │ ▐ Archive ▌ ▐ Delete ▌
                                   │
                                   │
@@ -40,5 +40,31 @@
                                   │
                                   │
                                   │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
  q  Quit   a  Add Repo   w  Add Worktree   e  Editor   t  Terminal   o  Files   n  Claude   y  ClaudeYOLO   h  Archive   d  Delete   s  Sett
-[forestui-0:forestui-dev-<hhmm>*                                                                       "<host>" <clock>
+[forestui-0:forestui-dev-<hhmm>* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:al>"<host>" <clock>

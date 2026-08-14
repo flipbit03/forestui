@@ -1,0 +1,3 @@
+bash-5.3$ ./target/release/forestui <ROOT>/forest
+[detached (from session forestui-forest-32757)]
+bash-5.3$

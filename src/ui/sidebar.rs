@@ -1,6 +1,6 @@
 //! The repository / worktree tree on the left.
 
-use crate::app::{App, Focus, SidebarRow};
+use crate::app::{App, Focus, HitTarget, SidebarRow};
 use crate::theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -8,7 +8,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
+pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let [header_area, tree_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
 
@@ -48,6 +48,25 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         inner,
         &mut state,
     );
+
+    // The list decides its own scroll offset during render, so the clickable
+    // rows can only be worked out afterwards.
+    let offset = state.offset();
+    for screen_row in 0..inner.height {
+        let index = offset + screen_row as usize;
+        if index >= app.rows.len() {
+            break;
+        }
+        app.push_hit(
+            Rect {
+                x: inner.x,
+                y: inner.y + screen_row,
+                width: inner.width,
+                height: 1,
+            },
+            HitTarget::SidebarRow(index),
+        );
+    }
 }
 
 fn draw_gh_status(frame: &mut Frame, app: &App, area: Rect) {

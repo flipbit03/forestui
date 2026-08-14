@@ -16,8 +16,10 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 
 pub const SIDEBAR_WIDTH: u16 = 35;
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    // Clickable regions are rebuilt every frame; nothing persists between them.
+    app.clear_hits();
     frame.render_widget(Block::default().style(Style::default().bg(theme::BG)), area);
 
     let [header_area, body_area, footer_area] = Layout::vertical([
@@ -42,6 +44,28 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if !app.modals.is_empty() {
         modals::draw(frame, app, area);
     }
+}
+
+/// Spans for a control ("button") so it reads as one: a filled pill with
+/// rounded caps. A single row cannot carry a real border, and boxing every
+/// control the way Textual did would push the pane back into scrolling.
+///
+/// The caps are half blocks drawn in the button's own colour *over the page
+/// background*, so only the inner half of the cell is filled and the ends look
+/// rounded rather than sawn off.
+pub fn button(label: &str, focused: bool, destructive: bool) -> Vec<Span<'static>> {
+    let fill = theme::action_bg(focused, destructive);
+    let cap = Style::default().fg(fill).bg(theme::BG);
+    vec![
+        Span::styled("▐", cap),
+        Span::styled(format!(" {label} "), theme::action(focused, destructive)),
+        Span::styled("▌", cap),
+    ]
+}
+
+/// Rendered width of [`button`], for hit-testing and layout.
+pub fn button_width(label: &str) -> u16 {
+    u16::try_from(label.chars().count() + 4).unwrap_or(u16::MAX)
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
