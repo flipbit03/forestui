@@ -122,6 +122,9 @@ text = re.sub(r"\b[0-9a-f]{7}\b", "<sha>", text)
 text = re.sub(r"\(\d+ (seconds?|minutes?|hours?|days?) ago\)", "(<rel>)", text)
 text = re.sub(r"\((an?|a) (second|minute|hour|day) ago\)", "(<rel>)", text)
 text = re.sub(r"dev-\d{4}", "dev-<hhmm>", text)
+# Grouped sessions are named "forestui-<forest>-<pid>", so the pid would
+# otherwise make every run dirty the committed baseline.
+text = re.sub(r"(forestui-[a-z0-9-]+?)-\d+\b", r"\1-<pid>", text)
 text = re.sub(r"\d{2}:\d{2} \d{2}-\w{3}-\d{2}", "<clock>", text)
 text = re.sub(r"\"[0-9a-f-]{8,}\"", "\"<host>\"", text)
 print("\n".join(line.rstrip() for line in text.splitlines()))
