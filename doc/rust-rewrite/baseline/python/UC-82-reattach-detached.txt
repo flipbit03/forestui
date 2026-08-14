@@ -1,4 +1,4 @@
 bash-5.3$ /private/tmp/claude-501/-Users-kirill-work-repos-forestui/c1896755-8248-43c0-a926-dbfc0c093881/scratchpad/pywt/.venv/bin/forestui
 <ROOT>/forest
-[detached (from session forestui-forest-62044)]
+[detached (from session forestui-forest-<pid>)]
 bash-5.3$

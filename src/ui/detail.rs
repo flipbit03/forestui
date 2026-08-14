@@ -197,7 +197,11 @@ impl Pane {
         // shows through the card. Spans that set their own background — the
         // controls — keep it, which is what makes a pill read as raised.
         for span in &mut spans {
-            if span.style.bg.is_none() {
+            // A pill's rounded caps are drawn in the button colour over the
+            // *page* background. On a card that leaves a dark notch either side
+            // of every button, which reads as a stray bar rather than a rounded
+            // end — so re-seat those caps on the card instead.
+            if span.style.bg.is_none() || span.style.bg == Some(theme::BG) {
                 span.style = span.style.bg(theme::BG_ELEVATED);
             }
         }

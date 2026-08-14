@@ -2,11 +2,11 @@
                                   │
          gh cli: unauth'd         │
 ──────────────────────────────────│  MAIN REPOSITORY
- ▼  alpha                         │  Repository: gamma
- └ └─  wt-a-renamed               │  Branch:     main
+ ▼  alpha                         │  Repository: alpha
+ └ └─  wt-a                       │  Branch:     main
  ▼  beta                          │  Commit:     <sha> (<rel>)
- ▼  gamma                         │
- └ └─  gamma-imported             │  ┌────────────────────────┐ ┌───────────────┐
+                                  │
+                                  │  ┌────────────────────────┐ ┌───────────────┐
                                   │  │ ⟳ Git Pull (No remote) │ │  Add Worktree │
                                   │  └────────────────────────┘ └───────────────┘
                                   │
@@ -15,9 +15,9 @@
                                   │
                                   │  LOCATION
                                   │  ┌───────────────────────────────────────────────────────────────────────────┐
-                                  │  │ <ROOT>/src/gamma │
+                                  │  │ <ROOT>/src/alpha │
                                   │  └───────────────────────────────────────────────────────────────────────────┘
-                                  │
+                                  │                                                                                                     ▄▄
                                   │  ─────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
                                   │  OPEN IN
@@ -29,16 +29,16 @@
                                   │  ─────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
                                   │  CLAUDE
-                                  │                                                                                                     ▆▆
+                                  │
                                   │  ┌─────────────┐ ┌───────────────────┐ ┌────────┐
                                   │  │ New Session │ │ New Session: YOLO │ │  Opus  │
                                   │  └─────────────┘ └───────────────────┘ └────────┘
                                   │
                                   │  RECENT SESSIONS
                                   │
-                                  │  No sessions found
+                                  │  ┌───────────────────────────────────────────────────────────────────────────────────────────────┐
+                                  │  │                                                                                               │
+                                  │  │ session 3: refactor the detail pane so the cards line up                                      │
                                   │
-                                  │  ─────────────────────────────────────────────────────────────────────────────────────────────────
-                                  │
- q Quit  a Add Repo  w Add Worktree  e Editor  t Terminal  o Files  n Claude  y ClaudeYOLO  h Archive  d Delete  s Settings  ? H▏^p palette
+ a Add Repo  q Quit  w Add Worktree  e Editor  t Terminal  o Files  n Claude  y ClaudeYOLO  h Archive  d Delete  s Settings  ? H▏^p palette
 [forestui-0:forestui-dev-<hhmm>* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:al>"<host>" <clock>

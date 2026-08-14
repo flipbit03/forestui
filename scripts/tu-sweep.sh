@@ -78,6 +78,29 @@ REF="$(git -C "$ROOT/src/alpha" rev-parse --short HEAD)"
 # forest directory — that is what "Import existing worktrees" has to discover.
 git -C "$ROOT/src/gamma" worktree add -q -b feat/imported "$ROOT/outside/gamma-imported"
 
+# Claude sessions, so the RECENT SESSIONS cards actually render. Without these
+# both builds only ever show "No sessions found", and that whole section goes
+# uncompared.
+seed_sessions() {
+  local target="$1" count="$2"
+  # The app canonicalises before building the folder name, and on macOS that
+  # turns /var/... into /private/var/..., so seed against the resolved path.
+  local resolved folder
+  resolved="$(cd "$target" && pwd -P)"
+  folder="$(printf '%s' "$resolved" | tr '/' '-')"
+  local dir="$ROOT/home/.claude/projects/$folder"
+  mkdir -p "$dir"
+  for i in $(seq 1 "$count"); do
+    cat > "$dir/session-$i.jsonl" <<SESSION
+{"type":"user","timestamp":"2026-08-0${i}T10:00:00Z","message":{"content":"session $i: refactor the detail pane so the cards line up"}}
+{"type":"assistant","timestamp":"2026-08-0${i}T10:00:05Z"}
+{"type":"user","timestamp":"2026-08-0${i}T10:01:00Z","message":{"content":"and then check it against the python build"}}
+SESSION
+  done
+}
+seed_sessions "$ROOT/src/alpha" 3
+seed_sessions "$ROOT/forest/alpha/wt-a" 2
+
 cat > "$ROOT/home/.config/forestui/settings.json" <<'EOF'
 {"default_editor":"vim","default_terminal":"","branch_prefix":"feat/","theme":"system",
  "custom_buttons":[{"label":"Opus","prefix":"opus","command":"claude --model opus"}]}
