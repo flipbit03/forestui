@@ -39,9 +39,15 @@ packages = ["forestui"]
 dev = [
     "mypy>=1.19.1",
     "pre-commit>=4.5.1",
+    "pytest>=8.4.2",
     "ruff>=0.14.11",
     "textual-dev>=1.7.0",
 ]
+
+[tool.pytest.ini_options]
+# libtmux ships a pytest plugin that is incompatible with pytest 8.x
+addopts = "-p no:libtmux"
+testpaths = ["tests"]
 
 [tool.mypy]
 python_version = "3.14"

@@ -42,14 +42,22 @@ class GitService:
     async def _run_git(
         *args: str, cwd: str | Path | None = None
     ) -> tuple[int, str, str]:
-        """Run a git command and return exit code, stdout, stderr."""
+        """Run a git command and return exit code, stdout, stderr.
+
+        Raises GitError if the process cannot be spawned at all — most commonly
+        a stale worktree whose directory has been deleted, which makes `cwd`
+        invalid and raises FileNotFoundError.
+        """
         cmd = ["git", *args]
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(cwd) if cwd else None,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(cwd) if cwd else None,
+            )
+        except OSError as e:
+            raise GitError(f"Failed to run git in {cwd}: {e}") from e
         stdout, stderr = await process.communicate()
         return (
             process.returncode or 0,
