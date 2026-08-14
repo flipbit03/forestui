@@ -1216,6 +1216,197 @@ session name.
 
 ---
 
+## Area J — Automated parity sweep (both builds)
+
+Areas A–I are hand-driven. This area is the **automated** sweep: one script
+drives a build through every case, capturing a PNG and a normalised text frame
+per case, so the same run against two builds can be diffed mechanically.
+
+```bash
+# capture a build
+scripts/tu-sweep.sh rust   ./target/release/forestui
+scripts/tu-sweep.sh python /path/to/py-checkout/.venv/bin/forestui
+
+# compare two captures
+scripts/tu-compare.sh rust python
+```
+
+**Screenshot protocol.** Each case writes two artifacts:
+
+| Artifact | Path | Committed |
+|---|---|---|
+| Text frame | `doc/rust-rewrite/baseline/<build>/UC-NN-<slug>.txt` | yes — this is the diffable baseline |
+| Screenshot | `doc/rust-rewrite/screenshots/<build>/UC-NN-<slug>.png` | no (gitignored) — for eyeballing colour and focus |
+
+Text frames are normalised before writing: the temp root, commit SHAs, relative
+times, the dev-mode window timestamp and the tmux clock are masked, so two runs
+of the same build produce identical frames and a diff only shows real change.
+Screenshots are deliberately not committed — colour rendering is
+terminal-dependent and would churn on every run.
+
+**The harness waits on conditions, never on fixed sleeps.** Textual repaints
+noticeably slower than ratatui; an earlier fixed-sleep version captured the two
+builds at different points in the same interaction and produced three false
+mismatches. Anything added here must use `await <regex>`.
+
+**Note for the Python build:** its `ensure_tmux` re-executes the bare name
+`forestui`, so the harness puts the command's own directory on `PATH`. Without
+that the tmux session dies instantly. The Rust build resolves itself through
+`current_exe()` and does not need it.
+
+### UC-53 — Boot into the repository detail
+**Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Setup:** harness fixture — repos `alpha` (one worktree `wt-a`) and `beta`, one
+custom Claude button `Opus`.
+**Expected:** `MAIN REPOSITORY`, `Repository: alpha`, `Branch:     main`,
+`Commit:     <sha> (<rel>)`, `⟳ Git Pull (No remote)`.
+**Fails if:** the commit line is missing (fixture has no commits) or the sync
+control is enabled without a remote.
+
+### UC-54 — Worktree detail
+**Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Expected:** `WORKTREE`, `Worktree:   wt-a`, `Branch:     feat/wt-a`,
+`Based on:   main (<sha>)`.
+**Fails if:** `Based on:` is absent — the base branch was not captured at create time.
+
+### UC-55 — `a` opens Add Repository
+**Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Expected:** `Repository Path`, the placeholder
+`Enter path or paste from clipboard...` **while the empty field is focused**,
+`Import existing worktrees`, `Add Repository`, `Cancel`.
+**Fails if:** the placeholder is hidden on focus. The Rust build did hide it; the
+sweep caught it and it was fixed in `ui/widgets.rs`.
+
+### UC-56 — `w` opens Add Worktree
+**Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Expected:** `to alpha`, `Worktree Name`, `Branch`, `New Branch`, `Existing`,
+branch placeholder `feat/my-feature`.
+
+### UC-57 — `s` opens Settings
+**Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Expected:** `DEFAULT EDITOR` = `Vim (tmux)`, `BRANCH PREFIX` = `feat/`,
+`THEME` = `System`, `1 custom button configured`.
+**Fails if:** the count does not reflect `custom_buttons` in the settings file.
+
+### UC-58 — `d` opens the delete confirmation
+**Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Expected:** `Delete Worktree` and `Permanently delete 'wt-a'?` — identical
+wording in both builds. Nothing is deleted yet.
+
+### UC-59 — `?` shows the help toast
+**Area:** Sweep | **Priority:** P1 | 🟢 EXECUTED (both builds)
+**Expected:** `a: Add Repo | w: Add Worktree | e: Editor | t: Terminal | n: Claude
+| h: Archive | d: Delete | s: Settings | q: Quit`.
+**Known gap in both:** the toast omits `o`, `y`, `r` and `?` itself.
+
+### UC-60 — `e` opens the editor window
+**Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Expected:** window `edit:alpha:wt-a` running the editor. Window lists match
+byte-for-byte between builds.
+
+### UC-61 — `t` opens a terminal window
+**Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Expected:** window `term:alpha:wt-a`.
+
+### UC-62 — `o` opens the file manager window
+**Area:** Sweep | **Priority:** P1 | 🟢 EXECUTED (both builds)
+**Expected:** window `files:alpha:wt-a` running `mc`.
+
+### UC-63 — `n` opens a Claude window
+**Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Expected:** window `claude:alpha:wt-a` running `claude`.
+
+### UC-64 — `y` opens a YOLO Claude window
+**Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Expected:** window `yolo:alpha:wt-a`, and the command actually carries
+`--dangerously-skip-permissions`.
+**Fails if:** the flag is missing — the whole point of the separate button.
+
+### UC-65 — `e` again reuses the editor window
+**Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Expected:** no new window; `edit:alpha:wt-a` is selected.
+
+### UC-66 — `t` again opens a second, uniquified terminal
+**Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Expected:** a new window `term:alpha:wt-a:2`.
+**Fails if:** the second terminal reuses the first — terminals are always new.
+
+### UC-67 — `A` toggles the archived section
+**Area:** Sweep | **Priority:** P1 | 🟢 EXECUTED (both builds)
+**Expected (Rust):** the ` Archived` group appears once something is archived.
+**Expected (Python):** nothing happens — there is no `A` binding, which is why
+archived worktrees are unreachable (UC-50). This is an intentional divergence.
+
+### UC-68 — `h` archives the selected worktree
+**Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Expected:** the worktree leaves the active list and MANAGE flips to `Unarchive`.
+
+### UC-69 — `h` again unarchives it
+**Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Expected:** the worktree returns to the active list, MANAGE shows `Archive`.
+
+### UC-70 — `r` refreshes without visible change
+**Area:** Sweep | **Priority:** P2 | 🟢 EXECUTED (both builds)
+**Expected:** the frame is unchanged. A diff here means refresh has a side effect.
+
+---
+
+## Area K — Paths the sweep does not cover
+
+Driven by hand on the Rust build, not yet scripted. Add them to `tu-sweep.sh`
+when they stabilise.
+
+### UC-71 — Existing-branch mode with fuzzy search
+**Area:** Modals | **Priority:** P0 | 🟢 EXECUTED (Rust)
+**Steps:** `w`, type a name, `Tab`, `Right` (→ `Existing`), `Tab`, type `rel`.
+**Expected:** the count line reads `1 match`; `release-2` is listed with `rel`
+highlighted; `Create Worktree` is **disabled** while the typed text is not a real
+branch, and enables once a branch is picked from the list.
+**Then:** `Tab`, `Enter` to pick, `Tab`, `Enter` to create → the worktree checks
+out `release-2` (not a detached HEAD) and records
+`base_branch=release-2`, `created_from_ref=<sha>`.
+
+### UC-72 — Delete confirmation: `n` cancels, `y` deletes
+**Area:** Modals | **Priority:** P0 | 🟢 EXECUTED (Rust)
+**Expected:** after `d` then `n`, the worktree still exists on disk and in config.
+After `d` then `y`, the directory is gone, the config entry is gone, and
+`git worktree list` no longer lists it.
+
+### UC-73 — Custom buttons: add, reorder, delete, save
+**Area:** Modals | **Priority:** P1 | 🟢 EXECUTED (Rust)
+**Steps:** `s` → `Tab`×3 → `Enter` (Manage) → `a` add a second button →
+`Down`, `K`, `J`, `d`, `s` → save settings.
+**Expected:** `K` moves the selection up, `J` down, `d` removes it, `s` saves the
+list back into the parent Settings modal, and the saved
+`~/.config/forestui/settings.json` reflects the final order and contents.
+
+### UC-74 — Input editing keys
+**Area:** Modals | **Priority:** P1 | 🟢 EXECUTED (Rust)
+**Steps:** in any modal input — `Home`, `Delete`, `End`, `Backspace`, `Ctrl+U`.
+**Expected:** `Home`+`Delete` removes the first character, `End`+`Backspace` the
+last, `Ctrl+U` clears everything before the cursor.
+
+### UC-75 — Typing in a rename field does not fire hotkeys
+**Area:** Worktree detail | **Priority:** P0 | 🟢 EXECUTED (Rust)
+**Expected:** with a rename field focused, `q` types `q` instead of quitting.
+`Escape` restores the original value **and hands focus back to the sidebar**, so
+the global hotkeys work again.
+**Fails if:** `Escape` only resets the text — the hotkeys then stay unreachable.
+That was a real bug this case caught.
+
+### UC-76 — Sidebar navigation clamps at the ends
+**Area:** Sidebar | **Priority:** P1 | 🟢 EXECUTED (Rust)
+**Expected:** `Down` past the last row stays on the last row; the detail pane
+follows the cursor with no `Enter` needed.
+
+### UC-77 — Create worktree from a GitHub issue
+**Area:** Modals | **Priority:** P1 | 🔴 NOT EXECUTED
+**Blocked by:** needs an authenticated `gh` against a real repository with issues.
+The isolated `HOME` the harness uses has no `gh` credentials by design. Covered
+only by unit tests (`modal.rs::base_branch_default_prefers_remote`).
+
+---
+
 ## Appendix — quick coverage map
 
 | Area | UCs | P0 count |
@@ -1229,9 +1420,14 @@ session name.
 | tmux / grouped sessions | 39–41 | 2 |
 | Errors & edge cases | 42–47 | 2 |
 | Config persistence | 48–52 | 3 |
+| Automated parity sweep | 53–70 | 12 |
+| Hand-driven, unscripted | 71–77 | 4 |
 
-**52 use cases · 25 P0 · 35 executed live against the Python build (3 of them
-partially — UC-12, UC-29, UC-31) · 17 written from source only.**
+**77 use cases · 41 P0 · 60 executed live · 17 written from source only.**
+
+UC-01–52 were written against the Python build on 2026-08-14 (35 executed).
+UC-53–70 are the automated sweep and have been executed against **both** builds;
+UC-71–76 were hand-driven against the Rust build; UC-77 is blocked on `gh` auth.
 
 Written from source, never driven live: UC-02, 03, 05, 15, 18, 19, 25, 35, 37, 38,
 41, 44, 45, 46, 47, 51, 52. Everything else in this file was transcribed from a real

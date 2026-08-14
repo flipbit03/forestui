@@ -1,0 +1,44 @@
+ forestui v0.0.0
+         gh cli: unauth'd           WORKTREE
+ alpha                            │ Repository: alpha
+ beta                             │ Worktree:   wt-a
+ Archived                         │ Branch:     feat/wt-a
+   wt-a (alpha)                   │ Based on:   main (<sha>)
+                                  │ Commit:     <sha> (<rel>)
+                                  │  ⟳ Git Pull (No remote)
+                                  │
+                                  │ LOCATION
+                                  │ <ROOT>/forest/alpha/wt-a
+                                  │
+                                  │ OPEN IN
+                                  │   Editor    Terminal    Files
+                                  │
+                                  │ CLAUDE
+                                  │  New Session   New Session: YOLO   Opus
+                                  │
+                                  │ RECENT SESSIONS
+                                  │ No sessions found
+                                  │
+                                  │ RENAME
+                                  │ Worktree name  wt-a
+                                  │ Branch name    feat/wt-a
+                                  │
+                                  │ MANAGE
+                                  │   Unarchive    Delete
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+ q  Quit   a  Add Repo   w  Add Worktree   e  Editor   t  Terminal   o  Files   n  Claude   y  ClaudeYOLO   h  Archive   d  Delete   s  Sett
+[forestui-0:forestui-dev-<hhmm>* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:al>"<host>" <clock>

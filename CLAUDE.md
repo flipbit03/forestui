@@ -191,9 +191,27 @@ interactions, or UI regressions. Use the `test-forestui` skill to drive forestui
 in a headless terminal with `tu` and verify the change works. Do this
 proactively, not only when asked.
 
-`doc/rust-rewrite/TU_USECASES.md` is the acceptance playbook: 52 numbered
+`doc/rust-rewrite/TU_USECASES.md` is the acceptance playbook: 77 numbered
 scenarios with exact keystrokes and expected output. The P0 cases are the
 regression suite — run the relevant ones after any behavioural change.
+
+UC-53–70 are automated. Capture a build and compare two builds with:
+
+```bash
+scripts/tu-sweep.sh rust ./target/release/forestui
+scripts/tu-compare.sh rust python
+```
+
+Each case writes a normalised text frame to
+`doc/rust-rewrite/baseline/<build>/` (committed — this is the diffable
+baseline) and a PNG to `doc/rust-rewrite/screenshots/<build>/` (gitignored,
+for eyeballing colour and focus). After a UI change, re-run the sweep and
+review the frame diff: an unexpected change there is a regression, an expected
+one needs the baseline refreshed in the same commit.
+
+The harness waits on screen conditions, never fixed sleeps — Textual repaints
+far slower than ratatui, and fixed sleeps produced false mismatches. Anything
+added to the sweep must use `await <regex>`.
 
 Note that `ensure_tmux` re-executes the binary, so for `tu` runs you must build
 first (`cargo build`) and point `$FUI_CMD` at `target/debug/forestui`.

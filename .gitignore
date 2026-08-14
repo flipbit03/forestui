@@ -9,3 +9,6 @@ __pycache__/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+
+# tu sweep screenshots — regenerate with scripts/tu-sweep.sh
+doc/rust-rewrite/screenshots/

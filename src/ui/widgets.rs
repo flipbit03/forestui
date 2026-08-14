@@ -132,7 +132,10 @@ impl TextInput {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let line = if self.value.is_empty() && !focused {
+        // The placeholder stays visible while the field is focused and empty,
+        // the way Textual's Input behaved — it is the only hint of what the
+        // field wants.
+        let line = if self.value.is_empty() {
             Line::from(Span::styled(self.placeholder.clone(), theme::muted()))
         } else {
             Line::from(Span::styled(self.value.clone(), theme::primary()))
@@ -231,6 +234,47 @@ mod tests {
         input.move_right();
         input.delete();
         assert_eq!(input.value(), "hllo");
+    }
+
+    #[test]
+    fn placeholder_shows_while_focused_and_empty() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let input = TextInput::new("").with_placeholder("Enter path...");
+        for focused in [true, false] {
+            let mut terminal = Terminal::new(TestBackend::new(40, 3)).expect("terminal");
+            terminal
+                .draw(|frame| input.render(frame, frame.area(), focused))
+                .expect("draw");
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(
+                screen.contains("Enter path..."),
+                "placeholder missing when focused={focused}"
+            );
+        }
+
+        // Once there is a value, the value wins.
+        let typed = TextInput::new("/tmp").with_placeholder("Enter path...");
+        let mut terminal = Terminal::new(TestBackend::new(40, 3)).expect("terminal");
+        terminal
+            .draw(|frame| typed.render(frame, frame.area(), true))
+            .expect("draw");
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("/tmp"));
+        assert!(!screen.contains("Enter path..."));
     }
 
     #[test]
