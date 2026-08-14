@@ -1,55 +1,54 @@
-.PHONY: lint typecheck format-check check test format install dev clean
+.PHONY: lint typecheck format-check check test format install dev run clean help
 
-# Run ruff linter
+# Run the linter
 lint:
-	uv run ruff check forestui/
+	cargo clippy --all-targets -- -D warnings
 
-# Run mypy type checker
+# Type-check without producing a binary
 typecheck:
-	uv run mypy forestui/
+	cargo check --all-targets
 
 # Check formatting without modifying files
 format-check:
-	uv run ruff format --check forestui/
+	cargo fmt --check
 
 # Run the test suite
 test:
-	uv run pytest tests/
+	cargo test
 
 # Run all checks (lint + typecheck + format + tests)
-check: lint typecheck format-check test
+check: format-check lint typecheck test
 
-# Format code with ruff
+# Format code
 format:
-	uv run ruff format forestui/
-	uv run ruff check --fix forestui/
+	cargo fmt
 
-# Install the package locally
+# Install the binary locally
 install:
-	uv pip install -e .
+	cargo install --path . --locked
 
-# Install with dev dependencies
+# Set up the development toolchain
 dev:
-	uv sync --group dev
+	rustup component add clippy rustfmt
 
 # Clean build artifacts
 clean:
-	rm -rf build/ dist/ *.egg-info/ .mypy_cache/ .ruff_cache/
-	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	cargo clean
 
 # Run the app
 run:
-	uv run forestui
+	cargo run
 
 # Show help
 help:
 	@echo "Available targets:"
-	@echo "  make lint      - Run ruff linter"
-	@echo "  make typecheck - Run mypy type checker"
-	@echo "  make test      - Run the test suite"
-	@echo "  make check     - Run all checks (lint + typecheck + format + tests)"
-	@echo "  make format    - Format code with ruff"
-	@echo "  make install   - Install package locally"
-	@echo "  make dev       - Install with dev dependencies"
-	@echo "  make clean     - Clean build artifacts"
-	@echo "  make run       - Run the app"
+	@echo "  make lint         - Run clippy"
+	@echo "  make typecheck    - Run cargo check"
+	@echo "  make format-check - Verify formatting"
+	@echo "  make test         - Run the test suite"
+	@echo "  make check        - Run all checks (format + lint + typecheck + tests)"
+	@echo "  make format       - Format code"
+	@echo "  make install      - Install the binary locally"
+	@echo "  make dev          - Install clippy and rustfmt"
+	@echo "  make clean        - Clean build artifacts"
+	@echo "  make run          - Run the app"

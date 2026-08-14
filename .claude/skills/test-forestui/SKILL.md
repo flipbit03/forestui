@@ -34,7 +34,16 @@ If no `.tmux.conf`: defaults are prefix `Ctrl+B`, next `Ctrl+B n`, prev `Ctrl+B 
 
 ## How to launch forestui
 
-**NEVER run `uv run forestui` or any tmux command without `TMUX_TMPDIR` isolation.**
+**Build first.** forestui is a Rust binary and `ensure_tmux` re-executes it, so
+you must drive the built executable, not `cargo run`:
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+cargo build            # in the project root
+FUI_CMD=<project-root>/target/debug/forestui
+```
+
+**NEVER launch forestui or any tmux command without `TMUX_TMPDIR` isolation.**
 **NEVER call `tmux` directly from Bash** — not even with `TMUX_TMPDIR` set. The
 user is likely running their own tmux/forestui session right now. Any direct
 `tmux` call risks connecting to (and corrupting) their live session. ALL
@@ -44,10 +53,13 @@ interaction with the test tmux must go through `tu` commands.
 FUI_TEST_DIR=$(mktemp -d)
 
 tu run --name fui --env TMUX_TMPDIR=$FUI_TEST_DIR \
-  --cwd <project-root> -- env -u TMUX uv run forestui
+  --cwd <project-root> -- env -u TMUX $FUI_CMD
 
 tu wait --name fui --text "forestui" --timeout 15000
 ```
+
+Pass a throwaway forest directory as an argument (`$FUI_CMD /tmp/some-forest`)
+so tests never touch the user's real `~/forest`.
 
 ### When you need to detach and reattach
 
@@ -62,27 +74,28 @@ tu run --name fui --env TMUX_TMPDIR=$FUI_TEST_DIR \
 
 # Wait for bash prompt, then start forestui
 tu wait --name fui --text "\\$" --timeout 5000
-tu type --name fui "uv run forestui"
+tu type --name fui "$FUI_CMD"
 tu press --name fui Enter
 
 # ... do your test, detach with Ctrl+A d ...
 # After detach, bash prompt returns. Run forestui again:
 tu wait --name fui --text "\\$" --timeout 5000
-tu type --name fui "uv run forestui"
+tu type --name fui "$FUI_CMD"
 tu press --name fui Enter
 ```
 
-Why: forestui calls `os.execvp("tmux", ...)` to enter tmux. If forestui IS the
-`tu` process, detaching kills the tu session (no shell to return to).
+Why: `cli::ensure_tmux` replaces the process with `tmux attach-session`. If
+forestui IS the `tu` process, detaching kills the tu session (no shell to
+return to).
 
 Need multiple terminals (e.g., testing grouped sessions)? Use the same
 `TMUX_TMPDIR` so they share the same isolated tmux server:
 
 ```bash
 tu run --name fui-a --env TMUX_TMPDIR=$FUI_TEST_DIR \
-  --cwd <project-root> -- env -u TMUX uv run forestui
+  --cwd <project-root> -- env -u TMUX $FUI_CMD
 tu run --name fui-b --env TMUX_TMPDIR=$FUI_TEST_DIR \
-  --cwd <project-root> -- env -u TMUX uv run forestui
+  --cwd <project-root> -- env -u TMUX $FUI_CMD
 ```
 
 ## How to see the screen
@@ -105,8 +118,15 @@ each session is viewing.
 ### forestui hotkeys (direct, no tmux prefix)
 
 `e` editor, `t` terminal, `o` files (mc), `n` claude, `y` yolo claude,
-`a` add repo, `w` add worktree, `q` quit, `h` archive, `d` delete,
-`Up`/`Down` navigate sidebar, `Enter` select.
+`a` add repo, `w` add worktree, `q` quit, `h` archive toggle, `A` show/hide the
+archived section, `d` delete, `s` settings, `r` refresh, `?` help,
+`Tab` switch focus between sidebar and detail pane,
+`Up`/`Down` navigate the focused pane, `Enter` select or activate.
+
+The detail pane has no clickable buttons — every control is reached with `Tab`
+to the pane, then `Up`/`Down` to the control, then `Enter`. In modals,
+`Tab`/`Shift+Tab` move between fields, `Enter` activates, `Esc` cancels;
+confirmations also take `y`/`n`.
 
 ### tmux navigation
 
@@ -167,9 +187,9 @@ launch multiple `tu` instances sharing the same `TMUX_TMPDIR`:
 
 ```bash
 tu run --name fui-a --env TMUX_TMPDIR=$FUI_TEST_DIR \
-  --cwd <project-root> -- env -u TMUX uv run forestui
+  --cwd <project-root> -- env -u TMUX $FUI_CMD
 tu run --name fui-b --env TMUX_TMPDIR=$FUI_TEST_DIR \
-  --cwd <project-root> -- env -u TMUX uv run forestui
+  --cwd <project-root> -- env -u TMUX $FUI_CMD
 ```
 
 Because they share `TMUX_TMPDIR`, they connect to the same tmux server.

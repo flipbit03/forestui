@@ -5,20 +5,35 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   check:
-    name: Lint & Typecheck
-    runs-on: ubuntu-latest
+    name: Lint, typecheck & test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
 
-      - name: Set up Python
-        run: uv python install
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # git is needed by the GitService tests, which drive a real repository.
+      - name: Configure git identity
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "CI"
 
       - name: Run checks
         run: make check
