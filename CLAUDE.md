@@ -160,10 +160,8 @@ use the `test-forestui` skill to launch forestui in a headless terminal and
 visually verify the fix or feature works. Do this proactively, not only when
 asked.
 
-Currently no unit test suite. When adding tests:
-- Use pytest
-- Place tests in `tests/` directory
-- Add pytest to dev dependencies
+Unit tests live in `tests/` and run with `make test` (also part of `make check`).
+Use pytest; async code is driven with `asyncio.run()` inside sync tests.
 
 ## Versioning
 

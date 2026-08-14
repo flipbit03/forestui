@@ -1,4 +1,4 @@
-.PHONY: lint typecheck format-check check format install dev clean
+.PHONY: lint typecheck format-check check test format install dev clean
 
 # Run ruff linter
 lint:
@@ -12,8 +12,12 @@ typecheck:
 format-check:
 	uv run ruff format --check forestui/
 
-# Run all checks (lint + typecheck + format)
-check: lint typecheck format-check
+# Run the test suite
+test:
+	uv run pytest tests/
+
+# Run all checks (lint + typecheck + format + tests)
+check: lint typecheck format-check test
 
 # Format code with ruff
 format:
@@ -42,7 +46,8 @@ help:
 	@echo "Available targets:"
 	@echo "  make lint      - Run ruff linter"
 	@echo "  make typecheck - Run mypy type checker"
-	@echo "  make check     - Run all checks (lint + typecheck)"
+	@echo "  make test      - Run the test suite"
+	@echo "  make check     - Run all checks (lint + typecheck + format + tests)"
 	@echo "  make format    - Format code with ruff"
 	@echo "  make install   - Install package locally"
 	@echo "  make dev       - Install with dev dependencies"

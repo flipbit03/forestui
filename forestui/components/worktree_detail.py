@@ -81,6 +81,7 @@ class WorktreeDetail(Widget):
         commit_time: datetime | None = None,
         has_remote: bool = True,
         custom_buttons: list[CustomClaudeButton] | None = None,
+        path_exists: bool = True,
     ) -> None:
         super().__init__()
         self._repository = repository
@@ -88,6 +89,7 @@ class WorktreeDetail(Widget):
         self._commit_hash = commit_hash
         self._commit_time = commit_time
         self._has_remote = has_remote
+        self._path_exists = path_exists
         self._sessions: list[ClaudeSession] = []
         self._custom_buttons: list[CustomClaudeButton] = list(custom_buttons or [])
         self._buttons_by_prefix: dict[str, CustomClaudeButton] = {
@@ -112,6 +114,11 @@ class WorktreeDetail(Widget):
                     f"Branch:     {self._worktree.branch}",
                     classes="label-accent",
                 )
+                if not self._path_exists:
+                    yield Label(
+                        "⚠ MISSING:   directory no longer exists on disk",
+                        classes="label-destructive",
+                    )
                 # Base branch info (if available)
                 if self._worktree.base_branch:
                     base_text = f"Based on:   {self._worktree.base_branch}"
@@ -131,7 +138,14 @@ class WorktreeDetail(Widget):
                     yield Label(commit_text, classes="label-muted")
                 # Sync button
                 with Horizontal(classes="action-row"):
-                    if self._has_remote:
+                    if not self._path_exists:
+                        yield Button(
+                            "⟳ Git Pull (Directory missing)",
+                            id="btn-sync",
+                            variant="default",
+                            disabled=True,
+                        )
+                    elif self._has_remote:
                         yield Button("⟳ Git Pull", id="btn-sync", variant="default")
                     else:
                         yield Button(
@@ -145,10 +159,16 @@ class WorktreeDetail(Widget):
 
             # Location section
             yield Label("LOCATION", classes="section-header")
-            yield Label(
-                self._worktree.path,
-                classes="path-display label-secondary",
-            )
+            if self._path_exists:
+                yield Label(
+                    self._worktree.path,
+                    classes="path-display label-secondary",
+                )
+            else:
+                yield Label(
+                    f"{self._worktree.path}  (missing)",
+                    classes="path-display label-destructive",
+                )
 
             yield Rule()
 
