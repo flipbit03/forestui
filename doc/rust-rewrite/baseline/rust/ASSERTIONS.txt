@@ -1,3 +1,5 @@
+PASS UC-90     mouse-enabled                                  expected=on                           actual=on
+PASS UC-90     not-any-motion                                 expected=yes                          actual=yes
 PASS UC-78     wt-name                                        expected=wt-a-renamed                 actual=wt-a-renamed
 PASS UC-78     wt-dir-exists                                  expected=yes                          actual=yes
 PASS UC-78     old-dir-gone                                   expected=yes                          actual=yes

@@ -13,7 +13,6 @@ mod util;
 
 use app::App;
 use clap::Parser;
-use ratatui::crossterm;
 use std::io::Write;
 
 fn main() -> anyhow::Result<()> {
@@ -45,9 +44,7 @@ async fn run() -> anyhow::Result<()> {
     let mut app = App::new(tx, cli::VERSION.to_string());
 
     let mut terminal = ratatui::init();
-    // ratatui::init() does not turn the mouse on; without this every click is
-    // invisible to the app and only the keyboard works.
-    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
+    enable_mouse();
     app.on_start();
 
     let outcome = loop {
@@ -58,14 +55,35 @@ async fn run() -> anyhow::Result<()> {
             break Ok(());
         };
         app.handle_event(event);
+
+        app.drain(&mut rx);
+
         if app.should_quit {
             break Ok(());
         }
     };
 
-    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+    disable_mouse();
     ratatui::restore();
     outcome
+}
+
+/// Turn on mouse reporting for button presses and the wheel.
+///
+/// Deliberately not crossterm's `EnableMouseCapture`: that also enables
+/// any-motion tracking (`?1003h`), so the terminal reports every pointer
+/// movement. Each report wakes the loop and repaints, which showed up as the
+/// whole app flickering while the mouse merely moved across it. `?1000h` is
+/// press/release only, and `?1006h` asks for SGR coordinates so columns past
+/// 223 still resolve.
+fn enable_mouse() {
+    print!("\x1b[?1000h\x1b[?1006h");
+    let _ = std::io::stdout().flush();
+}
+
+fn disable_mouse() {
+    print!("\x1b[?1006l\x1b[?1000l");
+    let _ = std::io::stdout().flush();
 }
 
 /// Mirror the Textual build's crash handling: write a log, print it, and pause

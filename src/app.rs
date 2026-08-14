@@ -581,6 +581,24 @@ impl App {
         }
     }
 
+    /// Handle everything already queued, and report how many events that was.
+    ///
+    /// The loop draws once per iteration, so without this a burst — a tick plus
+    /// a click's press and release, or several background results landing
+    /// together — repaints the screen once per event. That reads as the whole
+    /// app flickering for a single user action.
+    pub fn drain(&mut self, rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> usize {
+        let mut handled = 0;
+        while let Ok(queued) = rx.try_recv() {
+            self.handle_event(queued);
+            handled += 1;
+            if self.should_quit {
+                break;
+            }
+        }
+        handled
+    }
+
     // -------------------------------------------------------------------- mouse
 
     /// Drop the previous frame's clickable regions. Called at the start of draw.
@@ -1969,6 +1987,51 @@ mod tests {
             }
             _ => panic!("add-worktree modal expected"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_burst_of_events_is_handled_before_one_repaint() {
+        // The draw loop redraws once per iteration, so everything already
+        // queued has to be consumed in a single pass or a click repaints the
+        // screen several times over — which is what flickering looked like.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut state = AppState::load_from(dir.path().join(".forestui-config.json"));
+        state.add_repository(Repository::new("demo".into(), "/tmp/demo".into()));
+
+        let (tx, mut rx) = crate::event::start();
+        let mut app = App::with_state(tx.clone(), state, Settings::default());
+
+        for _ in 0..5 {
+            tx.info("burst");
+        }
+        // Let the sends land in the channel before draining.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let handled = app.drain(&mut rx);
+        assert!(handled >= 5, "drained only {handled} events");
+        assert!(rx.try_recv().is_err(), "events left queued after draining");
+    }
+
+    #[tokio::test]
+    async fn pointer_motion_is_ignored() {
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let (_dir, mut app) = app_with_fixture();
+        app.push_hit(rect(0, 1, 30, 1), HitTarget::SidebarRow(1));
+
+        let at = |kind| MouseEvent {
+            kind,
+            column: 4,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        // Motion and release must not act; only the press does.
+        app.handle_mouse(at(MouseEventKind::Moved));
+        app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left)));
+        app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left)));
+        assert_eq!(app.sidebar_index, 0, "motion changed the selection");
+
+        app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left)));
+        assert_eq!(app.sidebar_index, 1);
     }
 
     #[tokio::test]

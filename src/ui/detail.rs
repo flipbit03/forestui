@@ -25,21 +25,25 @@ const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
 /// Width of the label column in the rename section.
 const FIELD_LABEL_WIDTH: usize = 14;
 
+/// Cells a card's border and padding take up on the left of its content, and
+/// again on the right. Textual's cards were `border: solid` plus `padding: 1`.
+const CARD_INSET: u16 = 2;
+
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-
-    let Some(pane) = build(app) else {
-        empty_state(frame, area);
-        return;
-    };
 
     // One column of padding on each side; the sidebar already draws the divider.
     let inner = Rect {
         x: area.x + 1,
         width: area.width.saturating_sub(2),
         ..area
+    };
+
+    let Some(pane) = build(app, inner.width) else {
+        empty_state(frame, area);
+        return;
     };
     let offset = pane.scroll_offset(inner.height);
     frame.render_widget(Paragraph::new(pane.lines).scroll((offset, 0)), inner);
@@ -66,12 +70,12 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Render the pane for the current selection, or `None` for the empty state.
-fn build(app: &App) -> Option<Pane> {
+fn build(app: &App, width: u16) -> Option<Pane> {
     let focused = match app.focus {
         Focus::Detail => Some(app.detail_index),
         Focus::Sidebar => None,
     };
-    let mut pane = Pane::new(focused);
+    let mut pane = Pane::new(focused, width);
 
     if app.state.selection.is_worktree() {
         worktree(&mut pane, app);
@@ -123,20 +127,25 @@ struct Pane {
     items: Vec<Item>,
     /// Index of the focused item, or `None` while the sidebar owns focus.
     focused: Option<usize>,
+    /// Width of the content area, so rules and cards can be filled out to it.
+    width: u16,
+    /// Width of the card currently open, if any. See [`Pane::card_start`].
+    card: Option<u16>,
 }
 
 impl Pane {
-    fn new(focused: Option<usize>) -> Self {
+    fn new(focused: Option<usize>, width: u16) -> Self {
         Self {
             lines: Vec::new(),
             items: Vec::new(),
             focused,
+            width,
+            card: None,
         }
     }
 
     fn text(&mut self, text: impl Into<String>, style: Style) {
-        self.lines
-            .push(Line::from(Span::styled(text.into(), style)));
+        self.push_line(vec![Span::styled(text.into(), style)]);
     }
 
     fn blank(&mut self) {
@@ -151,9 +160,59 @@ impl Pane {
         self.text(title.to_string(), theme::section_header());
     }
 
+    /// The horizontal `Rule()` Textual drew between the major sections, with the
+    /// blank line above it that its `margin` produced. The blank below is left to
+    /// [`Pane::section`], which already spaces a header away from what precedes it.
+    fn rule(&mut self) {
+        self.blank();
+        self.text("─".repeat(self.width as usize), theme::border());
+    }
+
     /// Push a line built from spans returned by [`Pane::control`].
     fn row(&mut self, spans: Vec<Span<'static>>) {
-        self.lines.push(Line::from(spans));
+        self.push_line(spans);
+    }
+
+    /// Open a card — the bordered, elevated box Textual gave `.session-item` and
+    /// `.issue-row`. Lines pushed until [`Pane::card_end`] land inside it.
+    fn card_start(&mut self, width: u16) {
+        self.lines.push(card_edge(width, '┌', '┐'));
+        self.card = Some(width);
+    }
+
+    fn card_end(&mut self) {
+        if let Some(width) = self.card.take() {
+            self.lines.push(card_edge(width, '└', '┘'));
+        }
+    }
+
+    /// Push one content line, wrapped in the open card's border and background.
+    fn push_line(&mut self, mut spans: Vec<Span<'static>>) {
+        let Some(width) = self.card else {
+            self.lines.push(Line::from(spans));
+            return;
+        };
+        let filled = Style::default().bg(theme::BG_ELEVATED);
+        // Text styles carry a foreground only, so without this the page colour
+        // shows through the card. Spans that set their own background — the
+        // controls — keep it, which is what makes a pill read as raised.
+        for span in &mut spans {
+            if span.style.bg.is_none() {
+                span.style = span.style.bg(theme::BG_ELEVATED);
+            }
+        }
+        let content = as_u16(spans.iter().map(Span::width).sum());
+        // Left border, left padding, content, then whatever is left over before
+        // the padding and border on the right.
+        let fill = width.saturating_sub(CARD_INSET + content + 1);
+        let mut line = vec![
+            Span::styled("│", theme::border().bg(theme::BG_ELEVATED)),
+            Span::styled(" ", filled),
+        ];
+        line.append(&mut spans);
+        line.push(Span::styled(" ".repeat(fill as usize), filled));
+        line.push(Span::styled("│", theme::border().bg(theme::BG_ELEVATED)));
+        self.lines.push(Line::from(line));
     }
 
     /// Claim the next focusable slot at `x` on the line that is about to be
@@ -175,7 +234,8 @@ impl Pane {
     /// because that running x offset is the only place it is ever known.
     fn controls(&mut self, lead: Vec<Span<'static>>, controls: &[Control]) {
         let mut spans = lead;
-        let mut x = as_u16(spans.iter().map(Span::width).sum());
+        let inset = self.card.map_or(0, |_| CARD_INSET);
+        let mut x = inset.saturating_add(as_u16(spans.iter().map(Span::width).sum()));
         for (index, control) in controls.iter().enumerate() {
             if index > 0 {
                 spans.push(Span::raw(" "));
@@ -195,7 +255,7 @@ impl Pane {
             spans.append(&mut pill);
             x = x.saturating_add(width);
         }
-        self.lines.push(Line::from(spans));
+        self.push_line(spans);
     }
 
     /// Offset that keeps the focused control on screen. `draw` builds the pane
@@ -217,6 +277,34 @@ impl Pane {
 /// Terminal geometry is `u16` while content lengths are `usize`.
 fn as_u16(len: usize) -> u16 {
     u16::try_from(len).unwrap_or(u16::MAX)
+}
+
+/// Top or bottom edge of a card.
+fn card_edge(width: u16, left: char, right: char) -> Line<'static> {
+    let span = width.saturating_sub(2) as usize;
+    Line::from(Span::styled(
+        format!("{left}{}{right}", "─".repeat(span)),
+        theme::border().bg(theme::BG_ELEVATED),
+    ))
+}
+
+/// A path in the boxed, elevated `.path-display` Textual used. The box hugs the
+/// path rather than filling the pane, which is how it laid out there.
+fn path_box(pane: &mut Pane, path: String, style: Style) {
+    // A forest path routinely outruns the pane. Cutting it here rather than
+    // letting the paragraph clip it keeps the box's right edge on screen; the
+    // tail was lost either way.
+    let room = pane.width.saturating_sub(2 * CARD_INSET) as usize;
+    // `truncate` adds an ellipsis, so it needs three of those cells to itself.
+    let path = if path.chars().count() > room {
+        crate::util::truncate(&path, room.saturating_sub(3))
+    } else {
+        path
+    };
+    let width = as_u16(path.chars().count()).saturating_add(2 * CARD_INSET);
+    pane.card_start(width);
+    pane.text(path, style);
+    pane.card_end();
 }
 
 // --------------------------------------------------------------------- panes
@@ -243,14 +331,21 @@ fn repository(pane: &mut Pane, app: &App) {
         ],
     );
 
+    pane.rule();
     pane.section("LOCATION");
-    pane.text(path.to_string(), theme::secondary());
+    path_box(pane, path.to_string(), theme::secondary());
 
+    pane.rule();
     open_in(pane);
+    // Textual ran CLAUDE straight into RECENT SESSIONS with no rule between them.
+    pane.rule();
     claude(pane, app);
     sessions(pane, app);
+
+    pane.rule();
     issues(pane, app);
 
+    pane.rule();
     pane.section("MANAGE");
     pane.controls(Vec::new(), &[Control::new("Remove Repository", true)]);
 }
@@ -287,24 +382,30 @@ fn worktree(pane: &mut Pane, app: &App) {
 
     pane.controls(Vec::new(), &[sync_control(app, !app.meta.path_exists)]);
 
+    pane.rule();
     pane.section("LOCATION");
     if app.meta.path_exists {
-        pane.text(app.meta.path.clone(), theme::secondary());
+        path_box(pane, app.meta.path.clone(), theme::secondary());
     } else {
-        pane.text(
+        path_box(
+            pane,
             format!("{}  (missing)", app.meta.path),
             theme::destructive(),
         );
     }
 
+    pane.rule();
     open_in(pane);
+    pane.rule();
     claude(pane, app);
     sessions(pane, app);
 
+    pane.rule();
     pane.section("RENAME");
     field(pane, "Worktree name", &app.name_input);
     field(pane, "Branch name", &app.branch_input);
 
+    pane.rule();
     pane.section("MANAGE");
     pane.controls(
         Vec::new(),
@@ -331,12 +432,14 @@ fn commit_line(pane: &mut Pane, app: &App) {
 /// The `⟳ Git Pull` control. Disabled when there is no remote to pull from, or
 /// — for worktrees — when the directory is gone.
 fn sync_control(app: &App, missing_directory: bool) -> Control {
+    // Two spaces after the glyph: ⟳ is double-width in many terminals, and with a
+    // single space it eats the gap and the label reads as "⟳Git Pull".
     if missing_directory {
-        Control::disabled("⟳ Git Pull (Directory missing)")
+        Control::disabled("⟳  Git Pull (Directory missing)")
     } else if app.meta.has_remote {
-        Control::new("⟳ Git Pull", false)
+        Control::new("⟳  Git Pull", false)
     } else {
-        Control::disabled("⟳ Git Pull (No remote)")
+        Control::disabled("⟳  Git Pull (No remote)")
     }
 }
 
@@ -390,6 +493,7 @@ fn sessions(pane: &mut Pane, app: &App) {
 }
 
 fn session_item(pane: &mut Pane, app: &App, session: &ClaudeSession) {
+    pane.card_start(pane.width);
     pane.text(crate::util::truncate(&session.title, 60), theme::primary());
     if !session.last_message.is_empty() && session.last_message != session.title {
         pane.text(
@@ -409,6 +513,7 @@ fn session_item(pane: &mut Pane, app: &App, session: &ClaudeSession) {
     let mut controls = vec![Control::new("Resume", false), Control::new("YOLO", true)];
     controls.extend(custom_controls(app));
     pane.controls(Vec::new(), &controls);
+    pane.card_end();
 }
 
 fn issues(pane: &mut Pane, app: &App) {
@@ -435,12 +540,16 @@ fn issues(pane: &mut Pane, app: &App) {
         pane.text("No issues found", theme::muted());
         return;
     }
-    for issue in list {
+    for (index, issue) in list.iter().enumerate() {
+        if index > 0 {
+            pane.blank();
+        }
         issue_item(pane, issue);
     }
 }
 
 fn issue_item(pane: &mut Pane, issue: &GitHubIssue) {
+    pane.card_start(pane.width);
     pane.text(
         format!(
             "#{} {}",
@@ -464,6 +573,7 @@ fn issue_item(pane: &mut Pane, issue: &GitHubIssue) {
         vec![Span::styled(format!("{meta}  "), theme::muted())],
         &[Control::new("Create WT", false)],
     );
+    pane.card_end();
 }
 
 /// A rename field. The caret is drawn in the text because the pane renders as
@@ -627,6 +737,101 @@ mod tests {
             .join("\n")
     }
 
+    /// Textual put a `Rule()` between the major sections, and the pane read as
+    /// one flat list without them.
+    #[tokio::test]
+    async fn sections_are_separated_by_rules() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = test_app(&dir);
+        with_repository(&mut app);
+        // Loaded but empty, so the whole pane fits on screen unscrolled.
+        app.sessions = Some(vec![]);
+        app.issues = Some(vec![]);
+
+        /// Whether a rule sits between two lines. A rule is the only line that is
+        /// nothing but the horizontal glyph; a card's edges start with a corner.
+        fn rule_between(screen: &str, from: &str, to: &str) -> bool {
+            let rows: Vec<&str> = screen.lines().collect();
+            let row_of = |needle: &str| {
+                rows.iter()
+                    .position(|row| row.contains(needle))
+                    .unwrap_or_else(|| panic!("{needle:?} is not on screen:\n{screen}"))
+            };
+            (row_of(from)..row_of(to)).any(|y| rows[y].trim().starts_with("──"))
+        }
+
+        let screen = render(&mut app);
+        assert!(
+            rule_between(&screen, "Repository: demo", "LOCATION"),
+            "{screen}"
+        );
+        assert!(rule_between(&screen, "LOCATION", "OPEN IN"), "{screen}");
+        assert!(rule_between(&screen, "OPEN IN", "CLAUDE"), "{screen}");
+        assert!(
+            rule_between(&screen, "RECENT SESSIONS", "MY OPEN GITHUB ISSUES"),
+            "{screen}"
+        );
+        assert!(
+            rule_between(&screen, "MY OPEN GITHUB ISSUES", "MANAGE"),
+            "{screen}"
+        );
+        // CLAUDE ran straight into RECENT SESSIONS there, and does here too.
+        assert!(
+            !rule_between(&screen, "CLAUDE", "RECENT SESSIONS"),
+            "{screen}"
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        app.state = AppState::load_from(dir.path().join(".forestui-config.json"));
+        with_worktree(&mut app);
+        let screen = render(&mut app);
+        assert!(
+            rule_between(&screen, "RECENT SESSIONS", "RENAME"),
+            "{screen}"
+        );
+        assert!(rule_between(&screen, "Branch name", "MANAGE"), "{screen}");
+    }
+
+    /// Sessions and issues were `.session-item` / `.issue-row` boxes, not bare
+    /// lines: a border in the border colour over an elevated background.
+    #[tokio::test]
+    async fn session_and_issue_items_render_as_cards() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = test_app(&dir);
+        with_repository(&mut app);
+        app.sessions = Some(vec![a_session()]);
+        app.issues = Some(vec![an_issue()]);
+        let buffer = render_buffer(&mut app, 100, 60);
+        // The pane keeps a column of padding on each side, so a full-width card
+        // ends one cell in from the right edge of the screen.
+        let right = buffer.area.width - 2;
+
+        for label in ["Refactor the detail pane", "#42 Fix login bug"] {
+            let (x, y) = find_cell(&buffer, label);
+            let cell = |x: u16, y: u16| {
+                buffer
+                    .cell((x, y))
+                    .unwrap_or_else(|| panic!("{label}: no cell at {x},{y}"))
+            };
+
+            let left = x - CARD_INSET;
+            assert_eq!(cell(left, y - 1).symbol(), "┌", "{label}: top left");
+            assert_eq!(cell(right, y - 1).symbol(), "┐", "{label}: top right");
+            assert_eq!(cell(left, y).symbol(), "│", "{label}: left border");
+            assert_eq!(cell(right, y).symbol(), "│", "{label}: right border");
+            assert_eq!(cell(left, y).fg, theme::BORDER, "{label}: border colour");
+            // The background has to reach past the text, or the card is a frame
+            // around the page colour rather than a filled box.
+            for probe in [x, right - 1] {
+                assert_eq!(
+                    cell(probe, y).bg,
+                    theme::BG_ELEVATED,
+                    "{label}: background at {probe}",
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn empty_state_is_visible() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -702,7 +907,7 @@ mod tests {
             for issues in [None, Some(vec![]), Some(vec![an_issue()])] {
                 app.sessions = sessions.clone();
                 app.issues = issues.clone();
-                let pane = build(&app).expect("repository pane");
+                let pane = build(&app, 100).expect("repository pane");
                 assert_eq!(
                     pane.items.len(),
                     app.detail_items().len(),
@@ -718,7 +923,7 @@ mod tests {
         with_worktree(&mut app);
         for sessions in [None, Some(vec![]), Some(vec![a_session()])] {
             app.sessions = sessions.clone();
-            let pane = build(&app).expect("worktree pane");
+            let pane = build(&app, 100).expect("worktree pane");
             assert_eq!(
                 pane.items.len(),
                 app.detail_items().len(),
@@ -738,7 +943,7 @@ mod tests {
         app.focus = Focus::Detail;
         app.detail_index = app.detail_items().len() - 1;
 
-        let pane = build(&app).expect("repository pane");
+        let pane = build(&app, 100).expect("repository pane");
         let offset = pane.scroll_offset(20);
         let row = pane.items[app.detail_index].line;
         assert!(
@@ -748,7 +953,7 @@ mod tests {
 
         // The sidebar keeps the pane at the top.
         app.focus = Focus::Sidebar;
-        let pane = build(&app).expect("repository pane");
+        let pane = build(&app, 100).expect("repository pane");
         assert_eq!(pane.scroll_offset(20), 0);
     }
 
@@ -760,7 +965,7 @@ mod tests {
         let mut app = test_app(&dir);
         with_worktree(&mut app);
         app.sessions = Some(vec![a_session()]);
-        let buffer = render_buffer(&mut app, 100, 40);
+        let buffer = render_buffer(&mut app, 100, 60);
 
         let index_of = |item: &DetailItem| {
             app.detail_items()

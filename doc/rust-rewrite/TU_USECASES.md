@@ -1501,6 +1501,73 @@ ones red.
 
 ---
 
+## Area M — Visual parity against the Python build
+
+Found by rendering both builds on the same fixture and comparing the captured
+PNGs pair by pair (`doc/rust-rewrite/screenshots/<build>/`). Text frames prove
+the *content* matches; these cover how it *looks*.
+
+### UC-90 — Mouse reporting is on, but not any-motion
+**Area:** Mouse | **Priority:** P0 | 🟢 EXECUTED (both builds; the second half is Rust-only)
+**Steps:** `tu mouse state --name <session>` right after launch.
+**Expected (both):** `enabled: true` — without it no click reaches the app at all.
+**Expected (Rust):** the mode is **not** `AnyMotion`. `EnableMouseCapture` turns on
+`?1003h`, so the terminal reports every pointer movement; the Rust loop redraws
+per event, so that showed up as the whole app flickering when the mouse merely
+moved across it. The build now requests `?1000h` + `?1006h` — buttons and wheel
+only — and drains queued events before repainting.
+**Not asserted for Python:** Textual legitimately uses any-motion tracking
+because it supports hover.
+**Fails if:** a click does nothing (reporting off), or the app repaints on
+pointer movement (flicker).
+
+### UC-91 — A modal dims what is behind it
+**Area:** Visual | **Priority:** P1 | 🟢 EXECUTED (both builds)
+**Expected:** with any modal open, the panes behind it are visibly darkened, so
+the dialog reads as modal. Textual dimmed the backdrop; the first Rust cut did
+not, leaving the modal competing with a fully-lit pane.
+
+### UC-92 — Modals keep a margin from the screen edges
+**Area:** Visual | **Priority:** P2 | 🟢 EXECUTED (Rust)
+**Expected:** the wide modals (Settings, Custom Buttons) do not run flush to the
+left and right edges. Textual capped them at `max-width: 95%`; the Rust build
+clamped to the full width, so a 140-column terminal produced a dialog with no
+margin at all.
+
+### UC-93 — The help toast shows its whole text
+**Area:** Visual | **Priority:** P1 | 🟢 EXECUTED (both builds)
+**Steps:** press `?`.
+**Expected:** the full key list is readable. Python wrapped the toast over
+several lines; the Rust build truncated it to one line and hid most of what the
+user pressed `?` to read. Notifications now wrap on word boundaries.
+
+### UC-94 — Section rules and item cards
+**Area:** Visual | **Priority:** P1 | 🟡 IN PROGRESS
+**Expected:** the detail pane carries the same visual structure Textual gave it —
+horizontal rules between sections, an elevated bordered card behind each Claude
+session and each GitHub issue, and the LOCATION path in a bordered box. Without
+them the pane reads as one flat undifferentiated list, which is what a user
+comparing the two builds side by side noticed first.
+
+---
+
+## Known visual divergences (accepted, not defects)
+
+These are consequences of the immediate-mode port and are **not** treated as
+regressions. Any change here is a deliberate decision, not a test failure.
+
+| | Textual | ratatui |
+|---|---|---|
+| Controls | bordered boxes, three rows tall | one-row filled pills |
+| Consequence | the repository pane needs scrolling to reach MANAGE | the whole pane fits |
+| Sidebar | `▼` arrows, repositories collapse | flat list, no collapse |
+| Selects | dropdown overlay | `◂ value ▸` cycled with Left/Right |
+| Header | title centred | title left-aligned |
+| Footer | includes `^p` command palette | no command palette |
+| Sidebar branch | swallowed by console-markup parsing | shown, as intended |
+
+---
+
 ## Appendix — quick coverage map
 
 | Area | UCs | P0 count |
@@ -1517,8 +1584,9 @@ ones red.
 | Automated parity sweep | 53–70 | 12 |
 | Hand-driven, unscripted | 71–77 | 4 |
 | Flows & mouse | 78–89 | 8 |
+| Visual parity | 90–94 | 1 |
 
-**89 use cases · 49 P0 · 72 executed live · 17 written from source only.**
+**94 use cases · 50 P0 · 76 executed live · 17 written from source only.**
 
 UC-01–52 were written against the Python build on 2026-08-14 (35 executed).
 UC-53–70 are the automated sweep and have been executed against **both** builds;

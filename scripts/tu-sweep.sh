@@ -165,6 +165,26 @@ sleep 6
 
 capture UC-53 boot-repository-detail
 
+# UC-90: mouse reporting must be on, but must NOT be any-motion tracking.
+# `EnableMouseCapture` turns on ?1003h, so the terminal reports every pointer
+# movement; each report woke the loop and repainted, which showed up as the
+# whole app flickering. Button/scroll reporting only.
+mouse_mode="$(tu mouse state --name "$SESS" 2>/dev/null | python3 -c "
+import json,sys
+try:
+    s=json.load(sys.stdin)
+    print(('on' if s.get('enabled') else 'off') + ':' + str(s.get('mode')))
+except Exception:
+    print('unknown')")"
+capture UC-90 mouse-reporting-mode
+assert UC-90 mouse-enabled "on" "${mouse_mode%%:*}"
+# Rust-only: Textual legitimately uses any-motion tracking because it supports
+# hover. The Rust build redraws per event, so motion reporting is a defect there.
+if [ "$LABEL" = "rust" ]; then
+  assert UC-90 not-any-motion "yes" \
+    "$([ "${mouse_mode##*:}" = "AnyMotion" ] && echo no || echo yes)"
+fi
+
 # The Textual tree needs one extra Down: the first press only highlights the
 # root before selection follows the cursor.
 press Down; sleep 1.2

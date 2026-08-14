@@ -173,9 +173,19 @@ pub fn framed(frame: &mut Frame, area: Rect, title: &str, focused: bool) -> Rect
 }
 
 /// Centre a fixed-size rect inside `area`, clamped to the available space.
+///
+/// The clamp leaves a margin rather than running to the very edge — Textual's
+/// modals capped at `max-width: 95%`, and a dialog flush against both sides
+/// stops reading as a dialog.
 pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
-    let w = width.min(area.width);
-    let h = height.min(area.height);
+    let w = width
+        .min(area.width.saturating_mul(95) / 100)
+        .max(1)
+        .min(area.width);
+    let h = height
+        .min(area.height.saturating_mul(95) / 100)
+        .max(1)
+        .min(area.height);
     Rect {
         x: area.x + (area.width.saturating_sub(w)) / 2,
         y: area.y + (area.height.saturating_sub(h)) / 2,
@@ -280,10 +290,22 @@ mod tests {
     #[test]
     fn centered_rect_clamps_to_area() {
         let area = Rect::new(0, 0, 40, 10);
+
+        // Oversized: clamped, but with a margin so it still reads as a dialog
+        // rather than running edge to edge.
         let r = centered_rect(80, 30, area);
-        assert_eq!(r.width, 40);
-        assert_eq!(r.height, 10);
+        assert_eq!(r.width, 38);
+        assert_eq!(r.height, 9);
+        // Horizontal margin is what stops it reading as a full-width pane; a
+        // one-row vertical gap rounds away and does not matter.
+        assert!(r.x > 0, "no margin left around the dialog");
+
+        // Fits: placed exactly, centred.
         let r = centered_rect(20, 4, area);
         assert_eq!((r.x, r.y, r.width, r.height), (10, 3, 20, 4));
+
+        // Degenerate areas must still produce something drawable.
+        let tiny = centered_rect(80, 30, Rect::new(0, 0, 1, 1));
+        assert_eq!((tiny.width, tiny.height), (1, 1));
     }
 }

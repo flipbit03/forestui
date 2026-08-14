@@ -10,7 +10,7 @@ use crate::event::Severity;
 use crate::theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
@@ -42,7 +42,37 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_notifications(frame, app, body_area);
 
     if !app.modals.is_empty() {
+        // Textual dimmed whatever sat behind a modal screen. Without it the
+        // dialog competes with a fully-lit pane and stops reading as modal.
+        dim(frame, area);
         modals::draw(frame, app, area);
+    }
+}
+
+/// Darken everything already drawn, so the modal on top stands out.
+fn dim(frame: &mut Frame, area: Rect) {
+    let buffer = frame.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buffer.cell_mut((x, y)) {
+                let fg = darken(cell.fg);
+                let bg = darken(cell.bg);
+                cell.set_fg(fg);
+                cell.set_bg(bg);
+            }
+        }
+    }
+}
+
+fn darken(color: Color) -> Color {
+    /// The page background, pre-dimmed, for cells the terminal draws default.
+    const DIMMED_PAGE: Color = Color::Rgb(0x1C / 3, 0x1C / 3, 0x1E / 3);
+    match color {
+        Color::Rgb(r, g, b) => Color::Rgb(r / 3, g / 3, b / 3),
+        // An unstyled cell shows the terminal default; treat it as the page
+        // colour so the backdrop dims evenly instead of leaving bright gaps.
+        Color::Reset => DIMMED_PAGE,
+        other => other,
     }
 }
 
@@ -119,7 +149,31 @@ fn draw_notifications(frame: &mut Frame, app: &App, area: Rect) {
     if width < 10 {
         return;
     }
-    let height = (app.notifications.len() as u16).min(area.height);
+    // Wrap rather than truncate: the help toast is a full key list, and cutting
+    // it at one line hides most of what the user pressed `?` to read.
+    let inner_width = width as usize - 2;
+    let mut lines: Vec<Line> = Vec::new();
+    for notification in &app.notifications {
+        let style = match notification.severity {
+            Severity::Information => Style::default()
+                .bg(theme::ACCENT_DARK)
+                .fg(theme::TEXT_PRIMARY),
+            Severity::Warning => Style::default().bg(theme::WARNING).fg(theme::BG),
+            Severity::Error => Style::default().bg(theme::DESTRUCTIVE).fg(theme::BG),
+        };
+        for chunk in wrap_words(&notification.text, inner_width) {
+            lines.push(Line::from(Span::styled(
+                format!(" {chunk:<inner_width$} "),
+                style,
+            )));
+        }
+    }
+
+    let height = (lines.len() as u16).min(area.height.saturating_sub(1));
+    if height == 0 {
+        return;
+    }
+    lines.truncate(height as usize);
     let rect = Rect {
         x: area.x + area.width.saturating_sub(width + 2),
         y: area.y + area.height.saturating_sub(height + 1),
@@ -127,27 +181,75 @@ fn draw_notifications(frame: &mut Frame, app: &App, area: Rect) {
         height,
     };
 
-    let lines: Vec<Line> = app
-        .notifications
-        .iter()
-        .map(|notification| {
-            let style = match notification.severity {
-                Severity::Information => Style::default()
-                    .bg(theme::ACCENT_DARK)
-                    .fg(theme::TEXT_PRIMARY),
-                Severity::Warning => Style::default().bg(theme::WARNING).fg(theme::BG),
-                Severity::Error => Style::default().bg(theme::DESTRUCTIVE).fg(theme::BG),
-            };
-            Line::from(Span::styled(
-                format!(
-                    " {} ",
-                    crate::util::truncate(&notification.text, width as usize - 2)
-                ),
-                style,
-            ))
-        })
-        .collect();
-
     frame.render_widget(Clear, rect);
     frame.render_widget(Paragraph::new(lines), rect);
+}
+
+/// Break text into lines of at most `width` characters, on word boundaries
+/// where possible.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+        if candidate.chars().count() <= width {
+            current = candidate;
+            continue;
+        }
+        if !current.is_empty() {
+            lines.push(std::mem::take(&mut current));
+        }
+        // A single word longer than the line has to be split somewhere.
+        let mut rest: Vec<char> = word.chars().collect();
+        while rest.len() > width {
+            lines.push(rest.drain(..width).collect());
+        }
+        current = rest.into_iter().collect();
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrap_words_breaks_on_word_boundaries() {
+        let wrapped = wrap_words("a: Add Repo | w: Add Worktree | e: Editor", 20);
+        assert!(wrapped.iter().all(|l| l.chars().count() <= 20));
+        assert!(wrapped.len() > 1, "the help text has to wrap, not truncate");
+        // Nothing may be lost: the words all survive, in order.
+        let joined = wrapped.join(" ");
+        assert_eq!(
+            joined.split_whitespace().collect::<Vec<_>>(),
+            "a: Add Repo | w: Add Worktree | e: Editor"
+                .split_whitespace()
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn wrap_words_splits_an_overlong_word() {
+        let wrapped = wrap_words("supercalifragilistic", 6);
+        assert!(wrapped.iter().all(|l| l.chars().count() <= 6));
+        assert_eq!(wrapped.concat(), "supercalifragilistic");
+        assert!(wrap_words("anything", 0).is_empty());
+    }
+
+    #[test]
+    fn button_width_counts_the_caps() {
+        // Two cap cells plus a space either side of the label.
+        assert_eq!(button_width("Editor") as usize, "Editor".len() + 4);
+        assert_eq!(button("Editor", false, false).len(), 3);
+    }
 }
