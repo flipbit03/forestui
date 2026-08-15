@@ -30,12 +30,15 @@ jobs:
 
       # The checked-in version is 0.0.0, which is also what auto-enables dev mode
       # when running from source. The tag is the only source of truth.
-      - name: Patch version in Cargo.toml
+      # Cargo.lock carries the package's own version too. Patching only
+      # Cargo.toml leaves the lockfile stale, which makes any later `--locked`
+      # build fail rather than build the wrong thing.
+      - name: Patch version
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
           sed -i "s/^version = \"0.0.0\"/version = \"${VERSION}\"/" Cargo.toml
-          cargo update --workspace -p forestui
-          grep '^version' Cargo.toml
+          sed -i "/^name = \"forestui\"$/{n;s/^version = \"0.0.0\"/version = \"${VERSION}\"/;}" Cargo.lock
+          grep -A1 '^name = "forestui"$' Cargo.lock
 
       - name: Publish
         run: cargo publish --no-verify --allow-dirty
@@ -87,11 +90,12 @@ jobs:
           key: release-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: release-${{ matrix.target }}-cargo-
 
-      - name: Patch version in Cargo.toml
+      - name: Patch version
         run: |
           TAG="${{ github.event.release.tag_name }}"
           VERSION="${TAG#v}"
           sed -i'' -e "s/^version = \"0.0.0\"/version = \"${VERSION}\"/" Cargo.toml
+          sed -i'' -e "/^name = \"forestui\"$/{n;s/^version = \"0.0.0\"/version = \"${VERSION}\"/;}" Cargo.lock
 
       - name: Build binary
         run: cargo build --release --locked --target ${{ matrix.target }}
