@@ -99,6 +99,14 @@ pub enum AppEvent {
     /// config used to take the new name before `git branch -m` ran and keep it
     /// when the rename failed, leaving a branch recorded that does not exist.
     WorktreeBranchRenamed { worktree_id: Uuid, branch: String },
+    /// A worktree removal attempt finished. Success is folded into state on
+    /// the main loop (single-writer, same reason as [`AppEvent::WorktreeAdded`]);
+    /// a dirty refusal opens the second confirmation; an error surfaces git's
+    /// message and leaves the entry in place.
+    WorktreeRemoveResult {
+        worktree_id: Uuid,
+        outcome: Result<crate::services::git::RemoveOutcome, String>,
+    },
     /// Reload the detail pane only.
     ReloadDetail,
 }

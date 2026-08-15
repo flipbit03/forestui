@@ -251,6 +251,9 @@ fn worktree(nodes: &mut Vec<DetailNode>, app: &App) {
     let name = selected.map(|(_, w)| w.name.as_str()).unwrap_or_default();
     let branch = selected.map(|(_, w)| w.branch.as_str()).unwrap_or_default();
     let archived = selected.map(|(_, w)| w.is_archived).unwrap_or(false);
+    let deleting = selected
+        .map(|(_, w)| app.removals_in_flight.contains(&w.id))
+        .unwrap_or(false);
 
     nodes.push(DetailNode::Section("WORKTREE"));
     text(nodes, format!("Repository: {repository}"), theme::title());
@@ -315,7 +318,11 @@ fn worktree(nodes: &mut Vec<DetailNode>, app: &App) {
             } else {
                 ControlSpec::new(Action::Archive, "Archive", theme::Variant::Normal)
             },
-            ControlSpec::new(Action::Delete, "Delete", theme::Variant::Destructive),
+            if deleting {
+                ControlSpec::disabled(Action::Delete, "Deleting…")
+            } else {
+                ControlSpec::new(Action::Delete, "Delete", theme::Variant::Destructive)
+            },
         ],
     );
     bottom_padding(nodes);

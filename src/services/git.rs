@@ -200,21 +200,157 @@ pub async fn create_worktree(
     Ok(())
 }
 
-/// Remove a worktree, retrying with `--force` once if the plain remove fails.
-pub async fn remove_worktree(repo_path: &str, worktree_path: &str) -> GitResult<()> {
+/// What a plain (non-forced) removal attempt decided.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoveOutcome {
+    Removed,
+    /// git refused because the tree holds uncommitted work. The summary is
+    /// human-readable, e.g. "3 modified, 2 untracked".
+    Dirty(String),
+}
+
+/// Remove a worktree without destroying uncommitted work.
+///
+/// `git worktree remove` refuses a tree with uncommitted changes or untracked
+/// files. That refusal is a safety check, so it is surfaced as
+/// [`RemoveOutcome::Dirty`] for the caller to confirm rather than papered over
+/// with `--force`. `--force` runs only when there is provably nothing to lose:
+/// the directory is already gone, or `git status` read the tree and found it
+/// clean (a clean tree can still be refused, e.g. when it contains a
+/// submodule). A tree whose status *cannot* be read is an error, not a force —
+/// resolving that ambiguity in the destructive direction is the exact bug this
+/// function exists to prevent. A locked worktree is also an error: git wants
+/// `--force --force` for those, and offering "delete anyway" only to fail on
+/// the lock would mislead.
+pub async fn remove_worktree(repo_path: &str, worktree_path: &str) -> GitResult<RemoveOutcome> {
     let repo = expand(repo_path);
-    let wt = expand(worktree_path).to_string_lossy().to_string();
+    let wt_dir = expand(worktree_path);
+    let wt = wt_dir.to_string_lossy().to_string();
 
     let (code, _out, _err) = run_git(&["worktree", "remove", wt.as_str()], Some(&repo)).await?;
     if code == 0 {
-        return Ok(());
+        return Ok(RemoveOutcome::Removed);
     }
+
+    if worktree_entry(&repo, &wt_dir).await == Some(WorktreeEntry::Locked) {
+        return Err(GitError(
+            "worktree is locked — unlock it first (git worktree unlock)".into(),
+        ));
+    }
+
+    // Ask the tree itself instead of parsing stderr, whose wording is not a
+    // stable interface across git versions.
+    if wt_dir.exists() {
+        match tree_state(&wt_dir).await {
+            TreeState::Dirty(summary) => return Ok(RemoveOutcome::Dirty(summary)),
+            TreeState::Clean => {}
+            TreeState::Unreadable(reason) => {
+                return Err(GitError(format!(
+                    "cannot verify the worktree is clean: {reason}"
+                )));
+            }
+        }
+    }
+    force_remove_worktree(repo_path, worktree_path).await?;
+    Ok(RemoveOutcome::Removed)
+}
+
+/// Remove a worktree discarding whatever is in it. Only for after the user has
+/// seen what they are about to lose (or there is provably nothing to lose).
+pub async fn force_remove_worktree(repo_path: &str, worktree_path: &str) -> GitResult<()> {
+    let repo = expand(repo_path);
+    let wt_dir = expand(worktree_path);
+    let wt = wt_dir.to_string_lossy().to_string();
     let (code, _out, stderr) =
         run_git(&["worktree", "remove", "--force", wt.as_str()], Some(&repo)).await?;
-    if code != 0 {
-        return Err(GitError(format!("Failed to remove worktree: {stderr}")));
+    if code == 0 {
+        return Ok(());
     }
-    Ok(())
+    // A pruned or gc'd entry fails even `--force` ("is not a working tree").
+    // When git no longer knows the path and the directory is gone there is
+    // nothing left to remove — failing here would strand the entry in the
+    // sidebar with no way to ever delete it.
+    if !wt_dir.exists() && worktree_entry(&repo, &wt_dir).await.is_none() {
+        return Ok(());
+    }
+    Err(GitError(format!("Failed to remove worktree: {stderr}")))
+}
+
+/// What `git status` said about a tree that refused a plain removal.
+enum TreeState {
+    Clean,
+    /// Summary like "3 modified, 2 untracked".
+    Dirty(String),
+    /// Status could not be read (dubious ownership, corrupt index, spawn
+    /// failure) — the tree cannot be assumed clean.
+    Unreadable(String),
+}
+
+async fn tree_state(dir: &Path) -> TreeState {
+    // `--ignore-submodules=none`: without it a dirty submodule reads as clean,
+    // and clean is the destructive direction here. git's own pre-removal
+    // cleanliness check passes the same flag.
+    let args = ["status", "--porcelain", "--ignore-submodules=none"];
+    match run_git(&args, Some(dir)).await {
+        Ok((0, stdout, _)) if stdout.is_empty() => TreeState::Clean,
+        Ok((0, stdout, _)) => {
+            let untracked = stdout.lines().filter(|l| l.starts_with("??")).count();
+            let modified = stdout.lines().count() - untracked;
+            let mut parts = Vec::new();
+            if modified > 0 {
+                parts.push(format!("{modified} modified"));
+            }
+            if untracked > 0 {
+                parts.push(format!("{untracked} untracked"));
+            }
+            TreeState::Dirty(parts.join(", "))
+        }
+        Ok((_, _, stderr)) => TreeState::Unreadable(stderr),
+        Err(error) => TreeState::Unreadable(error.to_string()),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorktreeEntry {
+    Listed,
+    Locked,
+}
+
+/// Whether `git worktree list` knows the given directory, and whether it is
+/// locked. `None` when git does not list it (or the list itself failed, which
+/// callers must treat as "unknown", never as permission to force).
+async fn worktree_entry(repo: &Path, wt_dir: &Path) -> Option<WorktreeEntry> {
+    let (code, stdout, _err) = run_git(&["worktree", "list", "--porcelain"], Some(repo))
+        .await
+        .ok()?;
+    if code != 0 {
+        return None;
+    }
+    let target = std::fs::canonicalize(wt_dir).unwrap_or_else(|_| wt_dir.to_path_buf());
+    for block in stdout.split("\n\n") {
+        let mut path: Option<&str> = None;
+        let mut locked = false;
+        for line in block.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("worktree ") {
+                path = Some(rest);
+            } else if line == "locked" || line.starts_with("locked ") {
+                locked = true;
+            }
+        }
+        if let Some(p) = path {
+            let p = Path::new(p);
+            let p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+            if p == target {
+                return Some(if locked {
+                    WorktreeEntry::Locked
+                } else {
+                    WorktreeEntry::Listed
+                });
+            }
+        }
+    }
+    None
 }
 
 pub async fn rename_branch(path: &str, old_name: &str, new_name: &str) -> GitResult<()> {
@@ -479,10 +615,89 @@ mod tests {
         let listed = list_worktrees(&repo_str).await.unwrap();
         assert_eq!(listed.len(), 2);
 
-        remove_worktree(&repo_str, &wt.to_string_lossy())
+        let outcome = remove_worktree(&repo_str, &wt.to_string_lossy())
+            .await
+            .unwrap();
+        assert_eq!(outcome, RemoveOutcome::Removed);
+        assert!(!wt.exists());
+    }
+
+    #[tokio::test]
+    async fn a_dirty_worktree_is_refused_with_a_summary_not_destroyed() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        init_repo(&repo);
+        let repo_str = repo.to_string_lossy().to_string();
+
+        let wt = dir.path().join("wt-dirty");
+        create_worktree(&repo_str, &wt, "feat/dirty", true, None)
+            .await
+            .unwrap();
+        std::fs::write(wt.join("tracked.txt"), "committed").unwrap();
+        git_in(&wt, &["add", "tracked.txt"]);
+        git_in(&wt, &["commit", "-m", "add tracked"]);
+        std::fs::write(wt.join("tracked.txt"), "edited but not committed").unwrap();
+        std::fs::write(wt.join("scratch.txt"), "untracked").unwrap();
+
+        let outcome = remove_worktree(&repo_str, &wt.to_string_lossy())
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            RemoveOutcome::Dirty("1 modified, 1 untracked".into())
+        );
+        // The refusal left the work in place.
+        assert!(wt.join("scratch.txt").exists());
+
+        force_remove_worktree(&repo_str, &wt.to_string_lossy())
             .await
             .unwrap();
         assert!(!wt.exists());
+    }
+
+    #[tokio::test]
+    async fn a_locked_worktree_is_refused_with_an_unlock_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        init_repo(&repo);
+        let repo_str = repo.to_string_lossy().to_string();
+
+        let wt = dir.path().join("wt-locked");
+        create_worktree(&repo_str, &wt, "feat/locked", true, None)
+            .await
+            .unwrap();
+        git_in(&repo, &["worktree", "lock", &wt.to_string_lossy()]);
+
+        // Even a *dirty* locked tree must not reach the "Delete anyway"
+        // prompt: git wants `--force --force` for locks, which the app never
+        // passes, so confirming would fail with an unrelated lock error.
+        std::fs::write(wt.join("scratch.txt"), "untracked").unwrap();
+        let error = remove_worktree(&repo_str, &wt.to_string_lossy())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("locked"), "got: {error}");
+        assert!(wt.join("scratch.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn a_worktree_with_a_deleted_directory_is_removed_without_a_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        init_repo(&repo);
+        let repo_str = repo.to_string_lossy().to_string();
+
+        let wt = dir.path().join("wt-gone");
+        create_worktree(&repo_str, &wt, "feat/gone", true, None)
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(&wt).unwrap();
+
+        // A stale entry must not read as "dirty" — it force-removes silently.
+        let outcome = remove_worktree(&repo_str, &wt.to_string_lossy())
+            .await
+            .unwrap();
+        assert_eq!(outcome, RemoveOutcome::Removed);
+        assert_eq!(list_worktrees(&repo_str).await.unwrap().len(), 1);
     }
 
     /// Run git in `dir`, panicking with the argv on failure. Tests only.

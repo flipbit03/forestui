@@ -36,7 +36,7 @@ impl App {
         use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            self.should_quit = true;
+            self.request_quit();
             return;
         }
 
@@ -140,7 +140,7 @@ impl App {
         use ratatui::crossterm::event::KeyCode;
 
         match KeyCode::Char(binding) {
-            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('q') => self.request_quit(),
             KeyCode::Char('a') => self
                 .modals
                 .push(Modal::AddRepository(AddRepositoryModal::new())),

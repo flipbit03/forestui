@@ -950,7 +950,7 @@ fn confirm(frame: &mut Frame, modal: &ConfirmModal, area: Rect, hits: &mut Hits)
         vec![
             control("Cancel", !modal.confirm_focused, theme::Variant::Normal, 0),
             control(
-                "Delete",
+                modal.action.confirm_label(),
                 modal.confirm_focused,
                 theme::Variant::Destructive,
                 1,

@@ -124,23 +124,47 @@ impl App {
                 self.reload_detail();
             }
             ConfirmAction::DeleteWorktree(worktree_id) => {
-                let Some((repo, worktree)) = self.state.find_worktree(worktree_id) else {
-                    return;
-                };
-                let repo_path = repo.source_path.clone();
-                let worktree_path = worktree.path.clone();
-                let tx = self.tx.clone();
-                tokio::spawn(async move {
-                    // A failed git removal must not strand the entry in state.
-                    let _ = git::remove_worktree(&repo_path, &worktree_path).await;
-                    tx.send(AppEvent::ReloadDetail);
-                });
-                self.state.remove_worktree(worktree_id);
-                self.rebuild_rows();
-                self.sync_sidebar_index();
-                self.reload_detail();
+                self.spawn_worktree_removal(worktree_id, false);
+            }
+            ConfirmAction::ForceDeleteWorktree(worktree_id) => {
+                self.spawn_worktree_removal(worktree_id, true);
             }
         }
+    }
+
+    /// Run a worktree removal in the background. The entry leaves state only
+    /// when git has actually removed the worktree — the fold decides, so a
+    /// dirty refusal can stop with everything intact.
+    fn spawn_worktree_removal(&mut self, worktree_id: Uuid, force: bool) {
+        let Some((repo, worktree)) = self.state.find_worktree(worktree_id) else {
+            return;
+        };
+        // A second confirm on the same worktree while git is still running
+        // would race a duplicate removal and stack a second destructive modal.
+        if !self.removals_in_flight.insert(worktree_id) {
+            return;
+        }
+        let repo_path = repo.source_path.clone();
+        let worktree_path = worktree.path.clone();
+        let name = worktree.name.clone();
+        // Immediate feedback: on a large tree the round trip takes seconds and
+        // the frame would otherwise be identical to the one before confirming.
+        self.notify(format!("Deleting '{name}'…"), Severity::Information);
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let outcome = if force {
+                git::force_remove_worktree(&repo_path, &worktree_path)
+                    .await
+                    .map(|()| git::RemoveOutcome::Removed)
+            } else {
+                git::remove_worktree(&repo_path, &worktree_path).await
+            }
+            .map_err(|error| error.to_string());
+            tx.send(AppEvent::WorktreeRemoveResult {
+                worktree_id,
+                outcome,
+            });
+        });
     }
 
     pub(super) fn on_branches(
@@ -228,6 +252,9 @@ impl App {
         if let Some((_repo, worktree)) = self.state.selected_worktree() {
             let name = worktree.name.clone();
             let id = worktree.id;
+            if self.removals_in_flight.contains(&id) {
+                return;
+            }
             self.modals.push(Modal::Confirm(ConfirmModal::new(
                 "Delete Worktree",
                 format!("Permanently delete '{name}'?"),
