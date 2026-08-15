@@ -184,15 +184,23 @@ itself rather than whatever `forestui` happens to be on `PATH`.
 ### Self-update
 forestui keeps itself current the way the Python build did — automatically, on
 launch — but never on the UI thread. `App::check_for_update` spawns the check
-once the terminal is up, and the only visible result is a notification after a
-new version is already in place.
+once the terminal is up. Success shows one notification after the new version
+is already in place; network failures (offline, a download that dropped, a
+release whose assets have not finished uploading) stay silent and retry next
+launch. Only a *persistent local* failure — an unwritable install dir — shows
+an error notification, and is remembered in the version cache
+(`install_failed`) so the multi-MB download is not re-spent on every launch
+while it would fail identically.
 
 What it does depends on how the binary got there:
 
 - **From a GitHub release** — built with `--features binary-release`, so it
-  downloads the asset for its platform and renames it over `current_exe()`.
-  Replacing the file under a running process is safe on Unix; the new build
-  takes effect on the next launch.
+  downloads the asset for its platform, verifies it against the published
+  `.sha256` (no checksum, no update — release assets **must** ship their
+  checksums), and atomically swaps it over `current_exe()` via the same
+  fsync-then-rename writer the config files use. Replacing the file under a
+  running process is safe on Unix; the new build takes effect on the next
+  launch.
 - **From `cargo install`** — the feature is off, so it only reports that a newer
   version exists. Recompiling a crate underneath a running TUI is not something
   to do unasked.

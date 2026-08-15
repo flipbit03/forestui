@@ -289,23 +289,9 @@ impl App {
     fn check_for_update(&self) {
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            use crate::version_check::UpdateStatus;
-            match crate::version_check::update_if_stale().await {
-                UpdateStatus::Silent => {}
-                UpdateStatus::Installed(version) => tx.notify(
-                    format!("forestui v{version} installed — restart to use it"),
-                    Severity::Information,
-                ),
-                UpdateStatus::Available(version) => tx.notify(
-                    format!("forestui v{version} is available — `cargo install forestui`"),
-                    Severity::Information,
-                ),
-                UpdateStatus::InstallFailed { version, reason } => tx.notify(
-                    format!(
-                        "forestui v{version} is available but could not be installed: {reason}"
-                    ),
-                    Severity::Error,
-                ),
+            let status = crate::version_check::update_if_stale().await;
+            if let Some((message, severity)) = status.notification() {
+                tx.notify(message, severity);
             }
         });
     }

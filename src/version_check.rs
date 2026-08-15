@@ -9,11 +9,17 @@
 //! subcommand, which is where this differs from `lineark` and `terminal-use`:
 //!
 //! - It never blocks the UI. The check runs on a background task after the
-//!   terminal is up, and the only thing the user sees is a notification once a
-//!   new version is already installed.
+//!   terminal is up. Success shows one notification; network failures stay
+//!   silent (offline is the common case, not the user's problem); only a
+//!   *persistent local* failure — an unwritable install dir — surfaces as an
+//!   error, and is remembered in the cache so the download is not re-spent on
+//!   every launch.
 //! - It only ever replaces a binary that came from a release. A `cargo install`
 //!   build defers to cargo, and a source build (version `0.0.0`) does nothing at
 //!   all, so `cargo run` in a checkout is never overwritten.
+//! - It never installs what it cannot verify: the downloaded bytes must match
+//!   the `.sha256` published beside the asset, so a release must ship its
+//!   checksums for the updater to accept it.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -94,7 +100,10 @@ fn write_cache(cache: &VersionCache) {
         let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(json) = serde_json::to_string_pretty(cache) {
-        let _ = std::fs::write(&path, json);
+        // Atomic like the config files: the cache now carries the install
+        // failure memo and is shared by concurrent instances, so a torn write
+        // must not be able to silently drop it.
+        let _ = crate::util::write_atomically(&path, &json);
     }
 }
 
@@ -204,9 +213,35 @@ pub fn release_asset_url(version: &str) -> Result<String> {
 pub(crate) async fn install_from(url: &str, target: &std::path::Path) -> Result<()> {
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(90))
+        // Idle-based, not a total deadline: the asset is several MB, and a
+        // slow-but-moving link must not be killed mid-transfer. What the
+        // timeout exists for is a connection that stops answering.
+        .read_timeout(std::time::Duration::from_secs(30))
         .build()
         .context("could not build the HTTP client")?;
+
+    // The checksum is a hundred bytes and gates the multi-MB download; fetch
+    // it first so its absence or unreachability costs nothing.
+    let checksum_body = client
+        .get(format!("{url}.sha256"))
+        .header("User-Agent", USER_AGENT)
+        .send()
+        .await
+        .context("could not fetch the release checksum")?
+        .error_for_status()
+        .context("the release checksum request failed")?
+        .text()
+        .await
+        .context("could not read the release checksum")?;
+    // Coreutils format: `<64 hex>  <filename>`. Only the hash is trusted.
+    let expected = checksum_body
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(ChecksumError("the release checksum file is malformed".into()).into());
+    }
 
     let bytes = client
         .get(url)
@@ -220,76 +255,81 @@ pub(crate) async fn install_from(url: &str, target: &std::path::Path) -> Result<
         .await
         .context("could not read the downloaded release")?;
 
-    // Verify before anything touches disk.
-    let checksum_body = client
-        .get(format!("{url}.sha256"))
-        .header("User-Agent", USER_AGENT)
-        .send()
-        .await
-        .context("could not fetch the release checksum")?
-        .error_for_status()
-        .context("the release has no checksum")?
-        .text()
-        .await
-        .context("could not read the release checksum")?;
-    // Coreutils format: `<64 hex>  <filename>`. Only the hash is trusted.
-    let expected = checksum_body
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
-        anyhow::bail!("the release checksum file is malformed");
-    }
     use sha2::Digest;
     let actual = format!("{:x}", sha2::Sha256::digest(&bytes));
     if actual != expected {
-        anyhow::bail!("the downloaded release does not match its checksum");
+        return Err(ChecksumError(
+            "the downloaded release does not match its published checksum".into(),
+        )
+        .into());
     }
 
-    let staged = staging_path(target);
-    // All the fallible steps live in one helper so every failure path — write,
-    // chmod, rename — cleans the staged file up rather than leaving a stray
-    // binary beside the real one. Same contract as `util::write_atomically`.
-    let result = write_staged_then_rename(&staged, target, &bytes).await;
-    if result.is_err() {
-        let _ = tokio::fs::remove_file(&staged).await;
-    }
-    result
-}
-
-/// Sibling of `target` with a per-process suffix, so concurrent instances
-/// stage privately: the last rename wins whole-file, which is fine — both
-/// downloaded (and verified) the same asset.
-#[cfg(any(feature = "binary-release", test))]
-fn staging_path(target: &std::path::Path) -> PathBuf {
-    let mut name = target.file_name().unwrap_or_default().to_os_string();
-    name.push(format!(".tmp-update-{}", std::process::id()));
-    target.with_file_name(name)
-}
-
-#[cfg(any(feature = "binary-release", test))]
-async fn write_staged_then_rename(
-    staged: &std::path::Path,
-    target: &std::path::Path,
-    bytes: &[u8],
-) -> Result<()> {
-    tokio::fs::write(staged, bytes)
-        .await
-        .context("could not write the downloaded release")?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o755))
-            .await
-            .context("could not mark the downloaded release executable")?;
-    }
-
-    tokio::fs::rename(staged, target)
-        .await
-        .context("could not replace the running binary")?;
+    // The swap reuses the config files' atomic writer: sibling temp file with a
+    // per-pid name (concurrent instances stage privately), fsync before the
+    // rename and the directory after it (a power loss must not land the rename
+    // without the bytes), write-through for a symlinked install path, and the
+    // target's own mode carried over — with 0o755 as the floor that keeps the
+    // binary runnable.
+    let target = target.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        sweep_stale_staging(&target);
+        crate::util::write_bytes_atomically(&target, &bytes, Some(0o755))
+    })
+    .await
+    .context("the install task was cancelled")?
+    .context("could not replace the running binary")?;
     Ok(())
+}
+
+/// A download that could not be verified. Its own type so the caller can tell
+/// it from a local install failure: an unverifiable download is retried on the
+/// next launch, never memoized as persistent.
+#[cfg(any(feature = "binary-release", test))]
+#[derive(Debug)]
+pub(crate) struct ChecksumError(String);
+
+#[cfg(any(feature = "binary-release", test))]
+impl std::fmt::Display for ChecksumError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[cfg(any(feature = "binary-release", test))]
+impl std::error::Error for ChecksumError {}
+
+/// Remove staging leftovers from crashed installs. A SIGKILL or power loss
+/// between write and rename orphans `<name>.tmp-<pid>` — a multi-MB, possibly
+/// executable file on `$PATH` that nothing else ever looks at again. Only
+/// files older than an hour go: a younger sibling may be a live concurrent
+/// instance mid-stage.
+#[cfg(any(feature = "binary-release", test))]
+fn sweep_stale_staging(target: &std::path::Path) {
+    let Some(parent) = target.parent() else {
+        return;
+    };
+    let Some(name) = target.file_name().map(|n| n.to_string_lossy().to_string()) else {
+        return;
+    };
+    let prefix = format!("{name}.tmp-");
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with(&prefix) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|modified| {
+                modified.elapsed().unwrap_or_default() > std::time::Duration::from_secs(3600)
+            })
+            .unwrap_or(false);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// What the startup update check concluded.
@@ -315,6 +355,28 @@ pub enum UpdateStatus {
     InstallFailed { version: String, reason: String },
 }
 
+impl UpdateStatus {
+    /// The toast this outcome earns, if any.
+    pub fn notification(&self) -> Option<(String, crate::event::Severity)> {
+        use crate::event::Severity;
+        match self {
+            UpdateStatus::Silent => None,
+            UpdateStatus::Installed(version) => Some((
+                format!("forestui v{version} installed — restart to use it"),
+                Severity::Information,
+            )),
+            UpdateStatus::Available(version) => Some((
+                format!("forestui v{version} is available — `cargo install forestui`"),
+                Severity::Information,
+            )),
+            UpdateStatus::InstallFailed { version, reason } => Some((
+                format!("forestui v{version} is available but could not be installed: {reason}"),
+                Severity::Error,
+            )),
+        }
+    }
+}
+
 /// Bring the installed binary up to date.
 pub async fn update_if_stale() -> UpdateStatus {
     if is_dev_build() {
@@ -329,59 +391,104 @@ pub async fn update_if_stale() -> UpdateStatus {
 
     #[cfg(feature = "binary-release")]
     {
-        // A fresh cache remembering a failed install of this same version
-        // means the download would fail the same way — surface the standing
-        // failure without re-spending the bandwidth. Retried when the cache
-        // expires or a newer release appears.
-        if let Some(cache) = read_cache()
-            && now_secs().saturating_sub(cache.checked_at) < CACHE_TTL_SECS
-            && let Some(failure) = cache.install_failed
-            && failure.version == latest
-        {
-            return UpdateStatus::InstallFailed {
-                version: latest,
-                reason: failure.reason,
-            };
-        }
-
-        let result = async {
-            let current =
-                std::env::current_exe().context("could not locate the running executable")?;
-            install_from(&release_asset_url(&latest)?, &current).await
-        }
-        .await;
-
-        match result {
-            Ok(()) => {
-                // Clear a failure memo left by an older release's failed install.
-                if let Some(mut cache) = read_cache()
-                    && cache.install_failed.is_some()
-                {
-                    cache.install_failed = None;
-                    write_cache(&cache);
-                }
-                UpdateStatus::Installed(latest)
-            }
-            Err(error) => {
-                let reason = format!("{error:#}");
-                if let Some(mut cache) = read_cache() {
-                    cache.install_failed = Some(InstallFailure {
-                        version: latest.clone(),
-                        reason: reason.clone(),
-                    });
-                    write_cache(&cache);
-                }
-                UpdateStatus::InstallFailed {
-                    version: latest,
-                    reason,
-                }
-            }
-        }
+        install_update(&latest).await
     }
     #[cfg(not(feature = "binary-release"))]
     {
         UpdateStatus::Available(latest)
     }
+}
+
+#[cfg(feature = "binary-release")]
+async fn install_update(latest: &str) -> UpdateStatus {
+    // One read, threaded through the guard and the memo writes: the cache file
+    // is read-modify-write state shared with concurrent instances, and every
+    // extra read widens the race.
+    let cache = read_cache();
+    let fresh = cache
+        .as_ref()
+        .is_some_and(|c| now_secs().saturating_sub(c.checked_at) < CACHE_TTL_SECS);
+    // A version the lookup could not refresh is the offline fallback.
+    // Downloading on that signal would fail — and nag — on every launch until
+    // the network returns; offline stays silent.
+    if !fresh {
+        return UpdateStatus::Silent;
+    }
+
+    // A remembered failed install of this same version would fail the same way
+    // — surface the standing failure without re-spending the bandwidth.
+    // Retried when the cache expires or a newer release appears.
+    if let Some(failure) = cache.as_ref().and_then(|c| c.install_failed.clone())
+        && failure.version == latest
+    {
+        return UpdateStatus::InstallFailed {
+            version: failure.version,
+            reason: failure.reason,
+        };
+    }
+
+    let result = async {
+        let current = std::env::current_exe().context("could not locate the running executable")?;
+        // On Linux `/proc/self/exe` reads "<path> (deleted)" once another
+        // instance's update has replaced the binary under this process. The
+        // new build is already in place; installing to that literal name would
+        // only strand a copy beside it.
+        if !current.exists() {
+            return Ok(false);
+        }
+        install_from(&release_asset_url(latest)?, &current)
+            .await
+            .map(|()| true)
+    }
+    .await;
+
+    match result {
+        Ok(false) => UpdateStatus::Silent,
+        Ok(true) => {
+            // Clear a memo left by an older release's failed install.
+            if let Some(mut cache) = cache
+                && cache.install_failed.is_some()
+            {
+                cache.install_failed = None;
+                write_cache(&cache);
+            }
+            UpdateStatus::Installed(latest.to_string())
+        }
+        Err(error) => {
+            // The network, a mid-transfer drop, a release published before its
+            // assets finished uploading, a download that failed verification:
+            // all transient. Retried silently on the next launch — being
+            // offline is not the user's problem.
+            if failure_is_transient(&error) {
+                return UpdateStatus::Silent;
+            }
+            // What remains is local and will repeat identically (an unwritable
+            // install dir): remember it and say so.
+            let reason = format!("{error:#}");
+            if let Some(mut cache) = cache {
+                cache.install_failed = Some(InstallFailure {
+                    version: latest.to_string(),
+                    reason: reason.clone(),
+                });
+                write_cache(&cache);
+            }
+            UpdateStatus::InstallFailed {
+                version: latest.to_string(),
+                reason,
+            }
+        }
+    }
+}
+
+/// Whether a failed install should be retried silently rather than remembered
+/// and surfaced. Network-level failures and unverifiable downloads are
+/// transient; local filesystem failures repeat identically until the user acts.
+#[cfg(any(feature = "binary-release", test))]
+fn failure_is_transient(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<reqwest::Error>().is_some()
+            || cause.downcast_ref::<ChecksumError>().is_some()
+    })
 }
 
 #[cfg(test)]
@@ -439,17 +546,19 @@ mod tests {
 
     /// Serve the asset and its sibling `.sha256` from a throwaway local
     /// server. `checksum` is the full text of the checksum file; `None` serves
-    /// a 404 for it, the shape of a release published without one.
+    /// a 404 for it, the shape of a release published without one. `requests`
+    /// is how many connections the caller expects `install_from` to make — a
+    /// rejected checksum never fetches the asset at all.
     fn serve_release(
         payload: &'static [u8],
         checksum: Option<String>,
+        requests: usize,
     ) -> (u16, std::thread::JoinHandle<()>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
         let handle = std::thread::spawn(move || {
-            // One connection for the asset, one for the checksum.
-            for _ in 0..2 {
+            for _ in 0..requests {
                 let Ok((mut socket, _)) = listener.accept() else {
                     return;
                 };
@@ -512,7 +621,7 @@ mod tests {
     async fn install_from_replaces_the_target_atomically() {
         let payload = b"#!/bin/sh\necho new version\n";
         let checksum = format!("{}  forestui_linux_x86_64\n", sha256_hex(payload));
-        let (port, server) = serve_release(payload, Some(checksum));
+        let (port, server) = serve_release(payload, Some(checksum), 2);
 
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("forestui");
@@ -545,7 +654,7 @@ mod tests {
             "{}  forestui_linux_x86_64\n",
             sha256_hex(b"what was published")
         );
-        let (port, server) = serve_release(payload, Some(checksum));
+        let (port, server) = serve_release(payload, Some(checksum), 2);
 
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("forestui");
@@ -566,7 +675,8 @@ mod tests {
     #[tokio::test]
     async fn a_missing_checksum_aborts_the_update() {
         let payload = b"plausible payload";
-        let (port, server) = serve_release(payload, None);
+        // The checksum gates the download, so the asset is never requested.
+        let (port, server) = serve_release(payload, None, 1);
 
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("forestui");
@@ -582,36 +692,94 @@ mod tests {
         assert_no_leftovers(dir.path());
     }
 
-    /// Concurrent instances must stage privately — a shared staging path lets
-    /// one process rename another's half-written file into place.
-    #[test]
-    fn staging_is_per_process() {
-        let staged = staging_path(std::path::Path::new("/opt/bin/forestui"));
-        assert_eq!(staged.parent(), Some(std::path::Path::new("/opt/bin")));
-        let name = staged.file_name().unwrap().to_string_lossy().to_string();
-        assert_eq!(name, format!("forestui.tmp-update-{}", std::process::id()));
+    /// A crashed install orphans its staged file — a multi-MB executable on
+    /// `$PATH`. The next install sweeps old leftovers, but must leave young
+    /// siblings alone: one may be a live concurrent instance mid-stage.
+    #[tokio::test]
+    async fn stale_staging_leftovers_are_swept() {
+        let payload = b"#!/bin/sh\necho new version\n";
+        let checksum = format!("{}  forestui_linux_x86_64\n", sha256_hex(payload));
+        let (port, server) = serve_release(payload, Some(checksum), 2);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("forestui");
+        std::fs::write(&target, b"old version").expect("seed the target");
+
+        let stale = dir.path().join("forestui.tmp-99999");
+        std::fs::write(&stale, b"crashed install").expect("seed stale leftover");
+        let two_hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&stale)
+            .expect("open stale")
+            .set_times(std::fs::FileTimes::new().set_modified(two_hours_ago))
+            .expect("age the leftover");
+
+        let fresh = dir.path().join("forestui.tmp-88888");
+        std::fs::write(&fresh, b"concurrent instance").expect("seed fresh sibling");
+
+        install_from(&format!("http://127.0.0.1:{port}/asset"), &target)
+            .await
+            .expect("install");
+        server.join().expect("server");
+
+        assert!(!stale.exists(), "the stale leftover was not swept");
+        assert!(fresh.exists(), "a young sibling may be a live stage");
+        assert_eq!(std::fs::read(&target).expect("read back"), payload);
     }
 
-    /// Every variant renders into the notification the app shows; constructing
-    /// them all here also keeps the cfg-gated arms from tripping dead-code.
+    /// The notification is part of the module's contract with the app: every
+    /// outcome maps to exactly the toast the user should see.
     #[test]
-    fn update_status_covers_every_outcome() {
-        let statuses = [
-            UpdateStatus::Silent,
-            UpdateStatus::Installed("2.0.0".into()),
-            UpdateStatus::Available("2.0.0".into()),
-            UpdateStatus::InstallFailed {
-                version: "2.0.0".into(),
-                reason: "permission denied".into(),
-            },
-        ];
-        assert_eq!(
-            statuses
-                .iter()
-                .filter(|s| **s == UpdateStatus::Silent)
-                .count(),
-            1
+    fn every_outcome_maps_to_its_notification() {
+        use crate::event::Severity;
+
+        assert!(UpdateStatus::Silent.notification().is_none());
+
+        let (message, severity) = UpdateStatus::Installed("2.0.0".into())
+            .notification()
+            .expect("installed notifies");
+        assert!(
+            message.contains("v2.0.0") && message.contains("restart"),
+            "{message}"
         );
+        assert!(matches!(severity, Severity::Information));
+
+        let (message, severity) = UpdateStatus::Available("2.0.0".into())
+            .notification()
+            .expect("available notifies");
+        assert!(message.contains("cargo install"), "{message}");
+        assert!(matches!(severity, Severity::Information));
+
+        let (message, severity) = UpdateStatus::InstallFailed {
+            version: "2.0.0".into(),
+            reason: "permission denied".into(),
+        }
+        .notification()
+        .expect("failure notifies");
+        assert!(
+            message.contains("could not be installed") && message.contains("permission denied"),
+            "{message}"
+        );
+        assert!(matches!(severity, Severity::Error));
+    }
+
+    /// Network failures and unverifiable downloads retry silently; only local
+    /// failures — which repeat identically — are remembered and surfaced.
+    #[test]
+    fn only_local_failures_count_as_persistent() {
+        let checksum = anyhow::Error::new(ChecksumError("mismatch".into()));
+        assert!(failure_is_transient(&checksum));
+        assert!(failure_is_transient(&checksum.context("wrapped")));
+
+        let io = anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "read-only file system",
+        ));
+        assert!(!failure_is_transient(&io));
+        assert!(!failure_is_transient(
+            &io.context("could not replace the running binary")
+        ));
     }
 
     /// A failed download must leave the existing binary alone — a missed update
