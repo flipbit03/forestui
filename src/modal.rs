@@ -136,6 +136,7 @@ impl Modal {
                     m.selected = index.min(m.buttons.len() - 1);
                 }
             }
+            // Confirm has two choices rather than a ring: 0 Cancel, 1 Delete.
             Modal::Confirm(m) => m.confirm_focused = index == 1,
         }
     }
@@ -238,7 +239,7 @@ fn edit_input(input: &mut TextInput, key: KeyEvent) -> bool {
 pub struct AddRepositoryModal {
     pub path: TextInput,
     pub import_worktrees: bool,
-    /// Focus: 0 path, 1 import checkbox, 2 Add, 3 Cancel.
+    /// One of the `FOCUS_*` constants; see [`AddRepositoryModal`].
     pub focus: usize,
 }
 
@@ -249,13 +250,20 @@ impl Default for AddRepositoryModal {
 }
 
 impl AddRepositoryModal {
-    pub const FIELDS: usize = 4;
+    /// The focus ring, in the order `ui/modals.rs` draws it. These are the
+    /// single definition of the contract between the two files: the renderer
+    /// records a click region against the same constant `handle_key` matches on.
+    pub const FOCUS_PATH: usize = 0;
+    pub const FOCUS_IMPORT: usize = 1;
+    pub const FOCUS_ADD: usize = 2;
+    pub const FOCUS_CANCEL: usize = 3;
+    pub const FIELDS: usize = Self::FOCUS_CANCEL + 1;
 
     pub fn new() -> Self {
         Self {
             path: TextInput::new("").with_placeholder("Enter path or paste from clipboard..."),
             import_worktrees: false,
-            focus: 0,
+            focus: Self::FOCUS_PATH,
         }
     }
 
@@ -301,19 +309,19 @@ impl AddRepositoryModal {
             return ModalOutcome::Close;
         }
         // While editing the path, arrows move the cursor rather than the focus.
-        if self.focus == 0 && edit_input(&mut self.path, key) {
+        if self.focus == Self::FOCUS_PATH && edit_input(&mut self.path, key) {
             return ModalOutcome::None;
         }
         if cycle_focus(&mut self.focus, Self::FIELDS, key) {
             return ModalOutcome::None;
         }
         match (self.focus, key.code) {
-            (1, KeyCode::Char(' ')) | (1, KeyCode::Enter) => {
+            (Self::FOCUS_IMPORT, KeyCode::Char(' ')) | (Self::FOCUS_IMPORT, KeyCode::Enter) => {
                 self.import_worktrees = !self.import_worktrees;
                 ModalOutcome::None
             }
-            (0 | 2, KeyCode::Enter) => self.submit(),
-            (3, KeyCode::Enter) => ModalOutcome::Close,
+            (Self::FOCUS_PATH | Self::FOCUS_ADD, KeyCode::Enter) => self.submit(),
+            (Self::FOCUS_CANCEL, KeyCode::Enter) => ModalOutcome::Close,
             _ => ModalOutcome::None,
         }
     }
@@ -335,11 +343,20 @@ pub struct AddWorktreeModal {
     pub new_branch: bool,
     pub search_index: usize,
     pub error: String,
-    /// Focus: 0 name, 1 mode, 2 branch/search, 3 results (search mode), then Create, Cancel.
+    /// One of the `FOCUS_*` constants, or [`AddWorktreeModal::create_index`] /
+    /// [`AddWorktreeModal::cancel_index`], whose positions depend on the mode.
     pub focus: usize,
 }
 
 impl AddWorktreeModal {
+    /// The fixed head of the focus ring. Create and Cancel follow, but their
+    /// indices move with the mode — the results list only exists while an
+    /// existing branch is being picked — so they are methods, not constants.
+    pub const FOCUS_NAME: usize = 0;
+    pub const FOCUS_MODE: usize = 1;
+    pub const FOCUS_BRANCH: usize = 2;
+    pub const FOCUS_RESULTS: usize = 3;
+
     pub fn new(
         repo: &Repository,
         branches: Vec<String>,
@@ -360,25 +377,32 @@ impl AddWorktreeModal {
             new_branch: true,
             search_index: 0,
             error: String::new(),
-            focus: 0,
+            focus: Self::FOCUS_NAME,
         }
     }
 
     pub fn field_count(&self) -> usize {
-        if self.new_branch { 5 } else { 6 }
+        // The fixed head, then Create and Cancel; the results list sits between
+        // them only while an existing branch is being picked.
+        let head = Self::FOCUS_BRANCH + 1;
+        head + usize::from(!self.new_branch) + 2
     }
 
-    fn create_index(&self) -> usize {
+    pub fn create_index(&self) -> usize {
         self.field_count() - 2
     }
 
-    fn cancel_index(&self) -> usize {
+    pub fn cancel_index(&self) -> usize {
         self.field_count() - 1
     }
 
     /// Index of the results list, which only exists in existing-branch mode.
     fn results_index(&self) -> Option<usize> {
-        if self.new_branch { None } else { Some(3) }
+        if self.new_branch {
+            None
+        } else {
+            Some(Self::FOCUS_RESULTS)
+        }
     }
 
     pub fn matches(&self) -> Vec<(String, f64)> {
@@ -465,7 +489,7 @@ impl AddWorktreeModal {
         }
 
         // Text editing takes precedence while a field has focus.
-        if self.focus == 0 && edit_input(&mut self.name, key) {
+        if self.focus == Self::FOCUS_NAME && edit_input(&mut self.name, key) {
             self.error.clear();
             // A new branch name tracks the worktree name.
             if self.new_branch {
@@ -474,7 +498,7 @@ impl AddWorktreeModal {
             }
             return ModalOutcome::None;
         }
-        if self.focus == 2 {
+        if self.focus == Self::FOCUS_BRANCH {
             let input = if self.new_branch {
                 &mut self.branch
             } else {
@@ -511,7 +535,7 @@ impl AddWorktreeModal {
             }
         }
 
-        if self.focus == 1 {
+        if self.focus == Self::FOCUS_MODE {
             match key.code {
                 KeyCode::Left => {
                     self.set_mode(true);
@@ -539,7 +563,10 @@ impl AddWorktreeModal {
             if self.focus == self.cancel_index() {
                 return ModalOutcome::Close;
             }
-            if self.focus == self.create_index() || self.focus == 0 || self.focus == 2 {
+            if self.focus == self.create_index()
+                || self.focus == Self::FOCUS_NAME
+                || self.focus == Self::FOCUS_BRANCH
+            {
                 if !self.can_create() {
                     self.error = format!("Branch '{}' does not exist", self.selected_branch());
                     return ModalOutcome::None;
@@ -569,12 +596,20 @@ pub struct CreateFromIssueModal {
     pub pull_first: bool,
     pub is_fetching: bool,
     pub spinner_index: usize,
-    /// Focus: 0 name, 1 branch, 2 base branch, 3 Fetch, 4 pull checkbox, 5 Create, 6 Cancel.
+    /// One of the `FOCUS_*` constants; see [`CreateFromIssueModal`].
     pub focus: usize,
 }
 
 impl CreateFromIssueModal {
-    pub const FIELDS: usize = 7;
+    /// The focus ring, in the order `ui/modals.rs` draws it.
+    pub const FOCUS_NAME: usize = 0;
+    pub const FOCUS_BRANCH: usize = 1;
+    pub const FOCUS_BASE: usize = 2;
+    pub const FOCUS_FETCH: usize = 3;
+    pub const FOCUS_PULL: usize = 4;
+    pub const FOCUS_CREATE: usize = 5;
+    pub const FOCUS_CANCEL: usize = 6;
+    pub const FIELDS: usize = Self::FOCUS_CANCEL + 1;
 
     pub fn new(
         repo: &Repository,
@@ -603,7 +638,7 @@ impl CreateFromIssueModal {
             pull_first: true,
             is_fetching: false,
             spinner_index: 0,
-            focus: 0,
+            focus: Self::FOCUS_NAME,
         }
     }
 
@@ -652,9 +687,9 @@ impl CreateFromIssueModal {
         }
 
         let editable = match self.focus {
-            0 => Some(&mut self.name),
-            1 => Some(&mut self.branch),
-            2 => Some(&mut self.base_branch),
+            Self::FOCUS_NAME => Some(&mut self.name),
+            Self::FOCUS_BRANCH => Some(&mut self.branch),
+            Self::FOCUS_BASE => Some(&mut self.base_branch),
             _ => None,
         };
         if let Some(input) = editable
@@ -663,7 +698,7 @@ impl CreateFromIssueModal {
             return ModalOutcome::None;
         }
 
-        if self.focus == 2
+        if self.focus == Self::FOCUS_BASE
             && key.code == KeyCode::Right
             && let Some(suggestion) = self.base_suggestion()
         {
@@ -676,7 +711,7 @@ impl CreateFromIssueModal {
         }
 
         match (self.focus, key.code) {
-            (3, KeyCode::Enter) => {
+            (Self::FOCUS_FETCH, KeyCode::Enter) => {
                 if self.is_fetching {
                     return ModalOutcome::None;
                 }
@@ -684,11 +719,11 @@ impl CreateFromIssueModal {
                 self.spinner_index = 0;
                 ModalOutcome::Effect(ModalEffect::Fetch(self.repo_path.clone()))
             }
-            (4, KeyCode::Enter) | (4, KeyCode::Char(' ')) => {
+            (Self::FOCUS_PULL, KeyCode::Enter) | (Self::FOCUS_PULL, KeyCode::Char(' ')) => {
                 self.pull_first = !self.pull_first;
                 ModalOutcome::None
             }
-            (6, KeyCode::Enter) => ModalOutcome::Close,
+            (Self::FOCUS_CANCEL, KeyCode::Enter) => ModalOutcome::Close,
             (_, KeyCode::Enter) => {
                 if self.name.is_empty() || self.branch.is_empty() || !self.can_create() {
                     return ModalOutcome::None;
@@ -730,12 +765,19 @@ pub struct SettingsModal {
     pub theme_index: usize,
     pub branch_prefix: TextInput,
     pub custom_buttons: Vec<CustomClaudeButton>,
-    /// Focus: 0 editor, 1 branch prefix, 2 theme, 3 manage buttons, 4 Save, 5 Cancel.
+    /// One of the `FOCUS_*` constants; see [`SettingsModal`].
     pub focus: usize,
 }
 
 impl SettingsModal {
-    pub const FIELDS: usize = 6;
+    /// The focus ring, in the order `ui/modals.rs` draws it.
+    pub const FOCUS_EDITOR: usize = 0;
+    pub const FOCUS_PREFIX: usize = 1;
+    pub const FOCUS_THEME: usize = 2;
+    pub const FOCUS_MANAGE: usize = 3;
+    pub const FOCUS_SAVE: usize = 4;
+    pub const FOCUS_CANCEL: usize = 5;
+    pub const FIELDS: usize = Self::FOCUS_CANCEL + 1;
 
     pub fn new(settings: &Settings) -> Self {
         Self {
@@ -749,7 +791,7 @@ impl SettingsModal {
                 .unwrap_or(0),
             branch_prefix: TextInput::new(settings.branch_prefix.clone()).with_placeholder("feat/"),
             custom_buttons: settings.custom_buttons.clone(),
-            focus: 0,
+            focus: Self::FOCUS_EDITOR,
         }
     }
 
@@ -775,24 +817,24 @@ impl SettingsModal {
         if is_escape(key) {
             return ModalOutcome::Close;
         }
-        if self.focus == 1 && edit_input(&mut self.branch_prefix, key) {
+        if self.focus == Self::FOCUS_PREFIX && edit_input(&mut self.branch_prefix, key) {
             return ModalOutcome::None;
         }
 
         match (self.focus, key.code) {
-            (0, KeyCode::Left) => {
+            (Self::FOCUS_EDITOR, KeyCode::Left) => {
                 self.editor_index = wrap_dec(self.editor_index, EDITORS.len());
                 return ModalOutcome::None;
             }
-            (0, KeyCode::Right) => {
+            (Self::FOCUS_EDITOR, KeyCode::Right) => {
                 self.editor_index = (self.editor_index + 1) % EDITORS.len();
                 return ModalOutcome::None;
             }
-            (2, KeyCode::Left) => {
+            (Self::FOCUS_THEME, KeyCode::Left) => {
                 self.theme_index = wrap_dec(self.theme_index, THEMES.len());
                 return ModalOutcome::None;
             }
-            (2, KeyCode::Right) => {
+            (Self::FOCUS_THEME, KeyCode::Right) => {
                 self.theme_index = (self.theme_index + 1) % THEMES.len();
                 return ModalOutcome::None;
             }
@@ -804,10 +846,10 @@ impl SettingsModal {
         }
 
         match (self.focus, key.code) {
-            (3, KeyCode::Enter) => ModalOutcome::Push(Box::new(Modal::CustomButtons(
-                CustomButtonsModal::new(self.custom_buttons.clone()),
-            ))),
-            (5, KeyCode::Enter) => ModalOutcome::Close,
+            (Self::FOCUS_MANAGE, KeyCode::Enter) => ModalOutcome::Push(Box::new(
+                Modal::CustomButtons(CustomButtonsModal::new(self.custom_buttons.clone())),
+            )),
+            (Self::FOCUS_CANCEL, KeyCode::Enter) => ModalOutcome::Close,
             (_, KeyCode::Enter) => {
                 ModalOutcome::Submit(ModalResult::SettingsSaved(Box::new(self.to_settings())))
             }
@@ -918,12 +960,18 @@ pub struct EditButtonModal {
     /// Whether the prefix still auto-follows the label.
     pub follows: bool,
     pub error: String,
-    /// Focus: 0 label, 1 prefix, 2 command, 3 Save, 4 Cancel.
+    /// One of the `FOCUS_*` constants; see [`EditButtonModal`].
     pub focus: usize,
 }
 
 impl EditButtonModal {
-    pub const FIELDS: usize = 5;
+    /// The focus ring, in the order `ui/modals.rs` draws it.
+    pub const FOCUS_LABEL: usize = 0;
+    pub const FOCUS_PREFIX: usize = 1;
+    pub const FOCUS_COMMAND: usize = 2;
+    pub const FOCUS_SAVE: usize = 3;
+    pub const FOCUS_CANCEL: usize = 4;
+    pub const FIELDS: usize = Self::FOCUS_CANCEL + 1;
 
     pub fn new(
         existing: Option<CustomClaudeButton>,
@@ -972,7 +1020,7 @@ impl EditButtonModal {
             other_prefixes: others.iter().map(|b| b.prefix.clone()).collect(),
             follows,
             error: String::new(),
-            focus: 0,
+            focus: Self::FOCUS_LABEL,
         }
     }
 
@@ -1034,7 +1082,7 @@ impl EditButtonModal {
         }
 
         match self.focus {
-            0 => {
+            Self::FOCUS_LABEL => {
                 if edit_input(&mut self.label, key) {
                     if self.follows {
                         self.prefix.set_value(derive_prefix(self.label.value()));
@@ -1042,13 +1090,13 @@ impl EditButtonModal {
                     return ModalOutcome::None;
                 }
             }
-            1 => {
+            Self::FOCUS_PREFIX => {
                 if edit_input(&mut self.prefix, key) {
                     self.follows = self.prefix.value() == derive_prefix(self.label.value());
                     return ModalOutcome::None;
                 }
             }
-            2 if edit_input(&mut self.command, key) => return ModalOutcome::None,
+            Self::FOCUS_COMMAND if edit_input(&mut self.command, key) => return ModalOutcome::None,
             _ => {}
         }
 
@@ -1057,7 +1105,7 @@ impl EditButtonModal {
         }
 
         match (self.focus, key.code) {
-            (4, KeyCode::Enter) => ModalOutcome::Close,
+            (Self::FOCUS_CANCEL, KeyCode::Enter) => ModalOutcome::Close,
             (_, KeyCode::Enter) => self.save(),
             _ => ModalOutcome::None,
         }
@@ -1177,7 +1225,7 @@ mod tests {
     #[test]
     fn add_repository_toggles_import_checkbox() {
         let mut modal = AddRepositoryModal::new();
-        modal.focus = 1;
+        modal.focus = AddRepositoryModal::FOCUS_IMPORT;
         modal.handle_key(key(KeyCode::Char(' ')));
         assert!(modal.import_worktrees);
     }
@@ -1237,11 +1285,11 @@ mod tests {
         }
         assert_eq!(modal.prefix.value(), "yolo-disc");
 
-        modal.focus = 1;
+        modal.focus = EditButtonModal::FOCUS_PREFIX;
         modal.handle_key(key(KeyCode::Backspace));
         assert!(!modal.follows);
 
-        modal.focus = 0;
+        modal.focus = EditButtonModal::FOCUS_LABEL;
         modal.handle_key(key(KeyCode::Char('X')));
         assert_eq!(modal.prefix.value(), "yolo-dis");
     }
@@ -1256,7 +1304,7 @@ mod tests {
         let mut modal = EditButtonModal::new(None, &existing, None);
         modal.label.set_value("Opus");
         modal.prefix.set_value("other");
-        modal.focus = 3;
+        modal.focus = EditButtonModal::FOCUS_SAVE;
         modal.handle_key(key(KeyCode::Enter));
         assert_eq!(modal.error, "Command cannot be empty");
 
@@ -1326,7 +1374,7 @@ mod tests {
         modal.handle_key(key(KeyCode::Left));
         assert_eq!(modal.editor_index, start);
 
-        modal.focus = 4;
+        modal.focus = SettingsModal::FOCUS_SAVE;
         match modal.handle_key(key(KeyCode::Enter)) {
             ModalOutcome::Submit(ModalResult::SettingsSaved(s)) => {
                 assert_eq!(s.default_editor, EDITORS[modal.editor_index].1);

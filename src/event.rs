@@ -77,7 +77,10 @@ pub enum AppEvent {
     /// state on the main loop — background tasks never write the config file
     /// themselves, so there is exactly one writer and a user action mid-flight
     /// cannot clobber a task's save (or the other way around).
-    WorktreeAdded { repo_id: Uuid, worktree: Box<Worktree> },
+    WorktreeAdded {
+        repo_id: Uuid,
+        worktree: Box<Worktree>,
+    },
     /// An import scan finished; fold the discovered worktrees into state.
     /// Single-writer for the same reason as [`AppEvent::WorktreeAdded`].
     WorktreesImported {
