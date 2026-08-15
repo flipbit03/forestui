@@ -151,6 +151,33 @@ pub fn path_exists(path: &str) -> bool {
     Path::new(&expanduser(path)).exists()
 }
 
+/// Write a file via a sibling temp file and an atomic rename.
+///
+/// `.forestui-config.json` is the only record of every tracked repository and
+/// worktree, and a corrupt file deliberately loads as *empty* state so a bad
+/// byte never blocks startup — which turns a crash mid-`fs::write` into total,
+/// silent data loss on the next launch. The rename makes that window
+/// impossible: readers see either the old file or the new one, never a torn
+/// half. The temp file lives beside the target because a rename is only atomic
+/// within one filesystem.
+pub fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
+    let mut temp = path.to_path_buf();
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    name.push_str(&format!(".tmp-{}", std::process::id()));
+    temp.set_file_name(name);
+
+    std::fs::write(&temp, contents)?;
+    let renamed = std::fs::rename(&temp, path);
+    if renamed.is_err() {
+        // Leave no half-written sibling behind; the original is untouched.
+        let _ = std::fs::remove_file(&temp);
+    }
+    renamed
+}
+
 fn levenshtein_distance(s1: &[char], s2: &[char]) -> usize {
     if s1.len() < s2.len() {
         return levenshtein_distance(s2, s1);
@@ -398,6 +425,24 @@ mod tests {
     fn highlight_range_finds_literal() {
         assert_eq!(highlight_range("ain", "main"), Some((1, 4)));
         assert_eq!(highlight_range("zzz", "main"), None);
+    }
+
+    #[test]
+    fn atomic_write_replaces_and_leaves_no_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.json");
+        std::fs::write(&target, "old").unwrap();
+
+        write_atomically(&target, "new").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+
+        // No staging file may survive the swap.
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name() != "config.json")
+            .collect();
+        assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
     }
 
     #[test]

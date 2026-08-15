@@ -64,7 +64,7 @@ pub fn save_settings_to(path: &Path, settings: &Settings) -> std::io::Result<()>
     }
     let json = serde_json::to_string_pretty(settings)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path, json)
+    crate::util::write_atomically(path, &json)
 }
 
 #[cfg(test)]

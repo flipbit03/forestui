@@ -48,7 +48,7 @@ impl AppState {
             repositories: self.repositories.clone(),
         };
         if let Ok(json) = serde_json::to_string_pretty(&data) {
-            let _ = std::fs::write(&self.config_path, json);
+            let _ = crate::util::write_atomically(&self.config_path, &json);
         }
     }
 
