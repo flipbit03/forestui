@@ -494,6 +494,22 @@ impl App {
         }
     }
 
+    /// Announce a state change that has just been persisted — unless it wasn't.
+    ///
+    /// The success toast is only true if the config write landed. A dropped
+    /// write is silent otherwise, and the config deliberately loads as empty
+    /// state, so the user would be told a worktree exists that vanishes on the
+    /// next launch.
+    pub fn notify_saved(&mut self, text: impl Into<String>) {
+        match self.state.take_save_error() {
+            Some(error) => self.notify(
+                format!("Could not save the config: {error}"),
+                Severity::Error,
+            ),
+            None => self.notify(text, Severity::Information),
+        }
+    }
+
     fn expire_notifications(&mut self) {
         self.notifications
             .retain(|n| n.created.elapsed() < NOTIFICATION_TTL);
@@ -617,8 +633,9 @@ impl App {
                 self.reload_detail();
                 // Announced here rather than from the task, so a result that
                 // was dropped above never produces a success toast for a
-                // worktree that is not in the config.
-                self.notify(format!("Created worktree '{name}'"), Severity::Information);
+                // worktree that is not in the config — and `notify_saved`
+                // extends that to a write that was attempted and failed.
+                self.notify_saved(format!("Created worktree '{name}'"));
             }
             AppEvent::WorktreesImported { repo_id, worktrees } => {
                 if self.state.find_repository(repo_id).is_none() {
@@ -626,11 +643,15 @@ impl App {
                 }
                 let count = worktrees.len();
                 self.state.add_worktrees(repo_id, worktrees);
-                self.state.select_repository(repo_id);
+                // Imported worktrees are new *sidebar rows*; no detail pane
+                // shows them. Selecting the repository and reloading its pane
+                // only ever moved someone who had navigated on while the
+                // `git worktree list` ran, throwing away the sessions and
+                // issues they were reading. The add-repository flow that starts
+                // this import has already selected the repository itself.
                 self.rebuild_rows();
                 self.sync_sidebar_index();
-                self.reload_detail();
-                self.notify(format!("Imported {count} worktrees"), Severity::Information);
+                self.notify_saved(format!("Imported {count} worktrees"));
             }
             AppEvent::WorktreeRenamed {
                 worktree_id,
@@ -641,6 +662,12 @@ impl App {
                     worktree.name = name;
                     worktree.path = path;
                 });
+                // The rename fields are only re-seeded when the *target*
+                // changes, so without this they keep whatever the pane last
+                // showed — the pre-rename name, if the user navigated away and
+                // back while the task ran. Pressing Enter would then rename the
+                // worktree straight back.
+                self.rename_target = None;
                 self.rebuild_rows();
                 self.sync_sidebar_index();
                 self.reload_detail();
@@ -854,6 +881,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_completed_rename_resyncs_the_field_it_renamed() {
+        let (_dir, mut app) = app_with_fixture();
+        // Select the first worktree, which seeds the rename fields from it.
+        app.handle_key(key(KeyCode::Down));
+        let worktree_id = app.state.selection.worktree_id.expect("a worktree");
+        let old_name = app.name_input.value().to_string();
+
+        // The rename runs off the event loop now, and the user is free to move
+        // around while it does. Coming back re-seeds the field from the state
+        // as it still is — the old name.
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.name_input.value(), old_name);
+
+        // Now the task lands.
+        app.handle_event(AppEvent::WorktreeRenamed {
+            worktree_id,
+            name: "renamed".into(),
+            path: "/tmp/renamed".into(),
+        });
+
+        assert_eq!(
+            app.name_input.value(),
+            "renamed",
+            "the field still holds the pre-rename name; pressing Enter would rename it back"
+        );
+    }
+
+    #[tokio::test]
     async fn quit_and_help_hotkeys() {
         let (_dir, mut app) = app_with_fixture();
         app.handle_key(key(KeyCode::Char('?')));
@@ -943,6 +999,43 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_worktree_that_could_not_be_saved_is_not_announced_as_created() {
+        let (dir, mut app) = app_with_fixture();
+        let repo_id = app.state.repositories()[0].id;
+
+        // Make the config unwritable: the directory holding it denies writes, so
+        // the atomic write cannot even stage its temp file.
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+
+        let worktree = Worktree::new("doomed".into(), "feat/doomed".into(), "/tmp/doomed".into());
+        app.handle_event(AppEvent::WorktreeAdded {
+            repo_id,
+            worktree: Box::new(worktree),
+        });
+
+        let last = app.notifications.last().expect("a toast");
+        assert_eq!(
+            last.severity,
+            Severity::Error,
+            "a failed write was announced as a success: {}",
+            last.text
+        );
+        assert!(
+            last.text.starts_with("Could not save the config"),
+            "unexpected toast: {}",
+            last.text
+        );
+
+        // Let the tempdir clean itself up.
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+    }
+
     /// If the repository is removed while git runs, the late result is dropped
     /// rather than resurrected as an entry nothing owns.
     #[tokio::test]
@@ -965,7 +1058,7 @@ mod tests {
     /// and leaves the repository selected.
     #[tokio::test]
     async fn imported_worktrees_are_folded_into_state() {
-        let (_dir, mut app) = app_with_fixture();
+        let (dir, mut app) = app_with_fixture();
         let repo_id = app.state.repositories()[0].id;
         let before = app.state.repositories()[0].worktrees.len();
 
@@ -980,6 +1073,52 @@ mod tests {
         assert_eq!(app.state.repositories()[0].worktrees.len(), before + 2);
         assert_eq!(app.state.selection.repository_id, Some(repo_id));
         assert_eq!(app.state.selection.worktree_id, None);
+
+        // In memory is not enough: an import that never reaches the config is
+        // gone on the next launch, and the fold is the only writer.
+        let reloaded = AppState::load_from(dir.path().join(".forestui-config.json"));
+        assert_eq!(
+            reloaded.repositories()[0].worktrees.len(),
+            before + 2,
+            "the import was never persisted"
+        );
+
+        // A result for a repository that has since been removed is dropped.
+        app.handle_event(AppEvent::WorktreesImported {
+            repo_id: Uuid::new_v4(),
+            worktrees: vec![Worktree::new(
+                "ghost".into(),
+                "main".into(),
+                "/tmp/g".into(),
+            )],
+        });
+        assert_eq!(app.state.repositories()[0].worktrees.len(), before + 2);
+    }
+
+    #[tokio::test]
+    async fn an_import_that_lands_late_does_not_steal_the_selection() {
+        let (_dir, mut app) = app_with_fixture();
+        let repo_id = app.state.repositories()[0].id;
+
+        // The user moved on to a worktree while the import was still running.
+        app.handle_key(key(KeyCode::Down));
+        let selected = app.state.selection.worktree_id.expect("a worktree");
+        app.sessions = Some(Vec::new());
+
+        app.handle_event(AppEvent::WorktreesImported {
+            repo_id,
+            worktrees: vec![Worktree::new("i1".into(), "main".into(), "/tmp/i1".into())],
+        });
+
+        assert_eq!(
+            app.state.selection.worktree_id,
+            Some(selected),
+            "the import yanked the cursor back to the repository"
+        );
+        assert!(
+            app.sessions.is_some(),
+            "the pane the user was reading was reloaded out from under them"
+        );
     }
 
     #[tokio::test]
@@ -1047,6 +1186,48 @@ mod tests {
         );
         assert_eq!(app.hit_at(50, 0), None, "outside every region");
         assert_eq!(app.hit_at(5, 9), None, "wrong row");
+    }
+
+    fn wheel(column: u16, row: u16) -> ratatui::crossterm::event::MouseEvent {
+        use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+        MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_toast_swallows_the_clicks_it_covers() {
+        let (_dir, mut app) = app_with_fixture();
+        // A control is recorded first, then a toast is drawn over the same cell.
+        app.push_hit(rect(10, 5, 20, 3), HitTarget::DetailItem(0));
+        app.push_hit(rect(10, 5, 20, 3), HitTarget::Notification);
+
+        assert_eq!(
+            app.hit_at(12, 6),
+            Some(HitTarget::Notification),
+            "the toast must win the cells it covers, or the control under it runs"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_open_modal_owns_the_wheel_as_well_as_the_click() {
+        let (_dir, mut app) = app_with_fixture();
+        app.sidebar_rect = rect(0, 0, 30, 20);
+        let before = app.state.selection;
+
+        // The panes are still drawn behind a modal, so they are still
+        // hit-testable; only the guard stops the wheel reaching them.
+        app.handle_key(key(KeyCode::Char('s')));
+        assert_eq!(app.modals.len(), 1);
+        app.handle_mouse(wheel(4, 5));
+
+        assert_eq!(
+            app.state.selection, before,
+            "the wheel reselected the sidebar behind an open modal"
+        );
     }
 
     #[tokio::test]
