@@ -90,6 +90,14 @@ impl AppState {
         }
     }
 
+    /// Add a batch of worktrees with a single save, for the import flow.
+    pub fn add_worktrees(&mut self, repo_id: Uuid, worktrees: Vec<Worktree>) {
+        if let Some(repo) = self.repositories.iter_mut().find(|r| r.id == repo_id) {
+            repo.worktrees.extend(worktrees);
+            self.save();
+        }
+    }
+
     pub fn remove_worktree(&mut self, worktree_id: Uuid) {
         for repo in &mut self.repositories {
             repo.worktrees.retain(|w| w.id != worktree_id);

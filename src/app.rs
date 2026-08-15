@@ -713,23 +713,25 @@ impl App {
                 self.notify(format!("Fetch failed: {error}"), Severity::Error);
             }
             AppEvent::Notify(text, severity) => self.notify(text, severity),
-            AppEvent::StateChanged { select } => {
-                // Reloading from disk drops the in-memory selection, so carry it over.
-                let previous = self.state.selection;
-                let show_archived = self.state.show_archived;
-                self.state = AppState::load();
-                self.state.show_archived = show_archived;
-                self.state.selection = match select {
-                    Some((repo_id, Some(worktree_id))) => crate::models::Selection {
-                        repository_id: Some(repo_id),
-                        worktree_id: Some(worktree_id),
-                    },
-                    Some((repo_id, None)) => crate::models::Selection {
-                        repository_id: Some(repo_id),
-                        worktree_id: None,
-                    },
-                    None => previous,
-                };
+            AppEvent::WorktreeAdded { repo_id, worktree } => {
+                // The repository can be removed while git runs; dropping the
+                // result beats resurrecting an entry nothing owns.
+                if self.state.find_repository(repo_id).is_none() {
+                    return;
+                }
+                let worktree_id = worktree.id;
+                self.state.add_worktree(repo_id, *worktree);
+                self.state.select_worktree(repo_id, worktree_id);
+                self.rebuild_rows();
+                self.sync_sidebar_index();
+                self.reload_detail();
+            }
+            AppEvent::WorktreesImported { repo_id, worktrees } => {
+                if self.state.find_repository(repo_id).is_none() {
+                    return;
+                }
+                self.state.add_worktrees(repo_id, worktrees);
+                self.state.select_repository(repo_id);
                 self.rebuild_rows();
                 self.sync_sidebar_index();
                 self.reload_detail();
@@ -1669,7 +1671,9 @@ impl App {
                     if let Err(error) = git::repair_worktree(&repo_path, &target).await {
                         tx.error(format!("Rename failed: {error}"));
                     }
-                    tx.send(AppEvent::StateChanged { select: None });
+                    // State was already updated and saved before the spawn; the
+                    // pane just needs to re-read sessions and meta for the new path.
+                    tx.send(AppEvent::ReloadDetail);
                 });
                 self.rebuild_rows();
                 self.sync_sidebar_index();
@@ -1684,7 +1688,7 @@ impl App {
                 let requested = new_branch.clone();
                 tokio::spawn(async move {
                     match git::rename_branch(&worktree_path, &old_branch, &requested).await {
-                        Ok(()) => tx.send(AppEvent::StateChanged { select: None }),
+                        Ok(()) => tx.send(AppEvent::ReloadDetail),
                         Err(error) => tx.error(format!("Branch rename failed: {error}")),
                     }
                 });
@@ -1716,7 +1720,6 @@ impl App {
     fn import_existing_worktrees(&mut self, repo_id: Uuid, source_path: String) {
         let forest_dir = settings_service::get_forest_path();
         let tx = self.tx.clone();
-        let config_path = forest_dir.join(".forestui-config.json");
 
         tokio::spawn(async move {
             let listed = match git::list_worktrees(&source_path).await {
@@ -1727,10 +1730,8 @@ impl App {
                 }
             };
 
-            // Re-load state inside the task so the write is against fresh data.
-            let mut state = crate::state::AppState::load_from(config_path);
             let source_resolved = std::fs::canonicalize(&source_path).ok();
-            let mut imported = 0usize;
+            let mut worktrees = Vec::new();
 
             for info in &listed {
                 let candidate = std::fs::canonicalize(&info.path).ok();
@@ -1748,14 +1749,14 @@ impl App {
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| info.path.clone());
                 let branch = info.branch.clone().unwrap_or_else(|| "HEAD".to_string());
-                state.add_worktree(repo_id, Worktree::new(name, branch, info.path.clone()));
-                imported += 1;
+                worktrees.push(Worktree::new(name, branch, info.path.clone()));
             }
 
-            tx.info(format!("Imported {imported} worktrees"));
-            tx.send(AppEvent::StateChanged {
-                select: Some((repo_id, None)),
-            });
+            tx.info(format!("Imported {} worktrees", worktrees.len()));
+            // The main loop folds these into state and saves; writing the
+            // config file from here would race a save the user's next action
+            // makes in the meantime.
+            tx.send(AppEvent::WorktreesImported { repo_id, worktrees });
         });
     }
 
@@ -1775,7 +1776,6 @@ impl App {
         let worktree_path = settings_service::get_forest_path()
             .join(&repo.name)
             .join(&name);
-        let config_path = settings_service::get_forest_path().join(".forestui-config.json");
         let tx = self.tx.clone();
 
         tokio::spawn(async move {
@@ -1811,7 +1811,6 @@ impl App {
                 return;
             }
 
-            let mut state = crate::state::AppState::load_from(config_path);
             let mut worktree = Worktree::new(
                 name.clone(),
                 branch,
@@ -1819,12 +1818,11 @@ impl App {
             );
             worktree.base_branch = base;
             worktree.created_from_ref = base_ref;
-            let worktree_id = worktree.id;
-            state.add_worktree(repo_id, worktree);
 
             tx.info(format!("Created worktree '{name}'"));
-            tx.send(AppEvent::StateChanged {
-                select: Some((repo_id, Some(worktree_id))),
+            tx.send(AppEvent::WorktreeAdded {
+                repo_id,
+                worktree: Box::new(worktree),
             });
         });
     }
@@ -2057,36 +2055,67 @@ mod tests {
         );
     }
 
+    /// A finished background creation lands in state on the main loop — the
+    /// single writer — and moves the selection onto the new worktree.
     #[tokio::test]
-    async fn state_changed_keeps_the_current_selection() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        crate::services::settings::set_forest_path(Some(&dir.path().to_string_lossy()));
-
-        let mut state = AppState::load_from(dir.path().join(".forestui-config.json"));
-        let repo = Repository::new("demo".into(), "/tmp/demo".into());
-        let repo_id = repo.id;
-        state.add_repository(repo);
-        let worktree = Worktree::new("wt".into(), "feat/x".into(), "/tmp/wt".into());
+    async fn a_created_worktree_is_folded_into_state_and_selected() {
+        let (_dir, mut app) = app_with_fixture();
+        let repo_id = app.state.repositories()[0].id;
+        let worktree = Worktree::new("fresh".into(), "feat/fresh".into(), "/tmp/fresh".into());
         let worktree_id = worktree.id;
-        state.add_worktree(repo_id, worktree);
-        state.select_worktree(repo_id, worktree_id);
 
-        let (tx, _rx) = crate::event::start();
-        let mut app = App::with_state(tx, state, Settings::default());
-        app.state.show_archived = true;
+        app.handle_event(AppEvent::WorktreeAdded {
+            repo_id,
+            worktree: Box::new(worktree),
+        });
 
-        app.handle_event(AppEvent::StateChanged { select: None });
+        assert!(app.state.find_worktree(worktree_id).is_some());
         assert_eq!(app.state.selection.worktree_id, Some(worktree_id));
         assert!(
-            app.state.show_archived,
-            "the archived toggle survives a reload"
+            app.rows
+                .iter()
+                .any(|row| matches!(row, SidebarRow::Worktree { id, .. } if *id == worktree_id)),
+            "the sidebar was not rebuilt"
         );
+    }
 
-        app.handle_event(AppEvent::StateChanged {
-            select: Some((repo_id, None)),
+    /// If the repository is removed while git runs, the late result is dropped
+    /// rather than resurrected as an entry nothing owns.
+    #[tokio::test]
+    async fn a_worktree_for_a_removed_repository_is_dropped() {
+        let (_dir, mut app) = app_with_fixture();
+        let repo_id = app.state.repositories()[0].id;
+        app.state.remove_repository(repo_id);
+        let worktree = Worktree::new("late".into(), "feat/late".into(), "/tmp/late".into());
+        let worktree_id = worktree.id;
+
+        app.handle_event(AppEvent::WorktreeAdded {
+            repo_id,
+            worktree: Box::new(worktree),
         });
-        assert_eq!(app.state.selection.worktree_id, None);
+
+        assert!(app.state.find_worktree(worktree_id).is_none());
+    }
+
+    /// An import scan delivers its batch as one event, folded in with one save,
+    /// and leaves the repository selected.
+    #[tokio::test]
+    async fn imported_worktrees_are_folded_into_state() {
+        let (_dir, mut app) = app_with_fixture();
+        let repo_id = app.state.repositories()[0].id;
+        let before = app.state.repositories()[0].worktrees.len();
+
+        app.handle_event(AppEvent::WorktreesImported {
+            repo_id,
+            worktrees: vec![
+                Worktree::new("i1".into(), "main".into(), "/tmp/i1".into()),
+                Worktree::new("i2".into(), "main".into(), "/tmp/i2".into()),
+            ],
+        });
+
+        assert_eq!(app.state.repositories()[0].worktrees.len(), before + 2);
         assert_eq!(app.state.selection.repository_id, Some(repo_id));
+        assert_eq!(app.state.selection.worktree_id, None);
     }
 
     #[tokio::test]

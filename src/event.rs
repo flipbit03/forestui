@@ -5,7 +5,7 @@
 //! Everything lands in one `mpsc::UnboundedReceiver<AppEvent>`, so the main loop
 //! stays a plain `while let Some(event) = rx.recv().await`.
 
-use crate::models::{ClaudeSession, GitHubIssue};
+use crate::models::{ClaudeSession, GitHubIssue, Worktree};
 use crate::services::github::AuthStatus;
 use chrono::{DateTime, Utc};
 use ratatui::crossterm::event::{self, Event};
@@ -73,11 +73,16 @@ pub enum AppEvent {
     FetchFailed(String),
     /// Show a transient message.
     Notify(String, Severity),
-    /// Persisted state changed on disk: reload it, rebuild the sidebar, and
-    /// reload the detail pane. `select` moves the selection to a newly created
-    /// item; `None` keeps whatever was selected before.
-    StateChanged {
-        select: Option<(Uuid, Option<Uuid>)>,
+    /// A background task finished creating a worktree. The entry is folded into
+    /// state on the main loop — background tasks never write the config file
+    /// themselves, so there is exactly one writer and a user action mid-flight
+    /// cannot clobber a task's save (or the other way around).
+    WorktreeAdded { repo_id: Uuid, worktree: Box<Worktree> },
+    /// An import scan finished; fold the discovered worktrees into state.
+    /// Single-writer for the same reason as [`AppEvent::WorktreeAdded`].
+    WorktreesImported {
+        repo_id: Uuid,
+        worktrees: Vec<Worktree>,
     },
     /// Reload the detail pane only.
     ReloadDetail,
