@@ -181,16 +181,27 @@ impl Column {
         // answered from the keyboard, with nothing on screen saying so — pin it
         // to the last three rows. The body above it loses those rows instead,
         // which is at least visible.
-        let rect = self.take(BUTTON_HEIGHT).unwrap_or_else(|| {
-            let y = (self.area.y + self.area.height).saturating_sub(BUTTON_HEIGHT);
-            self.y = self.area.y + self.area.height;
-            Rect {
-                x: self.area.x,
-                y,
-                width: self.area.width,
-                height: BUTTON_HEIGHT.min(self.area.height),
+        let rect = match self.take(BUTTON_HEIGHT) {
+            Some(rect) => rect,
+            None => {
+                let y = (self.area.y + self.area.height).saturating_sub(BUTTON_HEIGHT);
+                self.y = self.area.y + self.area.height;
+                let pinned = Rect {
+                    x: self.area.x,
+                    y,
+                    width: self.area.width,
+                    height: BUTTON_HEIGHT.min(self.area.height),
+                };
+                // Every row that overflows lands on this same strip, so an
+                // earlier one is painted over by whatever comes after it.
+                // Its hit regions have to go with it: a control nobody can see
+                // must not answer a click, and the blank margin either side of
+                // a centred button row is exactly where those stale regions
+                // would still be sitting.
+                hits.retain(|(recorded, _, _)| !recorded.intersects(pinned));
+                pinned
             }
-        });
+        };
         let total = controls
             .iter()
             .map(|(_, width, _, _)| width.saturating_add(GAP))
@@ -1112,6 +1123,41 @@ mod tests {
             );
         }
         assert!(checked >= 4, "expected several modals to have buttons");
+    }
+
+    /// The other half of the short-terminal contract: what is *not* drawn must
+    /// not be clickable.
+    ///
+    /// Every row that overflows the dialog is pinned to the same three rows at
+    /// the bottom, so each one is painted over by whatever is drawn after it.
+    /// Their hit regions used to survive that, stacked on top of each other —
+    /// an invisible control answering clicks from the margin around the row
+    /// that replaced it. Two controls claiming one cell is the signature, and
+    /// no dialog that fits has any business producing it either.
+    #[test]
+    fn controls_never_claim_the_same_cell_twice() {
+        let mut checked = 0;
+        for (modal, title) in every_modal() {
+            for height in [8, 10, 12, 14, 24] {
+                let (screen, hits) = render_with_hits(&modal, 80, height);
+                checked += 1;
+
+                for (a, first) in hits.iter().enumerate() {
+                    for second in hits.iter().skip(a + 1) {
+                        assert!(
+                            !first.0.intersects(second.0),
+                            "{title} at 80x{height}: focus {} and focus {} both \
+                             claim {:?} ∩ {:?} — one of them is not on screen:\n{screen}",
+                            first.1,
+                            second.1,
+                            first.0,
+                            second.0
+                        );
+                    }
+                }
+            }
+        }
+        assert!(checked >= 20, "expected every modal at every height");
     }
 
     #[test]

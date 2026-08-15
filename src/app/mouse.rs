@@ -121,6 +121,12 @@ pub enum HitTarget {
         index: usize,
         click: ModalClick,
     },
+    /// A notification toast. It does nothing when clicked, but it has to claim
+    /// its cells: it is drawn *over* the detail pane, and without a region of
+    /// its own the click lands on whichever control it covers — which is how a
+    /// click on the toast could start a `--dangerously-skip-permissions`
+    /// session from the card underneath.
+    Notification,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -156,13 +162,26 @@ impl App {
     pub fn handle_mouse(&mut self, mouse: ratatui::crossterm::event::MouseEvent) {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 
+        // A modal owns the pointer, not just the click. The panes behind it are
+        // still drawn — and so still hit-testable — so without this the wheel
+        // scrolls, and reselects, the sidebar underneath an open dialog, and a
+        // dialog wide enough to cover the scrollbar track hands its presses to
+        // the bar instead of to the control the user aimed at. Hover is
+        // deliberately exempt: the hit list carries the modal's own controls,
+        // and lighting them up is the point.
+        let modal_open = !self.modals.is_empty();
+
         match mouse.kind {
             MouseEventKind::ScrollDown => {
-                self.scroll_at(mouse.column, mouse.row, 1);
+                if !modal_open {
+                    self.scroll_at(mouse.column, mouse.row, 1);
+                }
                 return;
             }
             MouseEventKind::ScrollUp => {
-                self.scroll_at(mouse.column, mouse.row, -1);
+                if !modal_open {
+                    self.scroll_at(mouse.column, mouse.row, -1);
+                }
                 return;
             }
             // Hover. The pointer crossing cells inside one control changes
@@ -179,7 +198,9 @@ impl App {
             // mid-drag, so this is not gated on where it currently is — only on
             // a drag having started there.
             MouseEventKind::Drag(MouseButton::Left) => {
-                self.drag_scrollbar(mouse.row);
+                if !modal_open {
+                    self.drag_scrollbar(mouse.row);
+                }
                 return;
             }
             // The release carries a position too, and it is often past the last
@@ -187,12 +208,14 @@ impl App {
             // rows beyond where the last motion landed. Applying it before
             // letting go means the thumb finishes where the pointer did.
             MouseEventKind::Up(MouseButton::Left) => {
-                self.drag_scrollbar(mouse.row);
+                if !modal_open {
+                    self.drag_scrollbar(mouse.row);
+                }
                 self.scroll_drag = None;
                 return;
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                if self.grab_scrollbar(mouse.column, mouse.row) {
+                if !modal_open && self.grab_scrollbar(mouse.column, mouse.row) {
                     return;
                 }
             }
@@ -219,6 +242,9 @@ impl App {
                 self.select_current_row();
             }
             HitTarget::SidebarToggle(index) => self.toggle_collapsed(index),
+            // Swallowed on purpose: the toast has no action, and the whole
+            // point of recording it is that the control beneath does not run.
+            HitTarget::Notification => {}
             HitTarget::DetailItem(index) => {
                 self.focus = Focus::Detail;
                 self.detail_index = index;
@@ -301,10 +327,16 @@ impl App {
     /// aiming at it, and stealing focus here would move the keyboard cursor into
     /// the pane every time the user only wanted to read further down.
     fn grab_scrollbar(&mut self, column: u16, row: u16) -> bool {
+        // A press that is not on the track ends any grab the last gesture left
+        // behind. Releases can go missing — the pointer leaving the terminal
+        // mid-drag is enough — and a stale offset would make the next drag
+        // anywhere in the pane scroll it with no bar held.
         let Some(geom) = self.scrollbar else {
+            self.scroll_drag = None;
             return false;
         };
         if !contains(geom.track, column, row) {
+            self.scroll_drag = None;
             return false;
         }
 

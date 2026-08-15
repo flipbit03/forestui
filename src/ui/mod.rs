@@ -126,7 +126,7 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
     );
 }
 
-fn draw_notifications(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_notifications(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.notifications.is_empty() {
         return;
     }
@@ -168,6 +168,8 @@ fn draw_notifications(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(Clear, rect);
     frame.render_widget(Paragraph::new(lines), rect);
+    // Recorded after the panes, so it wins the cells it covers.
+    app.push_hit(rect, HitTarget::Notification);
 }
 
 /// Break text into lines of at most `width` characters, on word boundaries
@@ -207,6 +209,28 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The toast is drawn over the detail pane, so the frame that draws it has
+    /// to claim its cells — otherwise a click there reaches the control beneath.
+    #[tokio::test]
+    async fn drawing_a_toast_records_its_region() {
+        use crate::app::test_support::app_with_fixture;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (_dir, mut app) = app_with_fixture();
+        app.notify("something happened", Severity::Information);
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("test terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| hit.target == HitTarget::Notification),
+            "the toast drew but claimed no cells"
+        );
+    }
 
     #[test]
     fn wrap_words_breaks_on_word_boundaries() {
