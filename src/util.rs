@@ -185,6 +185,20 @@ pub fn exit_code(status: std::process::ExitStatus, sentinel: i32) -> i32 {
 ///   leaving the empty file that loads as empty state — the exact loss this
 ///   function exists to prevent.
 pub fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
+    write_bytes_atomically(path, contents.as_bytes(), None)
+}
+
+/// [`write_atomically`] for binary content, with an optional mode floor.
+///
+/// `executable_mode` is applied when the target does not exist or is not
+/// owner-executable — the self-updater passes `0o755` so the replacement
+/// binary always comes out runnable, while a deliberately tightened install
+/// (say 0o700) keeps its exact mode rather than being widened.
+pub fn write_bytes_atomically(
+    path: &Path,
+    contents: &[u8],
+    executable_mode: Option<u32>,
+) -> std::io::Result<()> {
     // Resolve the link before choosing a sibling, so both the temp file and the
     // rename land in the directory that actually holds the data.
     let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
@@ -197,7 +211,7 @@ pub fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
     name.push_str(&format!(".tmp-{}", std::process::id()));
     temp.set_file_name(name);
 
-    let result = write_temp_then_rename(&temp, &target, contents);
+    let result = write_temp_then_rename(&temp, &target, contents, executable_mode);
     if result.is_err() {
         // Leave no half-written sibling behind; the original is untouched.
         let _ = std::fs::remove_file(&temp);
@@ -205,20 +219,44 @@ pub fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
     result
 }
 
-/// The fallible half of [`write_atomically`], split out so one cleanup on the
-/// error path covers a failure at any step rather than only at the rename.
-fn write_temp_then_rename(temp: &Path, target: &Path, contents: &str) -> std::io::Result<()> {
+/// The fallible half of [`write_bytes_atomically`], split out so one cleanup on
+/// the error path covers a failure at any step rather than only at the rename.
+fn write_temp_then_rename(
+    temp: &Path,
+    target: &Path,
+    contents: &[u8],
+    executable_mode: Option<u32>,
+) -> std::io::Result<()> {
     use std::io::Write;
 
     let mut file = std::fs::File::create(temp)?;
-    file.write_all(contents.as_bytes())?;
+    file.write_all(contents)?;
     // Durability before visibility: the rename is only atomic for readers, not
     // for the disk.
     file.sync_all()?;
     drop(file);
 
-    if let Ok(existing) = std::fs::metadata(target) {
-        std::fs::set_permissions(temp, existing.permissions())?;
+    let existing = std::fs::metadata(target).ok().map(|m| m.permissions());
+    #[cfg(unix)]
+    let permissions = {
+        use std::os::unix::fs::PermissionsExt;
+        match (existing, executable_mode) {
+            // The caller wants the file runnable and the current mode is not.
+            (Some(p), Some(mode)) if p.mode() & 0o100 == 0 => {
+                Some(std::fs::Permissions::from_mode(mode))
+            }
+            (Some(p), _) => Some(p),
+            (None, Some(mode)) => Some(std::fs::Permissions::from_mode(mode)),
+            (None, None) => None,
+        }
+    };
+    #[cfg(not(unix))]
+    let permissions = {
+        let _ = executable_mode;
+        existing
+    };
+    if let Some(permissions) = permissions {
+        std::fs::set_permissions(temp, permissions)?;
     }
 
     std::fs::rename(temp, target)?;
