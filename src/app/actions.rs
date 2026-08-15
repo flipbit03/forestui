@@ -7,7 +7,7 @@
 
 use super::{Action, App, Field};
 use crate::event::Severity;
-use crate::event::{AppEvent, BranchTarget, EventTx, WorktreeRemoval};
+use crate::event::{AppEvent, BranchTarget, EventTx};
 use crate::modal::ModalOutcome;
 use crate::modal::{
     AddWorktreeModal, ConfirmAction, ConfirmModal, CreateFromIssueModal, Modal, ModalEffect,
@@ -124,47 +124,47 @@ impl App {
                 self.reload_detail();
             }
             ConfirmAction::DeleteWorktree(worktree_id) => {
-                let Some((repo, worktree)) = self.state.find_worktree(worktree_id) else {
-                    return;
-                };
-                let repo_path = repo.source_path.clone();
-                let worktree_path = worktree.path.clone();
-                let tx = self.tx.clone();
-                // The entry leaves state only when git has actually removed the
-                // worktree — the fold decides, so a dirty refusal can stop here
-                // with everything intact.
-                tokio::spawn(async move {
-                    let outcome = match git::remove_worktree(&repo_path, &worktree_path).await {
-                        Ok(git::RemoveOutcome::Removed) => WorktreeRemoval::Removed,
-                        Ok(git::RemoveOutcome::Dirty(summary)) => WorktreeRemoval::Dirty(summary),
-                        Err(error) => WorktreeRemoval::Failed(error.to_string()),
-                    };
-                    tx.send(AppEvent::WorktreeRemoveResult {
-                        worktree_id,
-                        outcome,
-                    });
-                });
+                self.spawn_worktree_removal(worktree_id, false);
             }
             ConfirmAction::ForceDeleteWorktree(worktree_id) => {
-                let Some((repo, worktree)) = self.state.find_worktree(worktree_id) else {
-                    return;
-                };
-                let repo_path = repo.source_path.clone();
-                let worktree_path = worktree.path.clone();
-                let tx = self.tx.clone();
-                tokio::spawn(async move {
-                    let outcome = match git::force_remove_worktree(&repo_path, &worktree_path).await
-                    {
-                        Ok(()) => WorktreeRemoval::Removed,
-                        Err(error) => WorktreeRemoval::Failed(error.to_string()),
-                    };
-                    tx.send(AppEvent::WorktreeRemoveResult {
-                        worktree_id,
-                        outcome,
-                    });
-                });
+                self.spawn_worktree_removal(worktree_id, true);
             }
         }
+    }
+
+    /// Run a worktree removal in the background. The entry leaves state only
+    /// when git has actually removed the worktree — the fold decides, so a
+    /// dirty refusal can stop with everything intact.
+    fn spawn_worktree_removal(&mut self, worktree_id: Uuid, force: bool) {
+        let Some((repo, worktree)) = self.state.find_worktree(worktree_id) else {
+            return;
+        };
+        // A second confirm on the same worktree while git is still running
+        // would race a duplicate removal and stack a second destructive modal.
+        if !self.removals_in_flight.insert(worktree_id) {
+            return;
+        }
+        let repo_path = repo.source_path.clone();
+        let worktree_path = worktree.path.clone();
+        let name = worktree.name.clone();
+        // Immediate feedback: on a large tree the round trip takes seconds and
+        // the frame would otherwise be identical to the one before confirming.
+        self.notify(format!("Deleting '{name}'…"), Severity::Information);
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let outcome = if force {
+                git::force_remove_worktree(&repo_path, &worktree_path)
+                    .await
+                    .map(|()| git::RemoveOutcome::Removed)
+            } else {
+                git::remove_worktree(&repo_path, &worktree_path).await
+            }
+            .map_err(|error| error.to_string());
+            tx.send(AppEvent::WorktreeRemoveResult {
+                worktree_id,
+                outcome,
+            });
+        });
     }
 
     pub(super) fn on_branches(
@@ -252,6 +252,9 @@ impl App {
         if let Some((_repo, worktree)) = self.state.selected_worktree() {
             let name = worktree.name.clone();
             let id = worktree.id;
+            if self.removals_in_flight.contains(&id) {
+                return;
+            }
             self.modals.push(Modal::Confirm(ConfirmModal::new(
                 "Delete Worktree",
                 format!("Permanently delete '{name}'?"),

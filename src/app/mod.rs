@@ -15,7 +15,7 @@ pub use detail::{Action, DetailItem, Field};
 pub use keys::BINDINGS;
 pub use mouse::{Direction, Hit, HitTarget, ModalClick, ScrollbarGeom};
 
-use crate::event::{AppEvent, DetailMeta, EventTx, Severity, WorktreeRemoval};
+use crate::event::{AppEvent, DetailMeta, EventTx, Severity};
 use crate::modal::Modal;
 use crate::models::{ClaudeSession, GitHubIssue, Settings};
 use crate::services::{claude_session, git, github, settings as settings_service, tmux};
@@ -125,6 +125,14 @@ pub struct App {
     pub spinner_index: usize,
     pub last_issue_refresh: Instant,
     pub should_quit: bool,
+    /// Worktrees with a removal running in the background. Guards duplicate
+    /// removals, disables the Delete control, and holds quit until the results
+    /// are folded (an orphaned git child would remove the tree on disk after
+    /// the config was last saved).
+    pub removals_in_flight: std::collections::HashSet<Uuid>,
+    /// Quit was requested while removals were in flight; honoured when the
+    /// last one folds. A second request quits immediately.
+    pub quit_pending: bool,
 
     /// Clickable regions recorded by the renderers for the current frame.
     pub hits: Vec<Hit>,
@@ -205,6 +213,8 @@ impl App {
             spinner_index: 0,
             last_issue_refresh: Instant::now(),
             should_quit: false,
+            removals_in_flight: std::collections::HashSet::new(),
+            quit_pending: false,
             hits: Vec::new(),
             hovered: None,
             redraw: true,
@@ -228,6 +238,22 @@ impl App {
 
     pub fn title(&self) -> String {
         format!("forestui v{}", self.version)
+    }
+
+    /// Quit, unless a removal is still in flight — quitting then would orphan
+    /// the git child: it finishes removing the tree on disk, but the result is
+    /// never folded, so the saved config keeps a phantom entry. A second
+    /// request forces the quit anyway.
+    pub(super) fn request_quit(&mut self) {
+        if self.removals_in_flight.is_empty() || self.quit_pending {
+            self.should_quit = true;
+        } else {
+            self.quit_pending = true;
+            self.notify(
+                "Waiting for a worktree deletion to finish — press again to force quit",
+                Severity::Information,
+            );
+        }
     }
 
     // ------------------------------------------------------------------ startup
@@ -709,33 +735,47 @@ impl App {
     /// Fold a finished removal attempt. State changes only here — the confirm
     /// handler just spawns git, so a dirty refusal arrives with the entry (and
     /// the user's uncommitted work) fully intact.
-    fn on_worktree_remove_result(&mut self, worktree_id: Uuid, outcome: WorktreeRemoval) {
+    fn on_worktree_remove_result(
+        &mut self,
+        worktree_id: Uuid,
+        outcome: Result<git::RemoveOutcome, String>,
+    ) {
+        self.removals_in_flight.remove(&worktree_id);
+        // A quit that waited on this removal can go through now.
+        if self.quit_pending && self.removals_in_flight.is_empty() {
+            self.should_quit = true;
+        }
         // The entry may have been removed by other means while git ran.
         let Some((_, worktree)) = self.state.find_worktree(worktree_id) else {
             return;
         };
         let name = worktree.name.clone();
         match outcome {
-            WorktreeRemoval::Removed => {
+            Ok(git::RemoveOutcome::Removed) => {
                 self.state.remove_worktree(worktree_id);
                 self.rebuild_rows();
                 self.sync_sidebar_index();
                 self.reload_detail();
                 self.report_save_error();
             }
-            WorktreeRemoval::Dirty(summary) => {
+            Ok(git::RemoveOutcome::Dirty(summary)) => {
+                // The name is capped so the summary — the one thing the user
+                // needs before confirming — never clips off the dialog edge.
+                let display = crate::util::truncate(&name, 40);
                 self.modals.push(Modal::Confirm(
                     crate::modal::ConfirmModal::new(
                         "Uncommitted Changes",
                         format!(
-                            "'{name}' has uncommitted changes ({summary}).\nDeleting will discard them permanently."
+                            "'{display}' has uncommitted changes:\n{summary}\nDeleting will discard them permanently."
                         ),
                         crate::modal::ConfirmAction::ForceDeleteWorktree(worktree_id),
                     )
-                    .with_confirm_label("Delete anyway"),
+                    // Pushed by a background event, not a user action — a
+                    // keystroke already in the queue must not confirm it.
+                    .with_arm_delay(),
                 ));
             }
-            WorktreeRemoval::Failed(error) => {
+            Err(error) => {
                 self.notify(
                     format!("Could not delete '{name}': {error}"),
                     Severity::Error,
@@ -1019,7 +1059,7 @@ mod tests {
 
         app.handle_event(AppEvent::WorktreeRemoveResult {
             worktree_id,
-            outcome: WorktreeRemoval::Removed,
+            outcome: Ok(git::RemoveOutcome::Removed),
         });
         assert!(app.state.find_worktree(worktree_id).is_none());
     }
@@ -1032,19 +1072,36 @@ mod tests {
 
         app.handle_event(AppEvent::WorktreeRemoveResult {
             worktree_id,
-            outcome: WorktreeRemoval::Dirty("2 modified, 1 untracked".into()),
+            outcome: Ok(git::RemoveOutcome::Dirty("2 modified, 1 untracked".into())),
         });
 
         let Some(Modal::Confirm(confirm)) = app.modals.last() else {
             panic!("expected the second confirmation");
         };
         assert!(confirm.message.contains("2 modified, 1 untracked"));
-        assert_eq!(confirm.confirm_label, "Delete anyway");
+        assert_eq!(confirm.action.confirm_label(), "Delete anyway");
         assert!(matches!(
             confirm.action,
             crate::modal::ConfirmAction::ForceDeleteWorktree(id) if id == worktree_id
         ));
         // Nothing destroyed, nothing dropped from state.
+        assert!(app.state.find_worktree(worktree_id).is_some());
+
+        // Pushed by a background event: a keystroke already in flight when the
+        // modal appeared must not confirm it.
+        app.handle_key(key(KeyCode::Char('y')));
+        assert!(
+            matches!(app.modals.last(), Some(Modal::Confirm(_))),
+            "an unarmed confirm must swallow the stale 'y'"
+        );
+
+        if let Some(Modal::Confirm(confirm)) = app.modals.last_mut() {
+            confirm.disarm();
+        }
+        app.handle_key(key(KeyCode::Char('y')));
+        assert!(app.modals.is_empty());
+        // The forced removal is now in flight; the entry waits for the fold.
+        assert!(app.removals_in_flight.contains(&worktree_id));
         assert!(app.state.find_worktree(worktree_id).is_some());
     }
 
@@ -1056,12 +1113,57 @@ mod tests {
 
         app.handle_event(AppEvent::WorktreeRemoveResult {
             worktree_id,
-            outcome: WorktreeRemoval::Failed("worktree is locked".into()),
+            outcome: Err("worktree is locked".into()),
         });
 
         assert!(app.state.find_worktree(worktree_id).is_some());
         assert_eq!(app.notifications.len(), 1);
         assert!(app.notifications[0].text.contains("worktree is locked"));
+    }
+
+    #[tokio::test]
+    async fn delete_is_ignored_while_a_removal_is_in_flight() {
+        let (_dir, mut app) = app_with_fixture();
+        app.handle_key(key(KeyCode::Down));
+        let worktree_id = app.state.selection.worktree_id.expect("worktree selected");
+
+        app.removals_in_flight.insert(worktree_id);
+        app.handle_key(key(KeyCode::Char('d')));
+        assert!(
+            app.modals.is_empty(),
+            "no duplicate confirm while the removal runs"
+        );
+    }
+
+    #[tokio::test]
+    async fn quit_waits_for_an_in_flight_removal() {
+        let (_dir, mut app) = app_with_fixture();
+        app.handle_key(key(KeyCode::Down));
+        let worktree_id = app.state.selection.worktree_id.expect("worktree selected");
+        app.removals_in_flight.insert(worktree_id);
+
+        app.handle_key(key(KeyCode::Char('q')));
+        assert!(!app.should_quit, "quit must wait for the fold");
+        assert!(app.quit_pending);
+
+        app.handle_event(AppEvent::WorktreeRemoveResult {
+            worktree_id,
+            outcome: Ok(git::RemoveOutcome::Removed),
+        });
+        assert!(app.should_quit, "the fold releases the pending quit");
+    }
+
+    #[tokio::test]
+    async fn a_second_quit_forces_out_past_an_in_flight_removal() {
+        let (_dir, mut app) = app_with_fixture();
+        app.handle_key(key(KeyCode::Down));
+        let worktree_id = app.state.selection.worktree_id.expect("worktree selected");
+        app.removals_in_flight.insert(worktree_id);
+
+        app.handle_key(key(KeyCode::Char('q')));
+        assert!(!app.should_quit);
+        app.handle_key(key(KeyCode::Char('q')));
+        assert!(app.should_quit);
     }
 
     #[tokio::test]
@@ -1593,7 +1695,7 @@ mod tests {
         assert!(app.state.find_worktree(worktree_id).is_some());
         app.handle_event(AppEvent::WorktreeRemoveResult {
             worktree_id,
-            outcome: WorktreeRemoval::Removed,
+            outcome: Ok(git::RemoveOutcome::Removed),
         });
         assert!(app.state.find_worktree(worktree_id).is_none());
     }

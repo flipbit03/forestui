@@ -101,23 +101,14 @@ pub enum AppEvent {
     WorktreeBranchRenamed { worktree_id: Uuid, branch: String },
     /// A worktree removal attempt finished. Success is folded into state on
     /// the main loop (single-writer, same reason as [`AppEvent::WorktreeAdded`]);
-    /// a dirty refusal opens the second confirmation; a failure surfaces git's
-    /// error and leaves the entry in place.
+    /// a dirty refusal opens the second confirmation; an error surfaces git's
+    /// message and leaves the entry in place.
     WorktreeRemoveResult {
         worktree_id: Uuid,
-        outcome: WorktreeRemoval,
+        outcome: Result<crate::services::git::RemoveOutcome, String>,
     },
     /// Reload the detail pane only.
     ReloadDetail,
-}
-
-/// How a worktree removal ended, as data for the fold to act on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorktreeRemoval {
-    Removed,
-    /// Refused: the tree holds uncommitted work (summary like "3 modified, 2 untracked").
-    Dirty(String),
-    Failed(String),
 }
 
 /// Clonable handle used by background tasks to push events back to the loop.

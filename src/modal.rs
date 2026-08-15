@@ -60,6 +60,18 @@ pub enum ConfirmAction {
     RemoveRepository(Uuid),
 }
 
+impl ConfirmAction {
+    /// Label on the destructive button. Derived from the action so a
+    /// construction site cannot pair a discard-your-work action with a bland
+    /// "Delete" button.
+    pub fn confirm_label(&self) -> &'static str {
+        match self {
+            ConfirmAction::ForceDeleteWorktree(_) => "Delete anyway",
+            ConfirmAction::DeleteWorktree(_) | ConfirmAction::RemoveRepository(_) => "Delete",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ModalResult {
     RepositoryAdded {
@@ -1093,13 +1105,19 @@ impl EditButtonModal {
 pub struct ConfirmModal {
     pub title: String,
     pub message: String,
-    /// Label on the destructive button — "Delete", or something more explicit
-    /// when the confirmation is about losing work rather than tidying up.
-    pub confirm_label: String,
     pub action: ConfirmAction,
     /// `true` when the destructive choice is highlighted.
     pub confirm_focused: bool,
+    /// Submit keys are ignored until this instant. Set on confirms pushed by a
+    /// *background event*: a keystroke queued before the modal appeared (a `y`
+    /// aimed at ClaudeYolo, letters typed into the modal underneath) must not
+    /// confirm a dialog the user never saw. Cancel always works.
+    armed_at: Option<std::time::Instant>,
 }
+
+/// Long enough to outlive any keystroke already in the event queue, far too
+/// short for a human deliberately confirming to notice.
+const CONFIRM_ARM_DELAY: std::time::Duration = std::time::Duration::from_millis(400);
 
 impl ConfirmModal {
     pub fn new(
@@ -1110,15 +1128,26 @@ impl ConfirmModal {
         Self {
             title: title.into(),
             message: message.into(),
-            confirm_label: "Delete".into(),
             action,
             confirm_focused: false,
+            armed_at: None,
         }
     }
 
-    pub fn with_confirm_label(mut self, label: impl Into<String>) -> Self {
-        self.confirm_label = label.into();
+    /// For confirms pushed by a background event rather than a user action.
+    pub fn with_arm_delay(mut self) -> Self {
+        self.armed_at = Some(std::time::Instant::now() + CONFIRM_ARM_DELAY);
         self
+    }
+
+    #[cfg(test)]
+    pub fn disarm(&mut self) {
+        self.armed_at = None;
+    }
+
+    fn submit_armed(&self) -> bool {
+        self.armed_at
+            .is_none_or(|at| std::time::Instant::now() >= at)
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
@@ -1131,14 +1160,20 @@ impl ConfirmModal {
                 ModalOutcome::None
             }
             KeyCode::Char('y') | KeyCode::Char('Y') => {
-                ModalOutcome::Submit(ModalResult::Confirmed(self.action.clone()))
+                if self.submit_armed() {
+                    ModalOutcome::Submit(ModalResult::Confirmed(self.action.clone()))
+                } else {
+                    ModalOutcome::None
+                }
             }
             KeyCode::Char('n') | KeyCode::Char('N') => ModalOutcome::Close,
             KeyCode::Enter => {
-                if self.confirm_focused {
+                if self.confirm_focused && self.submit_armed() {
                     ModalOutcome::Submit(ModalResult::Confirmed(self.action.clone()))
-                } else {
+                } else if !self.confirm_focused {
                     ModalOutcome::Close
+                } else {
+                    ModalOutcome::None
                 }
             }
             _ => ModalOutcome::None,
