@@ -9,6 +9,9 @@ license = "MIT"
 keywords = ["git", "worktree", "tui", "terminal", "ratatui"]
 categories = ["command-line-utilities", "development-tools"]
 repository = "https://github.com/flipbit03/forestui"
+# The rewrite spec and its committed tu frames are 79 of the 115 files the crate
+# would otherwise ship, and none of them are of any use to someone installing it.
+exclude = ["doc/", "scripts/", ".github/", ".claude/", "install.sh", "CLAUDE.md", ".pre-commit-config.yaml"]
 
 [[bin]]
 name = "forestui"
