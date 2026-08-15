@@ -1519,19 +1519,20 @@ Found by rendering both builds on the same fixture and comparing the captured
 PNGs pair by pair (`doc/rust-rewrite/screenshots/<build>/`). Text frames prove
 the *content* matches; these cover how it *looks*.
 
-### UC-90 — Mouse reporting is on, but not any-motion
-**Area:** Mouse | **Priority:** P0 | 🟢 EXECUTED (both builds; the second half is Rust-only)
+### UC-90 — Mouse reporting is on, in any-motion mode
+**Area:** Mouse | **Priority:** P0 | 🟢 EXECUTED (both builds)
 **Steps:** `tu mouse state --name <session>` right after launch.
-**Expected (both):** `enabled: true` — without it no click reaches the app at all.
-**Expected (Rust):** the mode is **not** `AnyMotion`. `EnableMouseCapture` turns on
-`?1003h`, so the terminal reports every pointer movement; the Rust loop redraws
-per event, so that showed up as the whole app flickering when the mouse merely
-moved across it. The build now requests `?1000h` + `?1006h` — buttons and wheel
-only — and drains queued events before repainting.
-**Not asserted for Python:** Textual legitimately uses any-motion tracking
-because it supports hover.
-**Fails if:** a click does nothing (reporting off), or the app repaints on
-pointer movement (flicker).
+**Expected (both):** `enabled: true` and the mode **is** `AnyMotion`. `?1003h`
+is the only way a terminal reports a bare pointer move, so without it hover is
+impossible rather than merely unstyled — and the stylesheet this port follows
+has 25 `:hover` rules. An earlier revision of this case demanded the opposite,
+because every motion report used to wake the loop and repaint, which read as
+the app flickering under a moving mouse. That was fixed at the source instead:
+`App::handle_mouse` marks the frame dirty only when the *hovered target
+changes*, so motion is affordable and both builds legitimately want it on.
+**Fails if:** a click does nothing (reporting off), hover never lights a
+control (mode is not `AnyMotion`), or the app repaints continuously under
+pointer motion (the redraw gate regressed).
 
 ### UC-91 — A modal dims what is behind it
 **Area:** Visual | **Priority:** P1 | 🟢 EXECUTED (both builds)
