@@ -282,7 +282,7 @@ interactions, or UI regressions. Use the `test-forestui` skill to drive forestui
 in a headless terminal with `tu` and verify the change works. Do this
 proactively, not only when asked.
 
-`doc/rust-rewrite/TU_USECASES.md` is the acceptance playbook: 94 numbered
+`doc/rust-rewrite/TU_USECASES.md` is the acceptance playbook: 96 numbered
 scenarios with exact keystrokes and expected output. The P0 cases are the
 regression suite — run the relevant ones after any behavioural change.
 

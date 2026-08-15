@@ -6,7 +6,7 @@ Companion documents in this directory:
 |---|---|
 | `ARCHITECTURE.md` | Crate/module design, verified dependency versions, CSS→Layout mapping |
 | `SPEC.md` | Implementation-grade behavioural spec of the **Python** build (2 200+ lines, present and complete — sections 1–10) |
-| `TU_USECASES.md` | 52-case `tu` acceptance playbook, 25 of them P0 |
+| `TU_USECASES.md` | 96-case `tu` acceptance playbook, 52 of them P0 |
 | `MIGRATION.md` | This document: what actually changed, what is left, how to roll back |
 
 **Verification status of this document.** Every claim about the Rust side is derived from reading
@@ -16,6 +16,11 @@ found"), so nothing here has been compiled, tested, or run. Statements about com
 runtime behaviour, and render output are therefore *unverified by execution* and are flagged where
 they matter. The Python-side claims are backed by `SPEC.md` and by the 35 use cases in
 `TU_USECASES.md` that were driven live against Python `0.0.0`.
+
+> **Line references below point at `src/app.rs`, which no longer exists.** It was
+> split into `src/app/{mod,detail,keys,mouse,actions}.rs`; the code moved, the
+> behaviour described did not. Treat every `src/app.rs:NNN` in this document as
+> naming the behaviour, not a location.
 
 ---
 
@@ -139,17 +144,17 @@ modules are stubs totalling 18 lines.
 | `d` delete | Identical (message text differs — see 4.4) | `src/app.rs:631` |
 | `s` settings | Identical | `src/app.rs:632` |
 | `r` refresh sidebar + detail | Identical | `src/app.rs:635-638` ↔ `app.py:841-844` |
-| `?` help toast | Identical — string copied verbatim, still omits `o`, `y`, `r`, `?` | `src/app.rs:643-647` ↔ `app.py:848-851` |
+| `?` help toast | Fixed | Was a verbatim copy of Python's nine-key string, which omitted `o`, `y`, `r`, `A` and `?` itself. Now derived from `BINDINGS` + `EXTRA_BINDINGS`, so a reachable key cannot be undiscoverable (`src/app/keys.rs`) |
 | `A` toggle archived section | Fixed | New key; Python's `_show_archived` was initialised `False` and never set (`state.py:26`, UC-50). `src/app.rs:639-642` |
 | `Tab` switch sidebar ↔ detail | Changed | New concept; Textual had per-widget focus. `src/app.rs:579-585` |
 | `Up`/`Down` | Changed | Now context-dependent: sidebar cursor, detail cursor, or in-field cursor. `src/app.rs:586-604` |
 | `Enter` | Changed | Sidebar: re-select. Detail: fire `detail_items()[detail_index]`. `src/app.rs:605-617` |
 | `Ctrl+C` quit | Identical | `src/app.rs:560-563`; Textual bound it by default |
 | Hotkeys while a rename field has focus | Changed | Printable keys go to the field, so `q`/`a`/`d` no longer fire. Python's `q` was `priority=True` (`app.py:72`) and fired even inside an `Input`. `src/app.rs:571-576` |
-| Mouse click to select a row or press a button | Dropped | No mouse capture is enabled (`src/main.rs:50`); no `MouseEvent` arm in `handle_term_event` (`src/app.rs:545-553`) |
+| Mouse click to select a row or press a button | Supported | Was dropped in the first cut — no capture enabled, no `MouseEvent` arm. `main.rs::enable_mouse` now turns on `?1000h/?1002h/?1003h/?1006h`, and `src/app/mouse.rs` hit-tests clicks, hover, the wheel and the scrollbar against the regions each renderer records (UC-83–88, UC-90) |
 | Textual command palette (`ctrl+p`), built-in help panel | Dropped | Framework features with no ratatui equivalent |
-| `A` and `Tab` absent from the footer and from the `?` toast | Changed | `src/ui/mod.rs:56-69` lists 12 keys; `A` is not among them |
-| Footer key order | Changed | Rust: `q a w e t o n y h d s ?` (`src/ui/mod.rs:56-69`). Python rendered `a Add Repo  q Quit  w …` (UC-01 transcript) |
+| `A` and `Tab` absent from the footer | Changed | The footer draws the 12 entries of `BINDINGS`; `A` and `r` live in `EXTRA_BINDINGS`, which the `?` toast lists and the footer does not, matching Textual's footer width |
+| Footer key order | Identical | Both render `a q w e t o n y h d s ?`. Textual sorted `q` after `a` despite declaring it first, because it carried `priority=True`; the Rust `BINDINGS` table hardcodes that resolved order (`src/app/keys.rs`) |
 
 ### 4.2 Startup, CLI, tmux entry
 

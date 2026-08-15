@@ -161,7 +161,19 @@ focus_app() { press Ctrl+B 0; sleep 0.7; }
 # Wait until the screen shows <regex>, rather than sleeping a fixed amount.
 # Textual repaints noticeably slower than ratatui, so a fixed sleep captures the
 # two builds at different points in the same interaction.
-await() { tu wait --name "$SESS" --text "$1" --timeout "${2:-12000}" >/dev/null 2>&1; }
+# await <regex> [timeout-ms] — block until the screen shows something.
+#
+# A timeout is reported rather than swallowed. It used to return quietly and
+# the caller captured anyway, so a case that never reached its state still
+# wrote a frame — and that frame diffed clean against a baseline captured the
+# same way, which is a green test for a screen nobody ever saw.
+await() {
+  if ! tu wait --name "$SESS" --text "$1" --timeout "${2:-12000}" >/dev/null 2>&1; then
+    printf '  WAIT-TIMEOUT  %s\n' "$1" >&2
+    WAIT_TIMEOUTS=$((WAIT_TIMEOUTS + 1))
+  fi
+}
+WAIT_TIMEOUTS=0
 
 # capture <UC-ID> <slug> [session] — one PNG plus one normalised text frame.
 #
@@ -310,7 +322,10 @@ done
 
 # Editor reuses its window; terminal always opens a new, uniquified one.
 focus_app; press e
-await "edit:alpha"; sleep 1.0
+# Nothing new appears — that is the whole point of the case — so there is no
+# screen condition to wait on. `await "edit:alpha"` looked like one but matched
+# the status bar UC-60 already left behind.
+sleep 1.5
 capture UC-65 window-editor-reused
 focus_app; press t
 await "term:alpha:wt-a:2"; sleep 1.0
@@ -319,10 +334,10 @@ capture UC-66 window-terminal-uniquified
 focus_app; press A; sleep 1.2
 capture UC-67 archived-section-toggle
 focus_app; press h
-await "Unarchive"; sleep 0.8
+await "│ Unarchive │"; sleep 0.8
 capture UC-68 worktree-archived
 focus_app; press h
-await "[^n]Archive"; sleep 0.8
+await "│ Archive │"; sleep 0.8
 capture UC-69 worktree-unarchived
 
 focus_app; press r; sleep 1.5
@@ -535,5 +550,10 @@ capture UC-86 click-modal-cancel
 assert UC-86 modal-dismissed-by-click "no" "$(screen_has 'Repository Path')"
 
 echo "done: $LABEL"
+if [ "$WAIT_TIMEOUTS" -gt 0 ]; then
+  # Loud on purpose: every timed-out wait captured a frame of whatever was on
+  # screen instead, so the frames below are not all what they claim to be.
+  echo "WARNING: $WAIT_TIMEOUTS wait(s) timed out — those captures are suspect"
+fi
 echo "assertions:"
 sed 's/^/  /' "$ASSERTIONS"

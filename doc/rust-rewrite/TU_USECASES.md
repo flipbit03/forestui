@@ -438,9 +438,13 @@ enabled for a repo with no remote.
 1. `tu screenshot --name fui --png -o /tmp/uc13.png`; `Read` it.
 
 **Expected:** the button reads exactly `↓ Git Pull (No remote)` and is rendered
-disabled (dimmed, not focusable).
-**Fails if:** the button says `↓ Git Pull` and is clickable — pulling a repo with no
-upstream errors out and the app would surface a raw git error.
+disabled (dimmed). It *keeps its slot in the focus ring* — a disabled control
+still occupies its index, so the items either side of it do not shift — and is
+inert: neither Enter nor a click runs it.
+**Fails if:** the button says `↓ Git Pull`, or it fires when activated —
+pulling a repo with no upstream errors out and the app would surface a raw git
+error. Earlier revisions of this case said "not focusable"; the build has never
+done that, and skipping disabled items would move every index behind them.
 
 ---
 
@@ -1307,9 +1311,15 @@ wording in both builds. Nothing is deleted yet.
 
 ### UC-59 — `?` shows the help toast
 **Area:** Sweep | **Priority:** P1 | 🟢 EXECUTED (both builds)
-**Expected:** `a: Add Repo | w: Add Worktree | e: Editor | t: Terminal | n: Claude
-| h: Archive | d: Delete | s: Settings | q: Quit`.
-**Known gap in both:** the toast omits `o`, `y`, `r` and `?` itself.
+**Expected (Rust):** every binding the app has, in footer order, wrapped over
+as many lines as it needs: `a: Add Repo | q: Quit | w: Add Worktree | e: Editor
+| t: Terminal | o: Files | n: Claude | y: ClaudeYOLO | h: Archive | d: Delete |
+s: Settings | ?: Help | r: Refresh | A: Show Archived`. It is derived from the
+same `BINDINGS` table that draws the footer, plus `EXTRA_BINDINGS` for the two
+keys that never fit it, so a key cannot be reachable yet undiscoverable.
+**Divergence from Python:** the Textual build hardcoded a nine-key string and
+omitted `o`, `y`, `r`, `A` and `?` itself. The Rust toast is deliberately
+longer; `baseline/python/UC-59-help-notification.txt` still shows the short one.
 
 ### UC-60 — `e` opens the editor window
 **Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
@@ -1506,9 +1516,11 @@ depending on which pane has focus.
 
 ### UC-89 — Controls render as buttons
 **Area:** Visual | **Priority:** P1 | 🟢 EXECUTED (Rust)
-**Expected:** every control renders as a filled pill (`▐ Label ▏`), visibly a
-button rather than plain text, with the focused one highlighted and destructive
-ones red.
+**Expected:** every control renders as a three-row bordered box
+(`┌────────┐` / `│ Editor │` / `└────────┘`), visibly a button rather than plain
+text, with the focused one highlighted and destructive ones red. An earlier cut
+drew filled pills (`▐ Label ▏`); the boxes are what matches Textual's
+`Button { border: solid; height: 3 }` and what every committed baseline shows.
 **Fails if:** controls read as flat labels — a user reported exactly that.
 
 ---
@@ -1562,6 +1574,27 @@ session and each GitHub issue, and the LOCATION path in a bordered box. Without
 them the pane reads as one flat undifferentiated list, which is what a user
 comparing the two builds side by side noticed first.
 
+### UC-95 — The fixture exercises every section it claims to compare
+**Area:** Harness | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Steps:** part of `scripts/tu-sweep.sh`; the throwaway forest is seeded with
+Claude session files and a stubbed `gh` before the app is launched.
+**Expected:** the sweep's repository pane shows real sessions and real issues,
+not the empty state. A sweep that never renders a section reports parity for it
+regardless of what the two builds would have drawn there.
+**Fails if:** any section falls back to `No sessions found`, `No issues found`
+or `No repositories`. The session cards went uncompared that way for days, and
+the issue rows right behind them.
+
+### UC-96 — The comparison frame is tall enough to hold the pane
+**Area:** Harness | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Steps:** `tu resize --name <session> 140x140`, then capture.
+**Expected:** the whole repository pane is inside one frame — `msgs` from a
+session card and the `#326`/`#298` issue rows all present — so the diff covers
+it. At the sweep's normal 140x44 the sections below the fold are absent from
+the frame and therefore absent from the comparison.
+**Fails if:** the tall capture is missing either marker, which means the frame
+being diffed stops short of the content the case exists to compare.
+
 ---
 
 ## Known visual divergences (accepted, not defects)
@@ -1606,7 +1639,7 @@ composite shows a difference not listed above, treat it as a regression.
 | Flows & mouse | 78–89 | 8 |
 | Visual parity | 90–94 | 1 |
 
-**94 use cases · 50 P0 · 76 executed live · 17 written from source only.**
+**96 use cases · 52 P0 · 78 executed live · 17 written from source only.**
 
 UC-01–52 were written against the Python build on 2026-08-14 (35 executed).
 UC-53–70 are the automated sweep and have been executed against **both** builds;

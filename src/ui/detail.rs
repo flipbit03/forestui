@@ -935,6 +935,29 @@ mod tests {
         assert!(!app.detail_follow_focus);
     }
 
+    /// `draw` is the only thing that ever writes `App::drawn_items`, and every
+    /// activation — Enter and click alike — resolves against it. Delete that one
+    /// line and the whole pane goes inert while every other test stays green,
+    /// because they all snapshot it by hand.
+    #[tokio::test]
+    async fn drawing_the_pane_snapshots_what_it_drew() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = test_app(&dir);
+        with_repository(&mut app);
+        app.sessions = Some(vec![a_session()]);
+        app.issues = Some(vec![an_issue()]);
+        app.drawn_items.clear();
+
+        render_buffer(&mut app, 100, TALL);
+
+        assert!(!app.drawn_items.is_empty(), "the frame snapshotted nothing");
+        assert_eq!(
+            app.drawn_items,
+            crate::app::detail::drawn(&crate::app::detail::content(&app)),
+            "the snapshot is not what the frame drew"
+        );
+    }
+
     /// The pane shrinks under the cursor whenever the issue auto-refresh comes
     /// back with fewer issues than last time. An index left past the end is a
     /// focus ring that vanishes and an Enter that does nothing.
