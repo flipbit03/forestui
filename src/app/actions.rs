@@ -7,7 +7,7 @@
 
 use super::{Action, App, Field};
 use crate::event::Severity;
-use crate::event::{AppEvent, BranchTarget, EventTx};
+use crate::event::{AppEvent, BranchTarget, EventTx, WorktreeRemoval};
 use crate::modal::ModalOutcome;
 use crate::modal::{
     AddWorktreeModal, ConfirmAction, ConfirmModal, CreateFromIssueModal, Modal, ModalEffect,
@@ -130,15 +130,39 @@ impl App {
                 let repo_path = repo.source_path.clone();
                 let worktree_path = worktree.path.clone();
                 let tx = self.tx.clone();
+                // The entry leaves state only when git has actually removed the
+                // worktree — the fold decides, so a dirty refusal can stop here
+                // with everything intact.
                 tokio::spawn(async move {
-                    // A failed git removal must not strand the entry in state.
-                    let _ = git::remove_worktree(&repo_path, &worktree_path).await;
-                    tx.send(AppEvent::ReloadDetail);
+                    let outcome = match git::remove_worktree(&repo_path, &worktree_path).await {
+                        Ok(git::RemoveOutcome::Removed) => WorktreeRemoval::Removed,
+                        Ok(git::RemoveOutcome::Dirty(summary)) => WorktreeRemoval::Dirty(summary),
+                        Err(error) => WorktreeRemoval::Failed(error.to_string()),
+                    };
+                    tx.send(AppEvent::WorktreeRemoveResult {
+                        worktree_id,
+                        outcome,
+                    });
                 });
-                self.state.remove_worktree(worktree_id);
-                self.rebuild_rows();
-                self.sync_sidebar_index();
-                self.reload_detail();
+            }
+            ConfirmAction::ForceDeleteWorktree(worktree_id) => {
+                let Some((repo, worktree)) = self.state.find_worktree(worktree_id) else {
+                    return;
+                };
+                let repo_path = repo.source_path.clone();
+                let worktree_path = worktree.path.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let outcome = match git::force_remove_worktree(&repo_path, &worktree_path).await
+                    {
+                        Ok(()) => WorktreeRemoval::Removed,
+                        Err(error) => WorktreeRemoval::Failed(error.to_string()),
+                    };
+                    tx.send(AppEvent::WorktreeRemoveResult {
+                        worktree_id,
+                        outcome,
+                    });
+                });
             }
         }
     }

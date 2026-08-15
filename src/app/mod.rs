@@ -15,7 +15,7 @@ pub use detail::{Action, DetailItem, Field};
 pub use keys::BINDINGS;
 pub use mouse::{Direction, Hit, HitTarget, ModalClick, ScrollbarGeom};
 
-use crate::event::{AppEvent, DetailMeta, EventTx, Severity};
+use crate::event::{AppEvent, DetailMeta, EventTx, Severity, WorktreeRemoval};
 use crate::modal::Modal;
 use crate::models::{ClaudeSession, GitHubIssue, Settings};
 use crate::services::{claude_session, git, github, settings as settings_service, tmux};
@@ -698,7 +698,49 @@ impl App {
                 self.reload_detail();
                 self.report_save_error();
             }
+            AppEvent::WorktreeRemoveResult {
+                worktree_id,
+                outcome,
+            } => self.on_worktree_remove_result(worktree_id, outcome),
             AppEvent::ReloadDetail => self.reload_detail(),
+        }
+    }
+
+    /// Fold a finished removal attempt. State changes only here — the confirm
+    /// handler just spawns git, so a dirty refusal arrives with the entry (and
+    /// the user's uncommitted work) fully intact.
+    fn on_worktree_remove_result(&mut self, worktree_id: Uuid, outcome: WorktreeRemoval) {
+        // The entry may have been removed by other means while git ran.
+        let Some((_, worktree)) = self.state.find_worktree(worktree_id) else {
+            return;
+        };
+        let name = worktree.name.clone();
+        match outcome {
+            WorktreeRemoval::Removed => {
+                self.state.remove_worktree(worktree_id);
+                self.rebuild_rows();
+                self.sync_sidebar_index();
+                self.reload_detail();
+                self.report_save_error();
+            }
+            WorktreeRemoval::Dirty(summary) => {
+                self.modals.push(Modal::Confirm(
+                    crate::modal::ConfirmModal::new(
+                        "Uncommitted Changes",
+                        format!(
+                            "'{name}' has uncommitted changes ({summary}).\nDeleting will discard them permanently."
+                        ),
+                        crate::modal::ConfirmAction::ForceDeleteWorktree(worktree_id),
+                    )
+                    .with_confirm_label("Delete anyway"),
+                ));
+            }
+            WorktreeRemoval::Failed(error) => {
+                self.notify(
+                    format!("Could not delete '{name}': {error}"),
+                    Severity::Error,
+                );
+            }
         }
     }
 
@@ -972,7 +1014,54 @@ mod tests {
 
         app.handle_key(key(KeyCode::Char('y')));
         assert!(app.modals.is_empty());
+        // Still there: the entry leaves state only when git reports success.
+        assert!(app.state.find_worktree(worktree_id).is_some());
+
+        app.handle_event(AppEvent::WorktreeRemoveResult {
+            worktree_id,
+            outcome: WorktreeRemoval::Removed,
+        });
         assert!(app.state.find_worktree(worktree_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_dirty_worktree_gets_a_second_confirmation() {
+        let (_dir, mut app) = app_with_fixture();
+        app.handle_key(key(KeyCode::Down));
+        let worktree_id = app.state.selection.worktree_id.expect("worktree selected");
+
+        app.handle_event(AppEvent::WorktreeRemoveResult {
+            worktree_id,
+            outcome: WorktreeRemoval::Dirty("2 modified, 1 untracked".into()),
+        });
+
+        let Some(Modal::Confirm(confirm)) = app.modals.last() else {
+            panic!("expected the second confirmation");
+        };
+        assert!(confirm.message.contains("2 modified, 1 untracked"));
+        assert_eq!(confirm.confirm_label, "Delete anyway");
+        assert!(matches!(
+            confirm.action,
+            crate::modal::ConfirmAction::ForceDeleteWorktree(id) if id == worktree_id
+        ));
+        // Nothing destroyed, nothing dropped from state.
+        assert!(app.state.find_worktree(worktree_id).is_some());
+    }
+
+    #[tokio::test]
+    async fn a_failed_removal_keeps_the_entry_and_reports() {
+        let (_dir, mut app) = app_with_fixture();
+        app.handle_key(key(KeyCode::Down));
+        let worktree_id = app.state.selection.worktree_id.expect("worktree selected");
+
+        app.handle_event(AppEvent::WorktreeRemoveResult {
+            worktree_id,
+            outcome: WorktreeRemoval::Failed("worktree is locked".into()),
+        });
+
+        assert!(app.state.find_worktree(worktree_id).is_some());
+        assert_eq!(app.notifications.len(), 1);
+        assert!(app.notifications[0].text.contains("worktree is locked"));
     }
 
     #[tokio::test]
@@ -1499,6 +1588,13 @@ mod tests {
         app.handle_mouse(click(12, 10));
 
         assert!(app.modals.is_empty());
+        // Removal is asynchronous now; the click only dispatches it. The entry
+        // goes when the git result is folded.
+        assert!(app.state.find_worktree(worktree_id).is_some());
+        app.handle_event(AppEvent::WorktreeRemoveResult {
+            worktree_id,
+            outcome: WorktreeRemoval::Removed,
+        });
         assert!(app.state.find_worktree(worktree_id).is_none());
     }
 

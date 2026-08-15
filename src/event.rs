@@ -99,8 +99,25 @@ pub enum AppEvent {
     /// config used to take the new name before `git branch -m` ran and keep it
     /// when the rename failed, leaving a branch recorded that does not exist.
     WorktreeBranchRenamed { worktree_id: Uuid, branch: String },
+    /// A worktree removal attempt finished. Success is folded into state on
+    /// the main loop (single-writer, same reason as [`AppEvent::WorktreeAdded`]);
+    /// a dirty refusal opens the second confirmation; a failure surfaces git's
+    /// error and leaves the entry in place.
+    WorktreeRemoveResult {
+        worktree_id: Uuid,
+        outcome: WorktreeRemoval,
+    },
     /// Reload the detail pane only.
     ReloadDetail,
+}
+
+/// How a worktree removal ended, as data for the fold to act on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorktreeRemoval {
+    Removed,
+    /// Refused: the tree holds uncommitted work (summary like "3 modified, 2 untracked").
+    Dirty(String),
+    Failed(String),
 }
 
 /// Clonable handle used by background tasks to push events back to the loop.

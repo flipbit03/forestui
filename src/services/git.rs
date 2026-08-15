@@ -200,21 +200,71 @@ pub async fn create_worktree(
     Ok(())
 }
 
-/// Remove a worktree, retrying with `--force` once if the plain remove fails.
-pub async fn remove_worktree(repo_path: &str, worktree_path: &str) -> GitResult<()> {
+/// What a plain (non-forced) removal attempt decided.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoveOutcome {
+    Removed,
+    /// git refused because the tree holds uncommitted work. The summary is
+    /// human-readable, e.g. "3 modified, 2 untracked".
+    Dirty(String),
+}
+
+/// Remove a worktree without destroying uncommitted work.
+///
+/// `git worktree remove` refuses for one recoverable reason — the tree holds
+/// uncommitted changes or untracked files. That refusal is a safety check, so
+/// it is surfaced as [`RemoveOutcome::Dirty`] for the caller to confirm rather
+/// than papered over with `--force`. Any other refusal (missing directory,
+/// stale metadata) is retried with `--force`, which is what a stale entry
+/// legitimately needs.
+pub async fn remove_worktree(repo_path: &str, worktree_path: &str) -> GitResult<RemoveOutcome> {
     let repo = expand(repo_path);
     let wt = expand(worktree_path).to_string_lossy().to_string();
 
     let (code, _out, _err) = run_git(&["worktree", "remove", wt.as_str()], Some(&repo)).await?;
     if code == 0 {
-        return Ok(());
+        return Ok(RemoveOutcome::Removed);
     }
+    // Ask the tree itself instead of parsing stderr, whose wording is not a
+    // stable interface across git versions.
+    if let Some(summary) = status_summary(&expand(worktree_path)).await {
+        return Ok(RemoveOutcome::Dirty(summary));
+    }
+    force_remove_worktree(repo_path, worktree_path).await?;
+    Ok(RemoveOutcome::Removed)
+}
+
+/// Remove a worktree discarding whatever is in it. Only for after the user has
+/// seen what they are about to lose (or the tree is already unreadable).
+pub async fn force_remove_worktree(repo_path: &str, worktree_path: &str) -> GitResult<()> {
+    let repo = expand(repo_path);
+    let wt = expand(worktree_path).to_string_lossy().to_string();
     let (code, _out, stderr) =
         run_git(&["worktree", "remove", "--force", wt.as_str()], Some(&repo)).await?;
     if code != 0 {
         return Err(GitError(format!("Failed to remove worktree: {stderr}")));
     }
     Ok(())
+}
+
+/// "N modified, M untracked" when the tree holds uncommitted work; `None` when
+/// it is clean — or unreadable (deleted directory), which the caller treats as
+/// "nothing left to lose".
+async fn status_summary(dir: &Path) -> Option<String> {
+    let (code, stdout, _stderr) = run_git(&["status", "--porcelain"], Some(dir)).await.ok()?;
+    if code != 0 || stdout.is_empty() {
+        return None;
+    }
+    let untracked = stdout.lines().filter(|l| l.starts_with("??")).count();
+    let modified = stdout.lines().count() - untracked;
+    let mut parts = Vec::new();
+    if modified > 0 {
+        parts.push(format!("{modified} modified"));
+    }
+    if untracked > 0 {
+        parts.push(format!("{untracked} untracked"));
+    }
+    Some(parts.join(", "))
 }
 
 pub async fn rename_branch(path: &str, old_name: &str, new_name: &str) -> GitResult<()> {
@@ -479,10 +529,65 @@ mod tests {
         let listed = list_worktrees(&repo_str).await.unwrap();
         assert_eq!(listed.len(), 2);
 
-        remove_worktree(&repo_str, &wt.to_string_lossy())
+        let outcome = remove_worktree(&repo_str, &wt.to_string_lossy())
+            .await
+            .unwrap();
+        assert_eq!(outcome, RemoveOutcome::Removed);
+        assert!(!wt.exists());
+    }
+
+    #[tokio::test]
+    async fn a_dirty_worktree_is_refused_with_a_summary_not_destroyed() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        init_repo(&repo);
+        let repo_str = repo.to_string_lossy().to_string();
+
+        let wt = dir.path().join("wt-dirty");
+        create_worktree(&repo_str, &wt, "feat/dirty", true, None)
+            .await
+            .unwrap();
+        std::fs::write(wt.join("tracked.txt"), "committed").unwrap();
+        git_in(&wt, &["add", "tracked.txt"]);
+        git_in(&wt, &["commit", "-m", "add tracked"]);
+        std::fs::write(wt.join("tracked.txt"), "edited but not committed").unwrap();
+        std::fs::write(wt.join("scratch.txt"), "untracked").unwrap();
+
+        let outcome = remove_worktree(&repo_str, &wt.to_string_lossy())
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            RemoveOutcome::Dirty("1 modified, 1 untracked".into())
+        );
+        // The refusal left the work in place.
+        assert!(wt.join("scratch.txt").exists());
+
+        force_remove_worktree(&repo_str, &wt.to_string_lossy())
             .await
             .unwrap();
         assert!(!wt.exists());
+    }
+
+    #[tokio::test]
+    async fn a_worktree_with_a_deleted_directory_is_removed_without_a_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        init_repo(&repo);
+        let repo_str = repo.to_string_lossy().to_string();
+
+        let wt = dir.path().join("wt-gone");
+        create_worktree(&repo_str, &wt, "feat/gone", true, None)
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(&wt).unwrap();
+
+        // A stale entry must not read as "dirty" — it force-removes silently.
+        let outcome = remove_worktree(&repo_str, &wt.to_string_lossy())
+            .await
+            .unwrap();
+        assert_eq!(outcome, RemoveOutcome::Removed);
+        assert_eq!(list_worktrees(&repo_str).await.unwrap().len(), 1);
     }
 
     /// Run git in `dir`, panicking with the argv on failure. Tests only.

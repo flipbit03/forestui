@@ -55,6 +55,8 @@ pub enum ModalEffect {
 #[derive(Debug, Clone)]
 pub enum ConfirmAction {
     DeleteWorktree(Uuid),
+    /// Second-step confirm: the worktree was seen to hold uncommitted work.
+    ForceDeleteWorktree(Uuid),
     RemoveRepository(Uuid),
 }
 
@@ -1091,6 +1093,9 @@ impl EditButtonModal {
 pub struct ConfirmModal {
     pub title: String,
     pub message: String,
+    /// Label on the destructive button — "Delete", or something more explicit
+    /// when the confirmation is about losing work rather than tidying up.
+    pub confirm_label: String,
     pub action: ConfirmAction,
     /// `true` when the destructive choice is highlighted.
     pub confirm_focused: bool,
@@ -1105,9 +1110,15 @@ impl ConfirmModal {
         Self {
             title: title.into(),
             message: message.into(),
+            confirm_label: "Delete".into(),
             action,
             confirm_focused: false,
         }
+    }
+
+    pub fn with_confirm_label(mut self, label: impl Into<String>) -> Self {
+        self.confirm_label = label.into();
+        self
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
