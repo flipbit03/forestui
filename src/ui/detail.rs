@@ -1,15 +1,15 @@
-//! The detail pane: repository view, worktree view, and the empty state.
+//! The detail pane's renderer, and the empty state.
 //!
 //! The pane is immediate-mode, so there is nothing that remembers where a
-//! control was drawn. Instead every frame walks the controls in exactly the
-//! order `App::detail_items()` produces them and records the cells each one
-//! landed on. Renderer and key handler therefore agree on what item N is, which
-//! is the whole reason `Enter` fires the action the cursor is sitting on, and
-//! the recorded cells are what a click resolves against. Any new control here
-//! needs a matching entry there, in the same position.
+//! control was drawn. Instead every frame interprets the node list
+//! `app::detail::content()` produces — the same list `App::detail_items()`
+//! derives the focusable items from — and records the cells each control
+//! landed on. Because renderer and key handler consume one walk, item N on
+//! screen *is* item N in the handler by construction; the recorded cells are
+//! what a click resolves against.
 
+use crate::app::detail::{ControlSpec, DetailNode, Field, ISSUES_HEADER};
 use crate::app::{App, Focus, HitTarget, ScrollbarGeom};
-use crate::models::{ClaudeSession, GitHubIssue};
 use crate::theme;
 use crate::ui::widgets::{TextInput, centered_rect};
 use ratatui::Frame;
@@ -17,9 +17,6 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
-
-/// Frames of the issue-refresh spinner, carried over from the Textual build.
-const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
 
 /// Width of the label column in the rename section.
 const FIELD_LABEL_WIDTH: usize = 14;
@@ -113,6 +110,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 
 /// Render the pane for the current selection, or `None` for the empty state.
 fn build(app: &App, width: u16) -> Option<Pane> {
+    let nodes = crate::app::detail::content(app);
+    if nodes.is_empty() {
+        return None;
+    }
     let focused = match app.focus {
         Focus::Detail => Some(app.detail_index),
         Focus::Sidebar => None,
@@ -123,15 +124,59 @@ fn build(app: &App, width: u16) -> Option<Pane> {
         _ => None,
     };
     let mut pane = Pane::new(focused, hovered, width);
-
-    if app.state.selection.is_worktree() {
-        worktree(&mut pane, app);
-    } else if app.state.selection.is_repository() {
-        repository(&mut pane, app);
-    } else {
-        return None;
+    for node in nodes {
+        render_node(&mut pane, app, node);
     }
     Some(pane)
+}
+
+/// Interpret one content node. This is the whole pane vocabulary; anything the
+/// pane shows is one of these.
+fn render_node(pane: &mut Pane, app: &App, node: DetailNode) {
+    match node {
+        DetailNode::Section(title) => pane.section(title),
+        DetailNode::Text { text, style } => pane.text(text, style),
+        DetailNode::Blank => pane.blank(),
+        DetailNode::Rule => pane.rule(),
+        DetailNode::PathBox { path, style } => path_box(pane, path, style),
+        DetailNode::CardStart { padded } => {
+            pane.card_start(pane.width.saturating_sub(RIGHT_MARGIN), padded);
+        }
+        DetailNode::CardEnd => pane.card_end(),
+        DetailNode::Controls { lead, controls } => {
+            let lead = lead
+                .map(|(text, style)| vec![Span::styled(text, style)])
+                .unwrap_or_default();
+            pane.controls(lead, &controls);
+        }
+        DetailNode::Field { field, label } => {
+            let input = match field {
+                Field::WorktreeName => &app.name_input,
+                Field::BranchName => &app.branch_input,
+            };
+            rename_field(pane, label, input);
+        }
+        DetailNode::IssuesHeader { glyph } => issues_header(pane, glyph),
+    }
+}
+
+/// The issues header with its inline refresh control.
+fn issues_header(pane: &mut Pane, glyph: char) {
+    // `.refresh-btn { min-width: 3; width: 3 }` — the glyph is narrower than
+    // the control, and it is the control that takes the click.
+    let (focused, hovered) = pane.claim(as_u16(ISSUES_HEADER.chars().count() + 1), 3, 1);
+    pane.row(vec![
+        Span::styled(ISSUES_HEADER, theme::section_header()),
+        Span::raw(" "),
+        Span::styled(
+            glyph.to_string(),
+            if focused || hovered {
+                theme::accent()
+            } else {
+                theme::secondary()
+            },
+        ),
+    ]);
 }
 
 /// Where a focusable item landed. The line alone would not do: `Editor`,
@@ -144,51 +189,26 @@ struct Item {
     height: u16,
 }
 
-/// A control ("button") waiting to be laid out.
-struct Control {
-    label: String,
-    variant: theme::Variant,
-    /// A control that cannot run still occupies a slot in `detail_items()`.
-    enabled: bool,
-}
-
-impl Control {
-    fn new(label: impl Into<String>, variant: theme::Variant) -> Self {
-        Self {
-            label: label.into(),
-            variant,
-            enabled: true,
-        }
-    }
-
-    fn disabled(label: impl Into<String>) -> Self {
-        Self {
-            enabled: false,
-            ..Self::new(label, theme::Variant::Normal)
-        }
-    }
-
-    /// Styles for the box: its border, then its label. The border carries the
-    /// state Textual gave it — accent under the cursor, the destructive shade on
-    /// a dangerous action — and the fill runs under the border cells too, which
-    /// is what `border: solid` did there.
-    fn styles(&self, focused: bool, hovered: bool) -> (Style, Style) {
-        // A control that cannot run must not light up under the pointer either:
-        // an affordance that promises a click it will not honour is worse than
-        // none. Textual disabled buttons the same way.
-        let hovered = hovered && self.enabled;
-        let fill = theme::action_bg(self.variant, hovered);
-        let border = theme::action_border(focused, self.variant, hovered);
-        // A control that cannot run keeps its box, so neither the layout nor the
-        // hit region shifts; only the label goes grey — except under the cursor,
-        // which has to stay legible.
-        let label = if self.enabled || focused {
-            theme::action(focused, self.variant, hovered)
-        } else {
-            theme::muted().bg(fill)
-        };
-        (border.bg(fill), label)
-    }
+/// Styles for a control's box: its border, then its label. The border carries
+/// the state Textual gave it — accent under the cursor, the destructive shade
+/// on a dangerous action — and the fill runs under the border cells too, which
+/// is what `border: solid` did there.
+fn control_styles(control: &ControlSpec, focused: bool, hovered: bool) -> (Style, Style) {
+    // A control that cannot run must not light up under the pointer either:
+    // an affordance that promises a click it will not honour is worse than
+    // none. Textual disabled buttons the same way.
+    let hovered = hovered && control.enabled;
+    let fill = theme::action_bg(control.variant, hovered);
+    let border = theme::action_border(focused, control.variant, hovered);
+    // A control that cannot run keeps its box, so neither the layout nor the
+    // hit region shifts; only the label goes grey — except under the cursor,
+    // which has to stay legible.
+    let label = if control.enabled || focused {
+        theme::action(focused, control.variant, hovered)
+    } else {
+        theme::muted().bg(fill)
+    };
+    (border.bg(fill), label)
 }
 
 /// Rendered width of a control's box: its label padded a cell either side, plus
@@ -199,8 +219,8 @@ fn control_width(label: &str) -> u16 {
 }
 
 /// The three rows of one control, in the order they are drawn.
-fn control_box(control: &Control, focused: bool, hovered: bool) -> [Vec<Span<'static>>; 3] {
-    let (border, label) = control.styles(focused, hovered);
+fn control_box(control: &ControlSpec, focused: bool, hovered: bool) -> [Vec<Span<'static>>; 3] {
+    let (border, label) = control_styles(control, focused, hovered);
     let inner = control_width(&control.label).saturating_sub(2) as usize;
     let edge = |left: char, right: char| {
         vec![Span::styled(
@@ -361,7 +381,7 @@ impl Pane {
     ///
     /// The row costs three lines, since every control is a box: `lead` sits on
     /// the middle one, level with the labels.
-    fn controls(&mut self, lead: Vec<Span<'static>>, controls: &[Control]) {
+    fn controls(&mut self, lead: Vec<Span<'static>>, controls: &[ControlSpec]) {
         // `.action-row { margin: 1 0 }` — a blank line above every row of
         // buttons. Inside a card the `padding: 1` already supplies it.
         let inset = match self.card {
@@ -513,306 +533,9 @@ fn path_box(pane: &mut Pane, path: String, style: Style) {
     pane.card_end();
 }
 
-// --------------------------------------------------------------------- panes
-
-fn repository(pane: &mut Pane, app: &App) {
-    let repository = app.state.selected_repository();
-    let name = repository.map(|r| r.name.as_str()).unwrap_or_default();
-    let path = repository
-        .map(|r| r.source_path.as_str())
-        .unwrap_or_default();
-
-    pane.section("MAIN REPOSITORY");
-    pane.text(format!("Repository: {name}"), theme::title());
-    if let Some(branch) = &app.meta.branch {
-        pane.text(format!("Branch:     {branch}"), theme::accent());
-    }
-    commit_line(pane, app);
-
-    pane.controls(
-        Vec::new(),
-        &[
-            sync_control(app, false),
-            Control::new("Add Worktree", theme::Variant::Normal),
-        ],
-    );
-
-    pane.rule();
-    pane.section("LOCATION");
-    path_box(pane, path.to_string(), theme::secondary());
-
-    pane.rule();
-    open_in(pane);
-    // Textual ran CLAUDE straight into RECENT SESSIONS with no rule between them.
-    pane.rule();
-    claude(pane, app);
-    sessions(pane, app);
-
-    pane.rule();
-    issues(pane, app);
-
-    pane.rule();
-    pane.section("MANAGE");
-    pane.controls(
-        Vec::new(),
-        &[Control::new(
-            "Remove Repository",
-            theme::Variant::Destructive,
-        )],
-    );
-}
-
-fn worktree(pane: &mut Pane, app: &App) {
-    // Read defensively: a selection can briefly outlive the worktree it points
-    // at, and the sequence of focusable items must not change when it does.
-    let selected = app.state.selected_worktree();
-    let repository = selected
-        .map(|(repo, _)| repo.name.as_str())
-        .unwrap_or_default();
-    let name = selected.map(|(_, w)| w.name.as_str()).unwrap_or_default();
-    let branch = selected.map(|(_, w)| w.branch.as_str()).unwrap_or_default();
-    let archived = selected.map(|(_, w)| w.is_archived).unwrap_or(false);
-
-    pane.section("WORKTREE");
-    pane.text(format!("Repository: {repository}"), theme::title());
-    pane.text(format!("Worktree:   {name}"), theme::primary());
-    pane.text(format!("Branch:     {branch}"), theme::accent());
-    if !app.meta.path_exists {
-        pane.text(
-            "⚠ MISSING:   directory no longer exists on disk",
-            theme::destructive(),
-        );
-    }
-    if let Some(base) = selected.and_then(|(_, w)| w.base_branch.as_deref()) {
-        let mut text = format!("Based on:   {base}");
-        if let Some(reference) = selected.and_then(|(_, w)| w.created_from_ref.as_deref()) {
-            text.push_str(&format!(" ({reference})"));
-        }
-        pane.text(text, theme::muted());
-    }
-    commit_line(pane, app);
-
-    pane.controls(Vec::new(), &[sync_control(app, !app.meta.path_exists)]);
-
-    pane.rule();
-    pane.section("LOCATION");
-    if app.meta.path_exists {
-        path_box(pane, app.meta.path.clone(), theme::secondary());
-    } else {
-        path_box(
-            pane,
-            format!("{}  (missing)", app.meta.path),
-            theme::destructive(),
-        );
-    }
-
-    pane.rule();
-    open_in(pane);
-    pane.rule();
-    claude(pane, app);
-    sessions(pane, app);
-
-    pane.rule();
-    pane.section("RENAME");
-    field(pane, "Worktree name", &app.name_input);
-    field(pane, "Branch name", &app.branch_input);
-
-    pane.rule();
-    pane.section("MANAGE");
-    pane.controls(
-        Vec::new(),
-        &[
-            Control::new(
-                if archived { "Unarchive" } else { "Archive" },
-                theme::Variant::Normal,
-            ),
-            Control::new("Delete", theme::Variant::Destructive),
-        ],
-    );
-}
-
-// ------------------------------------------------------------------ sections
-
-fn commit_line(pane: &mut Pane, app: &App) {
-    let Some(hash) = &app.meta.commit_hash else {
-        return;
-    };
-    let mut text = format!("Commit:     {hash}");
-    if let Some(when) = app.meta.commit_time {
-        text.push_str(&format!(" ({})", crate::util::naturaltime(when)));
-    }
-    pane.text(text, theme::muted());
-}
-
-/// The `⟳ Git Pull` control. Disabled when there is no remote to pull from, or
-/// — for worktrees — when the directory is gone.
-fn sync_control(app: &App, missing_directory: bool) -> Control {
-    // Two spaces after the glyph: ⟳ is double-width in many terminals, and with a
-    // single space it eats the gap and the label reads as "⟳Git Pull".
-    if missing_directory {
-        Control::disabled("⟳  Git Pull (Directory missing)")
-    } else if app.meta.has_remote {
-        Control::new("⟳  Git Pull", theme::Variant::Normal)
-    } else {
-        Control::disabled("⟳  Git Pull (No remote)")
-    }
-}
-
-fn open_in(pane: &mut Pane) {
-    pane.section("OPEN IN");
-    pane.controls(
-        Vec::new(),
-        &[
-            Control::new("Editor", theme::Variant::Normal),
-            Control::new("Terminal", theme::Variant::Normal),
-            Control::new("Files", theme::Variant::Normal),
-        ],
-    );
-}
-
-fn claude(pane: &mut Pane, app: &App) {
-    pane.section("CLAUDE");
-    let mut controls = vec![
-        Control::new("New Session", theme::Variant::Primary),
-        Control::new("New Session: YOLO", theme::Variant::Destructive),
-    ];
-    controls.extend(custom_controls(app));
-    pane.controls(Vec::new(), &controls);
-}
-
-/// The user's own Claude buttons, which follow both the new-session and the
-/// resume controls.
-fn custom_controls(app: &App) -> impl Iterator<Item = Control> + '_ {
-    app.settings.custom_buttons.iter().map(|custom| {
-        Control::new(
-            custom.label.as_str(),
-            theme::Variant::claude(custom.is_yolo_style()),
-        )
-    })
-}
-
-fn sessions(pane: &mut Pane, app: &App) {
-    pane.section("RECENT SESSIONS");
-    let Some(list) = app.sessions.as_deref() else {
-        pane.text("Loading...", theme::muted());
-        return;
-    };
-    if list.is_empty() {
-        pane.text("No sessions found", theme::muted());
-        return;
-    }
-    // Every card is spaced away from what precedes it — the header included,
-    // which is Textual's `.session-item { margin: 0 2 1 0 }` seen from above.
-    for session in list {
-        pane.blank();
-        session_item(pane, app, session);
-    }
-}
-
-fn session_item(pane: &mut Pane, app: &App, session: &ClaudeSession) {
-    pane.card_start(pane.width.saturating_sub(RIGHT_MARGIN), true);
-    pane.text(crate::util::truncate(&session.title, 60), theme::primary());
-    if !session.last_message.is_empty() && session.last_message != session.title {
-        pane.text(
-            format!("> {}", crate::util::truncate(&session.last_message, 40)),
-            theme::secondary(),
-        );
-    }
-    // `.session-preview { margin-bottom: 1 }` — the meta line is spaced away
-    // from the message preview above it.
-    pane.blank();
-    pane.text(
-        format!(
-            "{} • {} msgs",
-            session.relative_time(),
-            session.message_count
-        ),
-        theme::muted(),
-    );
-
-    let mut controls = vec![
-        Control::new("Resume", theme::Variant::Normal),
-        Control::new("YOLO", theme::Variant::Destructive),
-    ];
-    controls.extend(custom_controls(app));
-    pane.controls(Vec::new(), &controls);
-    pane.card_end();
-}
-
-fn issues(pane: &mut Pane, app: &App) {
-    // The refresh control rides the header line and doubles as the loading
-    // spinner. Unlike every other control it is drawn flat, because Textual's
-    // `.refresh-btn` was `height: 1; border: none; background: transparent` —
-    // boxing it would push the header between two border rows.
-    const HEADER: &str = "MY OPEN GITHUB ISSUES";
-    let label = match app.issues {
-        Some(_) => "↻".to_string(),
-        None => SPINNER[app.spinner_index % SPINNER.len()].to_string(),
-    };
-    if !pane.lines.is_empty() {
-        pane.blank();
-    }
-    // `.refresh-btn { min-width: 3; width: 3 }` — the glyph is narrower than the
-    // control, and it is the control that takes the click.
-    let (focused, hovered) = pane.claim(as_u16(HEADER.chars().count() + 1), 3, 1);
-    pane.row(vec![
-        Span::styled(HEADER, theme::section_header()),
-        Span::raw(" "),
-        Span::styled(
-            label,
-            if focused || hovered {
-                theme::accent()
-            } else {
-                theme::secondary()
-            },
-        ),
-    ]);
-
-    let Some(list) = app.issues.as_deref() else {
-        pane.text("Loading...", theme::muted());
-        return;
-    };
-    if list.is_empty() {
-        pane.text("No issues found", theme::muted());
-        return;
-    }
-    for issue in list {
-        pane.blank();
-        issue_item(pane, issue);
-    }
-}
-
-fn issue_item(pane: &mut Pane, issue: &GitHubIssue) {
-    pane.card_start(pane.width.saturating_sub(RIGHT_MARGIN), true);
-    pane.text(
-        format!(
-            "#{} {}",
-            issue.number,
-            crate::util::truncate(&issue.title, 45)
-        ),
-        theme::primary(),
-    );
-
-    let mut meta = issue.relative_time();
-    let labels: Vec<&str> = issue
-        .labels
-        .iter()
-        .take(2)
-        .map(|label| label.name.as_str())
-        .collect();
-    if !labels.is_empty() {
-        meta.push_str(&format!(" • {}", labels.join(", ")));
-    }
-    pane.controls(
-        vec![Span::styled(format!("{meta}  "), theme::muted())],
-        &[Control::new("Create WT", theme::Variant::Normal)],
-    );
-    pane.card_end();
-}
-
 /// A rename field. The caret is drawn in the text because the pane renders as
 /// one scrolled paragraph and has no real terminal cursor to place.
-fn field(pane: &mut Pane, label: &str, input: &TextInput) {
+fn rename_field(pane: &mut Pane, label: &str, input: &TextInput) {
     // Measured without consulting focus: the caret only ever occupies the one
     // trailing cell already counted here, so the click target is stable.
     let width = as_u16(FIELD_LABEL_WIDTH + 2 + input.value().chars().count());
@@ -866,7 +589,7 @@ mod tests {
     use super::*;
     use crate::app::{Action, DetailItem, Field};
     use crate::event;
-    use crate::models::{CustomClaudeButton, Repository, Settings, Worktree};
+    use crate::models::{ClaudeSession, CustomClaudeButton, GitHubIssue, Repository, Settings, Worktree};
     use crate::services::settings as settings_service;
     use crate::state::AppState;
     use chrono::Utc;

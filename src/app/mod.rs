@@ -1,5 +1,9 @@
 //! Application state and behaviour: focus, key handling, and background work.
 
+pub mod detail;
+
+pub use detail::{Action, DetailItem, Field};
+
 use crate::event::{AppEvent, BranchTarget, DetailMeta, EventTx, Severity};
 use crate::modal::{
     AddRepositoryModal, AddWorktreeModal, ConfirmAction, ConfirmModal, CreateFromIssueModal, Modal,
@@ -143,42 +147,6 @@ impl SidebarRow {
             SidebarRow::ArchivedHeader => None,
         }
     }
-}
-
-/// An actionable control in the detail pane — the immediate-mode stand-in for
-/// Textual's buttons.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Action {
-    Sync,
-    AddWorktree,
-    Editor,
-    Terminal,
-    Files,
-    ClaudeNew,
-    ClaudeYolo,
-    ClaudeCustom(usize),
-    ResumeSession(usize),
-    ResumeYolo(usize),
-    ResumeCustom { button: usize, session: usize },
-    RefreshIssues,
-    CreateFromIssue(usize),
-    RemoveRepository,
-    Archive,
-    Unarchive,
-    Delete,
-}
-
-/// An editable field in the detail pane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Field {
-    WorktreeName,
-    BranchName,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DetailItem {
-    Action(Action),
-    Field(Field),
 }
 
 #[derive(Debug, Clone)]
@@ -463,63 +431,11 @@ impl App {
     // ------------------------------------------------------------------- detail
 
     /// The list of focusable items currently rendered in the detail pane.
+    ///
+    /// Derived from the same [`detail::content`] walk the renderer draws, so
+    /// item N here is control N on screen by construction.
     pub fn detail_items(&self) -> Vec<DetailItem> {
-        let mut items = Vec::new();
-        let buttons = self.settings.custom_buttons.len();
-        let sessions = self.sessions.as_ref().map(Vec::len).unwrap_or(0);
-
-        if self.state.selection.is_worktree() {
-            items.push(DetailItem::Action(Action::Sync));
-            items.extend([Action::Editor, Action::Terminal, Action::Files].map(DetailItem::Action));
-            items.push(DetailItem::Action(Action::ClaudeNew));
-            items.push(DetailItem::Action(Action::ClaudeYolo));
-            for index in 0..buttons {
-                items.push(DetailItem::Action(Action::ClaudeCustom(index)));
-            }
-            for session in 0..sessions {
-                items.push(DetailItem::Action(Action::ResumeSession(session)));
-                items.push(DetailItem::Action(Action::ResumeYolo(session)));
-                for button in 0..buttons {
-                    items.push(DetailItem::Action(Action::ResumeCustom { button, session }));
-                }
-            }
-            items.push(DetailItem::Field(Field::WorktreeName));
-            items.push(DetailItem::Field(Field::BranchName));
-            let archived = self
-                .state
-                .selected_worktree()
-                .map(|(_, w)| w.is_archived)
-                .unwrap_or(false);
-            items.push(DetailItem::Action(if archived {
-                Action::Unarchive
-            } else {
-                Action::Archive
-            }));
-            items.push(DetailItem::Action(Action::Delete));
-        } else if self.state.selection.is_repository() {
-            items.push(DetailItem::Action(Action::Sync));
-            items.push(DetailItem::Action(Action::AddWorktree));
-            items.extend([Action::Editor, Action::Terminal, Action::Files].map(DetailItem::Action));
-            items.push(DetailItem::Action(Action::ClaudeNew));
-            items.push(DetailItem::Action(Action::ClaudeYolo));
-            for index in 0..buttons {
-                items.push(DetailItem::Action(Action::ClaudeCustom(index)));
-            }
-            for session in 0..sessions {
-                items.push(DetailItem::Action(Action::ResumeSession(session)));
-                items.push(DetailItem::Action(Action::ResumeYolo(session)));
-                for button in 0..buttons {
-                    items.push(DetailItem::Action(Action::ResumeCustom { button, session }));
-                }
-            }
-            items.push(DetailItem::Action(Action::RefreshIssues));
-            let issues = self.issues.as_ref().map(Vec::len).unwrap_or(0);
-            for index in 0..issues {
-                items.push(DetailItem::Action(Action::CreateFromIssue(index)));
-            }
-            items.push(DetailItem::Action(Action::RemoveRepository));
-        }
-        items
+        detail::items(&detail::content(self))
     }
 
     /// Reload everything the detail pane shows for the current selection.
