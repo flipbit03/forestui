@@ -100,11 +100,11 @@ async fn safe_list_remotes(path: &str) -> Vec<String> {
 }
 
 /// List branches. Remote branches keep their `<remote>/` prefix.
-pub async fn list_branches(path: &str, include_remote: bool) -> GitResult<Vec<String>> {
+pub async fn list_branches(path: &str) -> GitResult<Vec<String>> {
     let dir = expand(path);
-    // Always needed: `git branch -a` lists remote branches either way, so without
-    // the remote names they cannot be classified — and would leak into the result
-    // when the caller asked for local branches only.
+    // `git branch -a` returns remote refs and the bare remote names alongside
+    // the local branches, and neither can be told apart without knowing what
+    // the remotes are called.
     let remotes = safe_list_remotes(path).await;
 
     let (code, stdout, stderr) =
@@ -121,10 +121,6 @@ pub async fn list_branches(path: &str, include_remote: bool) -> GitResult<Vec<St
         }
         // Skip bare remote names (e.g. "origin" without a branch).
         if remotes.iter().any(|r| r == line) {
-            continue;
-        }
-        let is_remote = remotes.iter().any(|r| line.starts_with(&format!("{r}/")));
-        if is_remote && !include_remote {
             continue;
         }
         branches.push(line.to_string());
@@ -459,7 +455,7 @@ mod tests {
         assert!(list_worktrees(&repo_str).await.is_ok());
         assert_eq!(get_current_branch(&repo_str).await.unwrap(), "main");
         assert!(
-            list_branches(&repo_str, true)
+            list_branches(&repo_str)
                 .await
                 .unwrap()
                 .contains(&"main".to_string())
@@ -474,7 +470,7 @@ mod tests {
             .unwrap();
         assert!(wt.exists());
         assert!(
-            list_branches(&repo_str, true)
+            list_branches(&repo_str)
                 .await
                 .unwrap()
                 .contains(&"feat/x".to_string())
@@ -511,10 +507,10 @@ mod tests {
         git_in(path, &["commit", "--allow-empty", "-m", "init"]);
     }
 
-    /// `include_remote = false` must not leak `origin/…` refs, which
-    /// `git branch -a` returns regardless of what the caller asked for.
+    /// `git branch -a` returns more than branches: the bare remote names and
+    /// `origin/HEAD` come back too, and neither is something to check out.
     #[tokio::test]
-    async fn list_branches_excludes_remotes_when_not_requested() {
+    async fn list_branches_keeps_remote_branches_but_not_remote_names() {
         let dir = tempfile::tempdir().unwrap();
 
         let upstream = dir.path().join("upstream");
@@ -530,14 +526,12 @@ mod tests {
         git_in(&clone, &["fetch", "--no-tags", "origin"]);
         let clone_str = clone.to_string_lossy().to_string();
 
-        let local = list_branches(&clone_str, false).await.unwrap();
-        assert_eq!(local, vec!["main".to_string()]);
-
-        let all = list_branches(&clone_str, true).await.unwrap();
+        let all = list_branches(&clone_str).await.unwrap();
         assert!(all.contains(&"main".to_string()));
         assert!(all.contains(&"origin/main".to_string()));
         assert!(all.contains(&"origin/feat/remote-only".to_string()));
-        // The bare remote name is not a branch.
+        // The bare remote name is not a branch, and neither is its HEAD.
         assert!(!all.contains(&"origin".to_string()));
+        assert!(!all.iter().any(|b| b.ends_with("/HEAD")));
     }
 }

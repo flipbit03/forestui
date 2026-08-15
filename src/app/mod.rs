@@ -171,7 +171,8 @@ pub struct App {
     /// Worktree the rename inputs belong to, so a selection change resets them.
     pub(crate) rename_target: Option<Uuid>,
     /// Issue whose modal is waiting on a branch list to finish loading.
-    pub(crate) pending_issue: Option<usize>,
+    /// The issue a Create-WT click captured, held across the branch load.
+    pub(crate) pending_issue: Option<crate::models::GitHubIssue>,
 }
 
 impl App {
@@ -398,6 +399,8 @@ impl App {
         // control from the previous pane against the new selection would act
         // on the wrong thing entirely.
         self.drawn_items.clear();
+        // A create-from-issue flow belongs to the selection that started it.
+        self.pending_issue = None;
 
         let Some(path) = self.state.selected_path() else {
             self.meta = DetailMeta::default();
@@ -507,6 +510,16 @@ impl App {
                 Severity::Error,
             ),
             None => self.notify(text, Severity::Information),
+        }
+    }
+
+    /// Report a failed write for a change that announces nothing when it works.
+    fn report_save_error(&mut self) {
+        if let Some(error) = self.state.take_save_error() {
+            self.notify(
+                format!("Could not save the config: {error}"),
+                Severity::Error,
+            );
         }
     }
 
@@ -671,6 +684,19 @@ impl App {
                 self.rebuild_rows();
                 self.sync_sidebar_index();
                 self.reload_detail();
+                self.report_save_error();
+            }
+            AppEvent::WorktreeBranchRenamed {
+                worktree_id,
+                branch,
+            } => {
+                self.state
+                    .update_worktree(worktree_id, |worktree| worktree.branch = branch);
+                self.rename_target = None;
+                self.rebuild_rows();
+                self.sync_sidebar_index();
+                self.reload_detail();
+                self.report_save_error();
             }
             AppEvent::ReloadDetail => self.reload_detail(),
         }
@@ -1095,6 +1121,53 @@ mod tests {
         assert_eq!(app.state.repositories()[0].worktrees.len(), before + 2);
     }
 
+    /// A branch rename that git refuses must leave no trace. The name used to
+    /// be written and persisted before `git branch -m` ran, so a collision left
+    /// the config and the sidebar naming a branch that does not exist.
+    #[tokio::test]
+    async fn a_branch_rename_lands_only_when_git_agrees() {
+        let (dir, mut app) = app_with_fixture();
+        app.handle_key(key(KeyCode::Down));
+        let worktree_id = app.state.selection.worktree_id.expect("a worktree");
+        let original = app
+            .state
+            .find_worktree(worktree_id)
+            .map(|(_, w)| w.branch.clone())
+            .expect("a branch");
+
+        // What the failing path does: report, and fold nothing.
+        app.handle_event(AppEvent::Notify(
+            "Branch rename failed: already exists".into(),
+            Severity::Error,
+        ));
+        assert_eq!(
+            app.state.find_worktree(worktree_id).map(|(_, w)| &w.branch),
+            Some(&original),
+            "the branch was renamed in state before git ran"
+        );
+
+        // And the success path folds through the event.
+        app.handle_event(AppEvent::WorktreeBranchRenamed {
+            worktree_id,
+            branch: "feat/accepted".into(),
+        });
+        assert_eq!(
+            app.state
+                .find_worktree(worktree_id)
+                .map(|(_, w)| w.branch.as_str()),
+            Some("feat/accepted")
+        );
+        let reloaded = AppState::load_from(dir.path().join(".forestui-config.json"));
+        assert!(
+            reloaded
+                .repositories()
+                .iter()
+                .flat_map(|r| &r.worktrees)
+                .any(|w| w.branch == "feat/accepted"),
+            "the accepted rename was never persisted"
+        );
+    }
+
     #[tokio::test]
     async fn an_import_that_lands_late_does_not_steal_the_selection() {
         let (_dir, mut app) = app_with_fixture();
@@ -1196,6 +1269,35 @@ mod tests {
             row,
             modifiers: KeyModifiers::NONE,
         }
+    }
+
+    /// The footer is a row of buttons, and a click on one says which binding
+    /// was meant. Replaying it as a keystroke let a focused rename field eat it
+    /// as text — every footer button was dead while renaming.
+    #[tokio::test]
+    async fn a_footer_click_works_while_a_rename_field_has_focus() {
+        let (_dir, mut app) = app_with_fixture();
+        app.handle_key(key(KeyCode::Down));
+        app.sessions = Some(Vec::new());
+        snapshot_drawn(&mut app);
+
+        app.focus = Focus::Detail;
+        app.detail_index = app
+            .detail_items()
+            .iter()
+            .position(|item| *item == DetailItem::Field(Field::WorktreeName))
+            .expect("rename field present");
+        let name = app.name_input.value().to_string();
+
+        app.push_hit(rect(0, 40, 10, 1), HitTarget::FooterKey('s'));
+        app.handle_mouse(click(2, 40));
+
+        assert_eq!(app.modals.len(), 1, "the settings dialog never opened");
+        assert_eq!(
+            app.name_input.value(),
+            name,
+            "the click was typed into the rename field"
+        );
     }
 
     #[tokio::test]

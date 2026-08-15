@@ -125,7 +125,21 @@ impl App {
             _ => {}
         }
 
-        match key.code {
+        if let KeyCode::Char(binding) = key.code {
+            self.run_binding(binding);
+        }
+    }
+
+    /// Run a footer binding by its character.
+    ///
+    /// Split out because clicking the footer is not the same as typing: the
+    /// click already says which binding was meant, so it must not be re-routed
+    /// into a focused rename field, where `d Delete` would have been typed into
+    /// the name instead of deleting anything.
+    pub(super) fn run_binding(&mut self, binding: char) {
+        use ratatui::crossterm::event::KeyCode;
+
+        match KeyCode::Char(binding) {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('a') => self
                 .modals

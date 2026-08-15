@@ -95,6 +95,10 @@ pub enum AppEvent {
         name: String,
         path: String,
     },
+    /// A worktree's branch was renamed by git. Folded only on success: the
+    /// config used to take the new name before `git branch -m` ran and keep it
+    /// when the rename failed, leaving a branch recorded that does not exist.
+    WorktreeBranchRenamed { worktree_id: Uuid, branch: String },
     /// Reload the detail pane only.
     ReloadDetail,
 }

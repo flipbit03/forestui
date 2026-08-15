@@ -271,10 +271,10 @@ impl App {
                 }
             }
             HitTarget::FooterKey(key) => {
-                self.handle_key(ratatui::crossterm::event::KeyEvent::new(
-                    ratatui::crossterm::event::KeyCode::Char(key),
-                    ratatui::crossterm::event::KeyModifiers::NONE,
-                ));
+                // Run the binding directly rather than replaying a keystroke: a
+                // focused rename field owns every printable key, so a replayed
+                // click on `d Delete` was typed into the worktree name instead.
+                self.run_binding(key);
             }
             HitTarget::ModalControl { .. } => {}
         }

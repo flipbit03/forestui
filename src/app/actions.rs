@@ -24,7 +24,7 @@ use uuid::Uuid;
 /// refetch-after-fetch inside it — what a branch load returns must not depend
 /// on which of the two paths asked for it.
 async fn load_branches(tx: EventTx, path: String, repo_id: Uuid, target: BranchTarget) {
-    let branches = git::list_branches(&path, true).await.unwrap_or_default();
+    let branches = git::list_branches(&path).await.unwrap_or_default();
     let remotes = git::list_remotes(&path).await.unwrap_or_default();
     let current_branch = git::get_current_branch(&path)
         .await
@@ -171,10 +171,7 @@ impl App {
                     ))));
             }
             BranchTarget::CreateFromIssue => {
-                let Some(index) = self.pending_issue.take() else {
-                    return;
-                };
-                let Some(issue) = self.issues.as_ref().and_then(|i| i.get(index)).cloned() else {
+                let Some(issue) = self.pending_issue.take() else {
                     return;
                 };
                 let Some(repo) = self.state.find_repository(repo_id) else {
@@ -322,8 +319,16 @@ impl App {
                 self.fetch_issues();
             }
             Action::CreateFromIssue(index) => {
-                if let Some(repo_id) = self.state.selection.repository_id {
-                    self.pending_issue = Some(index);
+                // The issue is captured here rather than looked up again when
+                // the branches land: `issues` is replaced wholesale by every
+                // refresh and by selecting another repository, so an index held
+                // across the branch load could resolve to a different issue —
+                // or to another repository's issue entirely, which then built a
+                // worktree in the wrong repository.
+                if let Some(repo_id) = self.state.selection.repository_id
+                    && let Some(issue) = self.issues.as_ref().and_then(|i| i.get(index)).cloned()
+                {
+                    self.pending_issue = Some(issue);
                     self.load_branches_then(repo_id, BranchTarget::CreateFromIssue);
                 }
             }
@@ -500,13 +505,16 @@ impl App {
                 let requested = new_branch.clone();
                 tokio::spawn(async move {
                     match git::rename_branch(&worktree_path, &old_branch, &requested).await {
-                        Ok(()) => tx.send(AppEvent::ReloadDetail),
+                        // Folded on success only. Writing the name up front left
+                        // the config — and the sidebar — permanently showing a
+                        // branch git had refused to create.
+                        Ok(()) => tx.send(AppEvent::WorktreeBranchRenamed {
+                            worktree_id,
+                            branch: requested,
+                        }),
                         Err(error) => tx.error(format!("Branch rename failed: {error}")),
                     }
                 });
-                self.state
-                    .update_worktree(worktree_id, |w| w.branch = new_branch.clone());
-                self.rebuild_rows();
             }
         }
     }
