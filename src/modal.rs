@@ -156,13 +156,16 @@ impl Modal {
         }
     }
 
-    /// Advance any spinner this modal owns.
-    pub fn tick(&mut self) {
+    /// Advance any spinner this modal owns. Returns whether something visible
+    /// moved, so the caller knows the frame needs repainting.
+    pub fn tick(&mut self) -> bool {
         if let Modal::CreateFromIssue(m) = self
             && m.is_fetching
         {
             m.spinner_index = (m.spinner_index + 1) % SPINNER.len();
+            return true;
         }
+        false
     }
 }
 

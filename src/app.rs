@@ -623,32 +623,59 @@ impl App {
             .retain(|n| n.created.elapsed() < NOTIFICATION_TTL);
     }
 
+    /// The 100ms heartbeat. It earns a repaint only when something on screen
+    /// actually moved — a spinner frame, a toast expiring — so an idle app
+    /// paints nothing at all rather than ten frames a second.
+    fn on_tick(&mut self) {
+        self.spinner_index = self.spinner_index.wrapping_add(1);
+        if self.issue_spinner_visible() {
+            self.redraw = true;
+        }
+
+        let before = self.notifications.len();
+        self.expire_notifications();
+        if self.notifications.len() != before {
+            self.redraw = true;
+        }
+
+        if let Some(modal) = self.modals.last_mut()
+            && modal.tick()
+        {
+            self.redraw = true;
+        }
+
+        if self.last_issue_refresh.elapsed() >= ISSUE_REFRESH_INTERVAL {
+            self.last_issue_refresh = Instant::now();
+            github::invalidate_cache(None);
+            if self.state.selection.is_repository() {
+                // No repaint yet: nothing changes on screen until the result
+                // arrives, and that event pays for its own.
+                self.fetch_issues();
+            }
+        }
+    }
+
+    /// Whether the issue-refresh spinner — the only consumer of
+    /// `spinner_index` — is on screen this frame.
+    fn issue_spinner_visible(&self) -> bool {
+        self.modals.is_empty() && self.state.selection.is_repository() && self.issues.is_none()
+    }
+
     // ------------------------------------------------------------------- events
 
     pub fn handle_event(&mut self, event: AppEvent) {
-        // Everything except a bare pointer move changes the frame. Motion is
-        // asked about rather than cleared afterwards so that a batch of
-        // [Tick, Moved] still repaints: a no-op move must never cancel a
-        // repaint some other event in the same drain already earned.
-        if !is_pointer_motion(&event) {
+        // Everything except a bare pointer move or a tick changes the frame.
+        // Motion is asked about rather than cleared afterwards so that a batch
+        // of [Notify, Moved] still repaints: a no-op move must never cancel a
+        // repaint some other event in the same drain already earned. The tick
+        // decides for itself in `on_tick`: at ten a second, repainting an idle
+        // frame on every one keeps the terminal permanently busy for nothing.
+        if !is_pointer_motion(&event) && !matches!(event, AppEvent::Tick) {
             self.redraw = true;
         }
         match event {
             AppEvent::Term(term_event) => self.handle_term_event(term_event),
-            AppEvent::Tick => {
-                self.spinner_index = self.spinner_index.wrapping_add(1);
-                self.expire_notifications();
-                if let Some(modal) = self.modals.last_mut() {
-                    modal.tick();
-                }
-                if self.last_issue_refresh.elapsed() >= ISSUE_REFRESH_INTERVAL {
-                    self.last_issue_refresh = Instant::now();
-                    github::invalidate_cache(None);
-                    if self.state.selection.is_repository() {
-                        self.fetch_issues();
-                    }
-                }
-            }
+            AppEvent::Tick => self.on_tick(),
             AppEvent::GhStatus(status, username) => {
                 self.gh_status = status.display(username.as_deref());
             }
@@ -2505,7 +2532,7 @@ mod tests {
         let (_dir, mut app) = app_with_fixture();
         app.redraw = false;
 
-        app.handle_event(AppEvent::Tick);
+        app.handle_event(AppEvent::Notify("hi".into(), Severity::Information));
         app.handle_event(AppEvent::Term(Event::Mouse(MouseEvent {
             kind: MouseEventKind::Moved,
             column: 200,
@@ -2513,7 +2540,60 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         })));
 
-        assert!(app.redraw, "the tick's repaint was swallowed by the move");
+        assert!(app.redraw, "the notify's repaint was swallowed by the move");
+    }
+
+    /// Ticks arrive ten times a second; an idle frame must not repaint on them,
+    /// or the app keeps the terminal permanently busy doing nothing.
+    #[tokio::test]
+    async fn an_idle_tick_does_not_repaint() {
+        let (_dir, mut app) = app_with_fixture();
+        // A worktree selection has no spinner on screen.
+        app.handle_key(key(KeyCode::Down));
+        app.sessions = Some(Vec::new());
+        app.redraw = false;
+
+        app.handle_event(AppEvent::Tick);
+        assert!(!app.redraw, "an idle tick repainted the app");
+    }
+
+    /// While the issue spinner is on screen the tick is what animates it.
+    #[tokio::test]
+    async fn a_tick_repaints_while_the_issue_spinner_is_visible() {
+        let (_dir, mut app) = app_with_fixture();
+        assert!(app.state.selection.is_repository());
+        app.issues = None;
+        app.redraw = false;
+
+        app.handle_event(AppEvent::Tick);
+        assert!(app.redraw, "the spinner froze");
+
+        // Once the issues have landed there is nothing animating.
+        app.issues = Some(Vec::new());
+        app.sessions = Some(Vec::new());
+        app.notifications.clear();
+        app.redraw = false;
+        app.handle_event(AppEvent::Tick);
+        assert!(!app.redraw, "a loaded pane repainted on the tick");
+    }
+
+    /// A toast leaving the screen is a frame change, and the tick that expires
+    /// it has to pay for the repaint.
+    #[tokio::test]
+    async fn a_tick_repaints_when_a_notification_expires() {
+        let (_dir, mut app) = app_with_fixture();
+        app.handle_key(key(KeyCode::Down));
+        app.sessions = Some(Vec::new());
+        app.notifications.push(Notification {
+            text: "old".into(),
+            severity: Severity::Information,
+            created: Instant::now() - NOTIFICATION_TTL - Duration::from_secs(1),
+        });
+        app.redraw = false;
+
+        app.handle_event(AppEvent::Tick);
+        assert!(app.notifications.is_empty());
+        assert!(app.redraw, "the expired toast was left on screen");
     }
 
     /// Folding a repository hides its worktrees without moving the selection.
