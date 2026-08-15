@@ -231,6 +231,14 @@ fn repository(nodes: &mut Vec<DetailNode>, app: &App) {
             theme::Variant::Destructive,
         )],
     );
+    bottom_padding(nodes);
+}
+
+/// A resting line under the pane's last control — its bottom padding. Without
+/// it, a fully scrolled pane presses the final button straight against the
+/// footer bar.
+fn bottom_padding(nodes: &mut Vec<DetailNode>) {
+    nodes.push(DetailNode::Blank);
 }
 
 fn worktree(nodes: &mut Vec<DetailNode>, app: &App) {
@@ -310,6 +318,7 @@ fn worktree(nodes: &mut Vec<DetailNode>, app: &App) {
             ControlSpec::new(Action::Delete, "Delete", theme::Variant::Destructive),
         ],
     );
+    bottom_padding(nodes);
 }
 
 // ------------------------------------------------------------------ sections
