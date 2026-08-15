@@ -1541,7 +1541,8 @@ mod tests {
             _ => panic!("settings modal expected"),
         };
 
-        // `◂` is the other direction, not a second `▸`.
+        // `Previous` steps back to exactly where it started — not merely
+        // "somewhere else", which a second forward step would also satisfy.
         app.push_hit(
             rect(0, 5, 20, 1),
             HitTarget::ModalControl {
@@ -1551,9 +1552,10 @@ mod tests {
         );
         app.handle_mouse(click(3, 5));
         match app.modals.last() {
-            Some(Modal::Settings(m)) => assert_ne!(
-                m.editor_index, advanced,
-                "the left arrow advanced the value instead of stepping back"
+            Some(Modal::Settings(m)) => assert_eq!(
+                m.editor_index, before,
+                "stepping back from {advanced} landed on {} instead of {before}",
+                m.editor_index
             ),
             _ => panic!("settings modal expected"),
         }
