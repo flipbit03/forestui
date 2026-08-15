@@ -2,7 +2,7 @@
                                   │
      gh cli: ok (sweep-user)      │
 ──────────────────────────────────│  WORKTREE
-▾ alpha                           │  Repository: alpha
+▼ alpha                           │  Repository: alpha
 └─ wt-a [feat/wt-a]               │  Worktree:   wt-a
   beta                            │  Branch:     feat/wt-a
                                   │  Based on:   main (<sha>)
@@ -40,5 +40,5 @@
                                   │                                            a: Add Repo | w: Add Worktree | e: Editor | t: Terminal |
                                   │  ───────────────────────────────────────── n: Claude | h: Archive | d: Delete | s: Settings | q: Quit
                                   │
- q  Quit  a  Add Repo  w  Add Worktree  e  Editor  t  Terminal  o  Files  n  Claude  y  ClaudeYOLO  h  Archive  d  Delete  s  Settings  ?  H
+ a Add Repo  q Quit  w Add Worktree  e Editor  t Terminal  o Files  n Claude  y ClaudeYOLO  h Archive  d Delete  s Settings  ? Help
 [forestui-0:forestui-dev-<hhmm>*                                                                              "<host>" <clock>

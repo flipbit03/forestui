@@ -16,9 +16,9 @@
                                   │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
                                   │  LOCATION
-                                  │  ┌───────────────────────────────────────────────────────────────────────────────────┐
+                                  │  ┌───────────────────────────────────────┐
                                   │  │ <ROOT>/forest/alpha/wt-a │
-                                  │  └───────────────────────────────────────────────────────────────────────────────────┘
+                                  │  └───────────────────────────────────────┘
                                   │
                                   │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
@@ -67,4 +67,4 @@
                                   │
                                   │
  a Add Repo  q Quit  w Add Worktree  e Editor  t Terminal  o Files  n Claude  y ClaudeYOLO  h Archive  d Delete  s Settings  ? H▏^p palette
-[forestui-0:forestui* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:alpha:wt-a  5:yolo:alp>"<host>" <clock>
+[forestui-0:forestui* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:alpha:wt-a  5:yolo>"<host>" <clock>

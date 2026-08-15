@@ -2,6 +2,7 @@ PASS UC-96     sessions-rendered                              expected=yes      
 PASS UC-96     issues-rendered                                expected=yes                          actual=yes
 PASS UC-96     no-empty-sections                              expected=yes                          actual=yes
 PASS UC-90     mouse-enabled                                  expected=on                           actual=on
+PASS UC-90     any-motion-for-hover                           expected=yes                          actual=yes
 PASS UC-78     wt-name                                        expected=wt-a-renamed                 actual=wt-a-renamed
 PASS UC-78     wt-dir-exists                                  expected=yes                          actual=yes
 PASS UC-78     old-dir-gone                                   expected=yes                          actual=yes

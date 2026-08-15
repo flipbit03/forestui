@@ -2,7 +2,7 @@
                                   │
      gh cli: ok (sweep-user)      │
 ──────────────────────────────────│  MAIN REPOSITORY
-▾ alpha                           │  Repository: alpha
+▼ alpha                           │  Repository: alpha
 └─ wt-a [feat/wt-a]               │  Branch:     main
   beta                            │  Commit:     <sha> (<rel>)
                                   │
@@ -136,5 +136,5 @@
                                   │
                                   │
                                   │
- q  Quit  a  Add Repo  w  Add Worktree  e  Editor  t  Terminal  o  Files  n  Claude  y  ClaudeYOLO  h  Archive  d  Delete  s  Settings  ?  H
+ a Add Repo  q Quit  w Add Worktree  e Editor  t Terminal  o Files  n Claude  y ClaudeYOLO  h Archive  d Delete  s Settings  ? Help
 [forestui-0:forestui-dev-<hhmm>*                                                                              "<host>" <clock>

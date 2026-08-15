@@ -143,10 +143,12 @@ fn row_to_item(row: &SidebarRow, hovered: bool) -> ListItem<'static> {
         } => {
             // A repository with nothing under it gets a blank of the same width,
             // so every name still starts in the same column.
+            // `▼`/`▶`, the glyphs the Textual tree used — not the smaller
+            // `▾`/`▸`, which read as a different control beside them.
             let twisty = match (has_worktrees, collapsed) {
                 (false, _) => "  ",
-                (true, false) => "▾ ",
-                (true, true) => "▸ ",
+                (true, false) => "▼ ",
+                (true, true) => "▶ ",
             };
             ListItem::new(Line::from(vec![
                 Span::styled(twisty, theme::muted()),

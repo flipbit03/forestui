@@ -75,9 +75,11 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
+    // Order as Textual's `Footer` rendered it: `q` is declared first in the
+    // Python bindings but carries `priority=True`, which sorted it after `a`.
     const KEYS: [(char, &str); 12] = [
-        ('q', "Quit"),
         ('a', "Add Repo"),
+        ('q', "Quit"),
         ('w', "Add Worktree"),
         ('e', "Editor"),
         ('t', "Terminal"),
@@ -96,10 +98,13 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
     for (key, label) in KEYS {
         let hovered = app.hovered == Some(HitTarget::FooterKey(key));
         let badge = format!(" {key} ");
-        // One trailing space, not two: at twelve entries the extra column per
-        // entry was enough to push "? Help" off an 150-column terminal, which
-        // the Textual footer fitted.
-        let text = format!(" {label} ");
+        // `{label} `, matching Textual exactly: the badge already carries a
+        // space inside its own background on each side, so the key sits one
+        // column from its label and the single trailing space here plus the next
+        // badge's leading one put two between entries. The original
+        // ` {label}  ` spent two columns in each place, which at twelve entries
+        // pushed "? Help" off a 150-column terminal that Textual fitted.
+        let text = format!("{label} ");
         let width = (badge.chars().count() + text.chars().count()) as u16;
 
         spans.push(Span::styled(

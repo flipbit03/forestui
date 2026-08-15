@@ -2,10 +2,10 @@
                                   │
      gh cli: ok (sweep-user)      │
 ──────────────────────────────────│  MAIN REPOSITORY
-▾ alpha                           │  Repository: gamma
+▼ alpha                           │  Repository: gamma
 └─ wt-a-renamed [feat/wt-a-v2]    │  Branch:     main
   beta                            │  Commit:     <sha> (<rel>)
-▾ gamma                           │
+▼ gamma                           │
 └─ gamma-imported [feat/imported] │  ┌─────────────────────────┐ ┌──────────────┐
                                   │  │ ⟳  Git Pull (No remote) │ │ Add Worktree │
                                   │  └─────────────────────────┘ └──────────────┘
@@ -66,5 +66,5 @@
                                   │  │ Remove Repository │
                                   │  └───────────────────┘                     Imported 1 worktrees
                                   │
- q  Quit  a  Add Repo  w  Add Worktree  e  Editor  t  Terminal  o  Files  n  Claude  y  ClaudeYOLO  h  Archive  d  Delete  s  Settings  ?  H
+ a Add Repo  q Quit  w Add Worktree  e Editor  t Terminal  o Files  n Claude  y ClaudeYOLO  h Archive  d Delete  s Settings  ? Help
 [forestui-0:forestui-dev-<hhmm>* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:alpha:wt->"<host>" <clock>

@@ -38,14 +38,20 @@ def window_list(text):
     """
     found = re.findall(r"\[forestui\S*[^\"]*", text)
     if not found:
-        return ""
+        return {}
     line = re.sub(r"forestui-dev-<hhmm>", "forestui", found[-1].strip())
-    entries = re.findall(r"\b\d+:[\w:.\-/]+\*?", line)
+    entries = re.findall(r"\b(\d+):([\w:.\-/]+?)(\*?)(?=\s|$)", line)
     # tmux cuts the status bar with a trailing `>`, leaving the last entry a
     # fragment. Comparing a fragment against a whole name is a false alarm.
     if line.endswith(">") and entries:
         entries = entries[:-1]
-    return entries
+    # Keyed by window index rather than position, because the two bars do not
+    # truncate at the same point: a source build's window 0 is
+    # `forestui-dev-<hhmm>` where a release's is `forestui`, nine columns
+    # shorter, so the longer bar starts dropping windows off the left (tmux
+    # marks it `<`) one window sooner. Comparing by position then reported every
+    # window as renamed. Only indices both bars had room to print are compared.
+    return {index: name + active for index, name, active in entries}
 
 def phrases(text):
     out = set()
@@ -68,11 +74,15 @@ for fa in sorted(da.glob("UC-*.txt")):
         continue
     ta, tb = fa.read_text(), fb.read_text()
     wa, wb = window_list(ta), window_list(tb)
-    # The two builds' status bars truncate at different points, because a
-    # dev-mode window name is longer than a release one. Only the entries both
-    # bars had room to print can be compared.
-    shared = min(len(wa), len(wb))
-    verdict = "n/a" if not wa and not wb else ("same" if wa[:shared] == wb[:shared] else "DIFF")
+    shared = wa.keys() & wb.keys()
+    if not wa and not wb:
+        verdict = "n/a"
+    elif not shared:
+        # Both bars printed windows but share no index — that is a real
+        # divergence, not a truncation artifact.
+        verdict = "n/a" if not (wa and wb) else "DIFF"
+    else:
+        verdict = "same" if all(wa[k] == wb[k] for k in shared) else "DIFF"
     if verdict == "DIFF":
         fail += 1
     pa, pb = phrases(ta), phrases(tb)
