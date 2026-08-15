@@ -75,27 +75,10 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
-    // Order as Textual's `Footer` rendered it: `q` is declared first in the
-    // Python bindings but carries `priority=True`, which sorted it after `a`.
-    const KEYS: [(char, &str); 12] = [
-        ('a', "Add Repo"),
-        ('q', "Quit"),
-        ('w', "Add Worktree"),
-        ('e', "Editor"),
-        ('t', "Terminal"),
-        ('o', "Files"),
-        ('n', "Claude"),
-        ('y', "ClaudeYOLO"),
-        ('h', "Archive"),
-        ('d', "Delete"),
-        ('s', "Settings"),
-        ('?', "Help"),
-    ];
-
     let mut spans = Vec::new();
     // Tracks where each entry lands so it can be registered as a click target.
     let mut x = area.x;
-    for (key, label) in KEYS {
+    for (key, label) in crate::app::BINDINGS {
         let hovered = app.hovered == Some(HitTarget::FooterKey(key));
         let badge = format!(" {key} ");
         // `{label} `, matching Textual exactly: the badge already carries a
@@ -143,7 +126,7 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
     );
 }
 
-fn draw_notifications(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_notifications(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.notifications.is_empty() {
         return;
     }
@@ -185,6 +168,8 @@ fn draw_notifications(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(Clear, rect);
     frame.render_widget(Paragraph::new(lines), rect);
+    // Recorded after the panes, so it wins the cells it covers.
+    app.push_hit(rect, HitTarget::Notification);
 }
 
 /// Break text into lines of at most `width` characters, on word boundaries
@@ -224,6 +209,28 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The toast is drawn over the detail pane, so the frame that draws it has
+    /// to claim its cells — otherwise a click there reaches the control beneath.
+    #[tokio::test]
+    async fn drawing_a_toast_records_its_region() {
+        use crate::app::test_support::app_with_fixture;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (_dir, mut app) = app_with_fixture();
+        app.notify("something happened", Severity::Information);
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("test terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| hit.target == HitTarget::Notification),
+            "the toast drew but claimed no cells"
+        );
+    }
 
     #[test]
     fn wrap_words_breaks_on_word_boundaries() {

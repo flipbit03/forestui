@@ -2,6 +2,7 @@
 
 use crate::theme;
 use ratatui::Frame;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -112,6 +113,50 @@ impl TextInput {
         self.cursor = self.value.chars().count();
     }
 
+    /// Apply a text-editing key. Returns whether the key was consumed.
+    ///
+    /// The one implementation for every text field in the app — the modals and
+    /// the detail pane's rename fields both route here, so an editing
+    /// improvement (word delete, paste, a cursor fix) cannot land in one and
+    /// silently miss the other. Callers layer their own Enter/Escape handling.
+    pub fn apply_edit_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.kill_to_start();
+                true
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.insert(c);
+                true
+            }
+            KeyCode::Backspace => {
+                self.backspace();
+                true
+            }
+            KeyCode::Delete => {
+                self.delete();
+                true
+            }
+            KeyCode::Left => {
+                self.move_left();
+                true
+            }
+            KeyCode::Right => {
+                self.move_right();
+                true
+            }
+            KeyCode::Home => {
+                self.move_home();
+                true
+            }
+            KeyCode::End => {
+                self.move_end();
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Delete every character before the cursor (readline's `Ctrl+U`).
     pub fn kill_to_start(&mut self) {
         let at = self.byte_index(self.cursor);
@@ -190,15 +235,32 @@ const BUTTON_MIN_WIDTH: u16 = 10;
 /// the two border cells, never under Textual's minimum. Measured rather than
 /// counted, because a label can hold a glyph that is not one cell wide.
 pub fn button_box_width(label: &str) -> u16 {
+    boxed_width(label, BUTTON_MIN_WIDTH)
+}
+
+/// [`button_box_width`] with an explicit minimum. The detail pane's controls
+/// pass 0: their boxes hug the label, which is how that pane laid out from the
+/// start and what the committed sweep baselines show.
+pub fn boxed_width(label: &str, min_width: u16) -> u16 {
     let label = u16::try_from(Span::raw(label).width()).unwrap_or(u16::MAX);
-    label.saturating_add(4).max(BUTTON_MIN_WIDTH)
+    label.saturating_add(4).max(min_width)
 }
 
 /// The three rows of a bordered button, in the order they are drawn. The fill
 /// runs under the border cells too, which is what Textual's `border: solid` did.
 /// A label the minimum width has padded out is centred, as Textual centred it.
 pub fn button_box(label: &str, border: Style, text: Style) -> [Vec<Span<'static>>; 3] {
-    let inner = button_box_width(label).saturating_sub(2) as usize;
+    boxed_rows(label, border, text, BUTTON_MIN_WIDTH)
+}
+
+/// [`button_box`] with an explicit minimum width; see [`boxed_width`].
+pub fn boxed_rows(
+    label: &str,
+    border: Style,
+    text: Style,
+    min_width: u16,
+) -> [Vec<Span<'static>>; 3] {
+    let inner = boxed_width(label, min_width).saturating_sub(2) as usize;
     let pad = inner.saturating_sub(Span::raw(label).width());
     let left = pad / 2;
     let edge = |left: char, right: char| {

@@ -13,9 +13,9 @@
                                   │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
                                   │  LOCATION
-                                  │  ┌───────────────────────────────┐
+                                  │  ┌─────────────────────────────────┐
                                   │  │ <ROOT>/src/alpha │
-                                  │  └───────────────────────────────┘
+                                  │  └─────────────────────────────────┘
                                   │
                                   │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
@@ -40,7 +40,7 @@
                                   │  │ session 3: refactor the detail pane so the cards line up                                        │
                                   │  │ > and then check it against the python bui...                                                   │
                                   │  │                                                                                                 │
-                                  │  │ 11 days ago • 2 msgs                                                                            │
+                                  │  │ <rel> • 2 msgs                                                                            │
                                   │  │                                                                    ┌────────┐ ┌──────┐ ┌──────┐ │
                                   │  │                                                                    │ Resume │ │ YOLO │ │ Opus │ │
                                   │  │                                                                    └────────┘ └──────┘ └──────┘ │
@@ -52,7 +52,7 @@
                                   │  │ session 2: refactor the detail pane so the cards line up                                        │
                                   │  │ > and then check it against the python bui...                                                   │
                                   │  │                                                                                                 │
-                                  │  │ 12 days ago • 2 msgs                                                                            │
+                                  │  │ <rel> • 2 msgs                                                                            │
                                   │  │                                                                    ┌────────┐ ┌──────┐ ┌──────┐ │
                                   │  │                                                                    │ Resume │ │ YOLO │ │ Opus │ │
                                   │  │                                                                    └────────┘ └──────┘ └──────┘ │
@@ -64,7 +64,7 @@
                                   │  │ session 1: refactor the detail pane so the cards line up                                        │
                                   │  │ > and then check it against the python bui...                                                   │
                                   │  │                                                                                                 │
-                                  │  │ 13 days ago • 2 msgs                                                                            │
+                                  │  │ <rel> • 2 msgs                                                                            │
                                   │  │                                                                    ┌────────┐ ┌──────┐ ┌──────┐ │
                                   │  │                                                                    │ Resume │ │ YOLO │ │ Opus │ │
                                   │  │                                                                    └────────┘ └──────┘ └──────┘ │
@@ -79,7 +79,7 @@
                                   │  │                                                                                                 │
                                   │  │ #326 Fansly conversation discovery has no backoff                                               │
                                   │  │                                                                                   ┌───────────┐ │
-                                  │  │ 12 days ago • bug                                                                 │ Create WT │ │
+                                  │  │ <rel> • bug                                                                 │ Create WT │ │
                                   │  │                                                                                   └───────────┘ │
                                   │  │                                                                                                 │
                                   │  └─────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -88,7 +88,7 @@
                                   │  │                                                                                                 │
                                   │  │ #298 Proactive metrics: coalesced FIRE rows overco...                                           │
                                   │  │                                                                                   ┌───────────┐ │
-                                  │  │ a month ago • metrics, p2                                                         │ Create WT │ │
+                                  │  │ <rel> • metrics, p2                                                         │ Create WT │ │
                                   │  │                                                                                   └───────────┘ │
                                   │  │                                                                                                 │
                                   │  └─────────────────────────────────────────────────────────────────────────────────────────────────┘

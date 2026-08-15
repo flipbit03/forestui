@@ -47,6 +47,17 @@ fn state() -> &'static Mutex<State> {
     STATE.get_or_init(|| Mutex::new(State::default()))
 }
 
+/// Exit code reserved for a process that died to a signal.
+///
+/// It cannot be `0` (success), `-1` (reserved for "gh is not installed"), or
+/// `1` — `gh auth status` returns 1 for "not logged in", and conflating the two
+/// let one killed probe pin the whole session to "unauth'd".
+pub const KILLED: i32 = -2;
+
+fn exit_code(status: std::process::ExitStatus) -> i32 {
+    crate::util::exit_code(status, KILLED)
+}
+
 /// Run a `gh` command. Exit code `-1` means the binary is missing.
 async fn run_gh(args: &[&str], cwd: Option<&Path>) -> (i32, String, String) {
     let mut cmd = Command::new("gh");
@@ -56,7 +67,7 @@ async fn run_gh(args: &[&str], cwd: Option<&Path>) -> (i32, String, String) {
     }
     match cmd.output().await {
         Ok(output) => (
-            output.status.code().unwrap_or(0),
+            exit_code(output.status),
             String::from_utf8_lossy(&output.stdout).trim().to_string(),
             String::from_utf8_lossy(&output.stderr).trim().to_string(),
         ),
@@ -74,6 +85,12 @@ pub async fn get_auth_status() -> (AuthStatus, Option<String>) {
     }
 
     let (code, _out, _err) = run_gh(&["auth", "status"], None).await;
+    if code == KILLED {
+        // A probe that was killed answered nothing. Caching that as an answer
+        // would leave the sidebar reading "unauth'd" and the issues list empty
+        // for the rest of the session, with no path back short of a restart.
+        return (AuthStatus::NotAuthenticated, None);
+    }
     let result = if code == -1 {
         (AuthStatus::NotInstalled, None)
     } else if code == 0 {
@@ -215,6 +232,27 @@ mod tests {
         assert_eq!(AuthStatus::Authenticated.display(None), "ok");
         assert_eq!(AuthStatus::NotAuthenticated.display(None), "unauth'd");
         assert_eq!(AuthStatus::NotInstalled.display(None), "missing");
+    }
+
+    /// A killed `gh` must fail, but must not masquerade as a missing binary
+    /// (-1 flips the sidebar to "missing"), nor as a real "not logged in"
+    /// (1, which `get_auth_status` caches for the lifetime of the process).
+    #[test]
+    fn signal_killed_process_is_a_plain_failure() {
+        let status = std::process::Command::new("sh")
+            .args(["-c", "kill -9 $$"])
+            .status()
+            .unwrap();
+        assert!(status.code().is_none(), "expected a signal-killed process");
+        let code = exit_code(status);
+        assert_ne!(code, 0);
+        assert_ne!(code, -1);
+        assert_ne!(
+            code, 1,
+            "a killed probe is indistinguishable from `gh auth status` saying \
+             'not logged in', which is cached and never retried"
+        );
+        assert_eq!(code, KILLED);
     }
 
     #[test]

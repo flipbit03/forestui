@@ -6,7 +6,7 @@ Companion documents in this directory:
 |---|---|
 | `ARCHITECTURE.md` | Crate/module design, verified dependency versions, CSS→Layout mapping |
 | `SPEC.md` | Implementation-grade behavioural spec of the **Python** build (2 200+ lines, present and complete — sections 1–10) |
-| `TU_USECASES.md` | 52-case `tu` acceptance playbook, 25 of them P0 |
+| `TU_USECASES.md` | 96-case `tu` acceptance playbook, 52 of them P0 |
 | `MIGRATION.md` | This document: what actually changed, what is left, how to roll back |
 
 **Verification status of this document.** Every claim about the Rust side is derived from reading
@@ -16,6 +16,11 @@ found"), so nothing here has been compiled, tested, or run. Statements about com
 runtime behaviour, and render output are therefore *unverified by execution* and are flagged where
 they matter. The Python-side claims are backed by `SPEC.md` and by the 35 use cases in
 `TU_USECASES.md` that were driven live against Python `0.0.0`.
+
+> **Line references below point at `src/app.rs`, which no longer exists.** It was
+> split into `src/app/{mod,detail,keys,mouse,actions}.rs`; the code moved, the
+> behaviour described did not. Treat every `src/app.rs:NNN` in this document as
+> naming the behaviour, not a location.
 
 ---
 
@@ -139,17 +144,17 @@ modules are stubs totalling 18 lines.
 | `d` delete | Identical (message text differs — see 4.4) | `src/app.rs:631` |
 | `s` settings | Identical | `src/app.rs:632` |
 | `r` refresh sidebar + detail | Identical | `src/app.rs:635-638` ↔ `app.py:841-844` |
-| `?` help toast | Identical — string copied verbatim, still omits `o`, `y`, `r`, `?` | `src/app.rs:643-647` ↔ `app.py:848-851` |
+| `?` help toast | Fixed | Was a verbatim copy of Python's nine-key string, which omitted `o`, `y`, `r`, `A` and `?` itself. Now derived from `BINDINGS` + `EXTRA_BINDINGS`, so a reachable key cannot be undiscoverable (`src/app/keys.rs`) |
 | `A` toggle archived section | Fixed | New key; Python's `_show_archived` was initialised `False` and never set (`state.py:26`, UC-50). `src/app.rs:639-642` |
 | `Tab` switch sidebar ↔ detail | Changed | New concept; Textual had per-widget focus. `src/app.rs:579-585` |
 | `Up`/`Down` | Changed | Now context-dependent: sidebar cursor, detail cursor, or in-field cursor. `src/app.rs:586-604` |
 | `Enter` | Changed | Sidebar: re-select. Detail: fire `detail_items()[detail_index]`. `src/app.rs:605-617` |
 | `Ctrl+C` quit | Identical | `src/app.rs:560-563`; Textual bound it by default |
 | Hotkeys while a rename field has focus | Changed | Printable keys go to the field, so `q`/`a`/`d` no longer fire. Python's `q` was `priority=True` (`app.py:72`) and fired even inside an `Input`. `src/app.rs:571-576` |
-| Mouse click to select a row or press a button | Dropped | No mouse capture is enabled (`src/main.rs:50`); no `MouseEvent` arm in `handle_term_event` (`src/app.rs:545-553`) |
+| Mouse click to select a row or press a button | Supported | Was dropped in the first cut — no capture enabled, no `MouseEvent` arm. `main.rs::enable_mouse` now turns on `?1000h/?1002h/?1003h/?1006h`, and `src/app/mouse.rs` hit-tests clicks, hover, the wheel and the scrollbar against the regions each renderer records (UC-83–88, UC-90) |
 | Textual command palette (`ctrl+p`), built-in help panel | Dropped | Framework features with no ratatui equivalent |
-| `A` and `Tab` absent from the footer and from the `?` toast | Changed | `src/ui/mod.rs:56-69` lists 12 keys; `A` is not among them |
-| Footer key order | Changed | Rust: `q a w e t o n y h d s ?` (`src/ui/mod.rs:56-69`). Python rendered `a Add Repo  q Quit  w …` (UC-01 transcript) |
+| `A` and `Tab` absent from the footer | Changed | The footer draws the 12 entries of `BINDINGS`; `A` and `r` live in `EXTRA_BINDINGS`, which the `?` toast lists and the footer does not, matching Textual's footer width |
+| Footer key order | Identical | Both render `a q w e t o n y h d s ?`. Textual sorted `q` after `a` despite declaring it first, because it carried `priority=True`; the Rust `BINDINGS` table hardcodes that resolved order (`src/app/keys.rs`) |
 
 ### 4.2 Startup, CLI, tmux entry
 
@@ -588,6 +593,39 @@ promises); phases 3–6 are the remaining work.
 | R10 | **No render regression net.** `ARCHITECTURE.md` prescribed `TestBackend` + `insta` snapshots; neither exists (`insta` is not in `Cargo.toml`, and there is no `tests/` directory). `CLAUDE.md` explicitly warns that lint and typecheck cannot catch visual bugs. | High | Medium — layout regressions land unnoticed between releases | Add `tests/render.rs` with `TestBackend` snapshots at 120×40 and 80×24 during Phase 2, per `ARCHITECTURE.md` §"Testing strategy" |
 | R11 | **Non-atomic config writes.** `src/state.rs:52` is a plain `fs::write`; a crash mid-write truncates `.forestui-config.json`. Same as Python, so not a regression — but the port was the moment to fix it, and the loader silently falls back to an empty repository list (`src/state.rs:29-34`), so the damage looks like "all my repos disappeared". | Low | High when it happens | Write to a temp file in the same directory and `rename` — four lines |
 | R12 | **`naturaltime` is a re-implementation, not `humanize`.** `src/util.rs:51-87` matches on the six tested cases but is not the same algorithm; boundary phrasings ("a year ago" vs "1 year ago") can drift from the strings the acceptance blocks recorded. | Medium | Low — cosmetic | Assert the exact strings in the UC-12/UC-16 Expected blocks, or accept a documented divergence |
+
+### Status update (2026-08-15)
+
+The register above is kept as written — it is the review that shaped the port —
+but several rows have since been resolved and the file paths moved when
+`src/app.rs` split into `src/app/{mod,detail,keys,mouse,actions}.rs` (#34):
+
+- **R1, R2 — fixed.** `cli::VERSION` is `env!("CARGO_PKG_VERSION")`, and the
+  unconditional `cargo install` at startup became `version_check` (#32): a
+  cached daily check on a background task, binary-release builds swap
+  themselves in place, cargo installs only report.
+- **R3 — closed (#34).** The pane's items and rendering both derive from one
+  content walk (`app/detail.rs::content`), and activation resolves against the
+  per-frame `App::drawn_items` snapshot, so neither drift nor the
+  list-grew-under-the-cursor race can fire the wrong action.
+- **R4 — closed (#34).** `StateChanged` no longer exists. Background tasks send
+  `WorktreeAdded` / `WorktreesImported` / `WorktreeRenamed`; the main loop is
+  the single writer of the state file and carries the selection explicitly.
+- **R7 — fixed.** The release matrix is musl Linux x86_64 + aarch64 and macOS
+  aarch64, matching `install.sh`, which now verifies checksums.
+- **R10 — largely closed.** Still no `insta`, but the unit suite grew from the
+  port's baseline to 137 tests over `TestBackend`, and `scripts/tu-sweep.sh`
+  diffs committed per-case frames (`baseline/rust/`) — a render regression net
+  the register asked for in different clothes.
+- **R11 — closed (#34).** `util::write_atomically` (sibling temp + rename) for
+  both the state file and `settings.json`.
+- **R12 — accepted.** `naturaldelta` is transcribed from `humanize` with a
+  27-case boundary table test (`src/util.rs`).
+- **R5, R6, R8, R9** — R6 resolved (crate published); R5 exercised by the
+  grouped-session sweep cases (UC-81/82); R8 remains a documentation matter
+  (README tells Python-build users to `uv tool uninstall forestui`); R9 remains
+  open and low-impact.
+
 
 ---
 

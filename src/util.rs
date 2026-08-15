@@ -151,6 +151,88 @@ pub fn path_exists(path: &str) -> bool {
     Path::new(&expanduser(path)).exists()
 }
 
+/// Exit code of a finished subprocess, with signal-death mapped to `sentinel`.
+///
+/// `status.code()` is `None` when the process died to a signal; mapping that
+/// to 0 — the easy default — reads a killed `git pull` as success. Callers
+/// choose the sentinel because some reserve values: `gh` uses -1 to mean "the
+/// binary is missing", so its killed processes must map to something else.
+pub fn exit_code(status: std::process::ExitStatus, sentinel: i32) -> i32 {
+    status.code().unwrap_or(sentinel)
+}
+
+/// Write a file via a sibling temp file and an atomic rename.
+///
+/// `.forestui-config.json` is the only record of every tracked repository and
+/// worktree, and a corrupt file deliberately loads as *empty* state so a bad
+/// byte never blocks startup — which turns a crash mid-`fs::write` into total,
+/// silent data loss on the next launch. The rename makes that window
+/// impossible: readers see either the old file or the new one, never a torn
+/// half. The temp file lives beside the target because a rename is only atomic
+/// within one filesystem.
+///
+/// Three details keep the swap from being a downgrade on `fs::write`, which it
+/// replaced:
+///
+/// - It writes through a symlink. A rename would replace the link itself, so a
+///   config symlinked into a dotfiles repo would silently stop syncing after
+///   the first save.
+/// - It carries the target's existing permissions onto the replacement. A fresh
+///   temp file is born at the umask default, which would quietly widen a config
+///   the user had locked down.
+/// - It fsyncs the contents before the rename, and the directory after it.
+///   Without the first, a power loss can land the rename but not the bytes,
+///   leaving the empty file that loads as empty state — the exact loss this
+///   function exists to prevent.
+pub fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
+    // Resolve the link before choosing a sibling, so both the temp file and the
+    // rename land in the directory that actually holds the data.
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
+    let mut temp = target.clone();
+    let mut name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    name.push_str(&format!(".tmp-{}", std::process::id()));
+    temp.set_file_name(name);
+
+    let result = write_temp_then_rename(&temp, &target, contents);
+    if result.is_err() {
+        // Leave no half-written sibling behind; the original is untouched.
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
+}
+
+/// The fallible half of [`write_atomically`], split out so one cleanup on the
+/// error path covers a failure at any step rather than only at the rename.
+fn write_temp_then_rename(temp: &Path, target: &Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut file = std::fs::File::create(temp)?;
+    file.write_all(contents.as_bytes())?;
+    // Durability before visibility: the rename is only atomic for readers, not
+    // for the disk.
+    file.sync_all()?;
+    drop(file);
+
+    if let Ok(existing) = std::fs::metadata(target) {
+        std::fs::set_permissions(temp, existing.permissions())?;
+    }
+
+    std::fs::rename(temp, target)?;
+
+    // Best effort: a directory fsync is what makes the rename itself durable,
+    // and there is nothing useful to do when a platform refuses to open one.
+    if let Some(parent) = target.parent()
+        && let Ok(dir) = std::fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
 fn levenshtein_distance(s1: &[char], s2: &[char]) -> usize {
     if s1.len() < s2.len() {
         return levenshtein_distance(s2, s1);
@@ -398,6 +480,60 @@ mod tests {
     fn highlight_range_finds_literal() {
         assert_eq!(highlight_range("ain", "main"), Some((1, 4)));
         assert_eq!(highlight_range("zzz", "main"), None);
+    }
+
+    #[test]
+    fn atomic_write_replaces_and_leaves_no_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.json");
+        std::fs::write(&target, "old").unwrap();
+
+        write_atomically(&target, "new").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+
+        // No staging file may survive the swap.
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name() != "config.json")
+            .collect();
+        assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
+    }
+
+    #[test]
+    fn atomic_write_follows_a_symlinked_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("dotfiles");
+        std::fs::create_dir(&real).unwrap();
+        let data = real.join("config.json");
+        std::fs::write(&data, "old").unwrap();
+
+        let link = dir.path().join("config.json");
+        std::os::unix::fs::symlink(&data, &link).unwrap();
+
+        write_atomically(&link, "new").unwrap();
+
+        // Renaming over the link would leave a regular file here and strand the
+        // dotfiles copy on the old contents forever.
+        assert!(link.is_symlink(), "the symlink was replaced by a real file");
+        assert_eq!(std::fs::read_to_string(&data).unwrap(), "new");
+    }
+
+    #[test]
+    fn atomic_write_keeps_the_targets_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("settings.json");
+        std::fs::write(&target, "old").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        write_atomically(&target, "new").unwrap();
+
+        // A fresh temp file is born at the umask default; carrying it onto the
+        // target would widen a config the user deliberately locked down.
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "permissions were widened to {mode:o}");
     }
 
     #[test]

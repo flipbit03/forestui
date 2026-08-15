@@ -13,6 +13,14 @@ pub struct AppState {
     pub selection: Selection,
     pub show_archived: bool,
     config_path: PathBuf,
+    /// Why the last [`AppState::save`] failed, if it did.
+    ///
+    /// A failed write used to be discarded outright, so the app went on to
+    /// announce "Created worktree 'x'" for a worktree that never reached the
+    /// config — the loudest possible lie, because a corrupt or missing file
+    /// loads as *empty* state and the entry is simply gone on the next launch.
+    /// Callers that announce success drain this first.
+    save_error: Option<String>,
 }
 
 impl AppState {
@@ -37,19 +45,31 @@ impl AppState {
             selection: Selection::default(),
             show_archived: false,
             config_path,
+            save_error: None,
         }
     }
 
-    fn save(&self) {
+    fn save(&mut self) {
         if let Some(parent) = self.config_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         let data = AppStateData {
             repositories: self.repositories.clone(),
         };
-        if let Ok(json) = serde_json::to_string_pretty(&data) {
-            let _ = std::fs::write(&self.config_path, json);
-        }
+        self.save_error = match serde_json::to_string_pretty(&data) {
+            Ok(json) => crate::util::write_atomically(&self.config_path, &json)
+                .err()
+                .map(|error| error.to_string()),
+            Err(error) => Some(error.to_string()),
+        };
+    }
+
+    /// Take the last save failure, if the most recent write did not land.
+    ///
+    /// Draining it means one failure is reported once, by whoever was about to
+    /// claim the change succeeded.
+    pub fn take_save_error(&mut self) -> Option<String> {
+        self.save_error.take()
     }
 
     pub fn repositories(&self) -> &[Repository] {
@@ -86,6 +106,14 @@ impl AppState {
     pub fn add_worktree(&mut self, repo_id: Uuid, worktree: Worktree) {
         if let Some(repo) = self.repositories.iter_mut().find(|r| r.id == repo_id) {
             repo.worktrees.push(worktree);
+            self.save();
+        }
+    }
+
+    /// Add a batch of worktrees with a single save, for the import flow.
+    pub fn add_worktrees(&mut self, repo_id: Uuid, worktrees: Vec<Worktree>) {
+        if let Some(repo) = self.repositories.iter_mut().find(|r| r.id == repo_id) {
+            repo.worktrees.extend(worktrees);
             self.save();
         }
     }

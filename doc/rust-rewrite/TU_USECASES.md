@@ -438,9 +438,13 @@ enabled for a repo with no remote.
 1. `tu screenshot --name fui --png -o /tmp/uc13.png`; `Read` it.
 
 **Expected:** the button reads exactly `↓ Git Pull (No remote)` and is rendered
-disabled (dimmed, not focusable).
-**Fails if:** the button says `↓ Git Pull` and is clickable — pulling a repo with no
-upstream errors out and the app would surface a raw git error.
+disabled (dimmed). It *keeps its slot in the focus ring* — a disabled control
+still occupies its index, so the items either side of it do not shift — and is
+inert: neither Enter nor a click runs it.
+**Fails if:** the button says `↓ Git Pull`, or it fires when activated —
+pulling a repo with no upstream errors out and the app would surface a raw git
+error. Earlier revisions of this case said "not focusable"; the build has never
+done that, and skipping disabled items would move every index behind them.
 
 ---
 
@@ -1307,9 +1311,15 @@ wording in both builds. Nothing is deleted yet.
 
 ### UC-59 — `?` shows the help toast
 **Area:** Sweep | **Priority:** P1 | 🟢 EXECUTED (both builds)
-**Expected:** `a: Add Repo | w: Add Worktree | e: Editor | t: Terminal | n: Claude
-| h: Archive | d: Delete | s: Settings | q: Quit`.
-**Known gap in both:** the toast omits `o`, `y`, `r` and `?` itself.
+**Expected (Rust):** every binding the app has, in footer order, wrapped over
+as many lines as it needs: `a: Add Repo | q: Quit | w: Add Worktree | e: Editor
+| t: Terminal | o: Files | n: Claude | y: ClaudeYOLO | h: Archive | d: Delete |
+s: Settings | ?: Help | r: Refresh | A: Show Archived`. It is derived from the
+same `BINDINGS` table that draws the footer, plus `EXTRA_BINDINGS` for the two
+keys that never fit it, so a key cannot be reachable yet undiscoverable.
+**Divergence from Python:** the Textual build hardcoded a nine-key string and
+omitted `o`, `y`, `r`, `A` and `?` itself. The Rust toast is deliberately
+longer; `baseline/python/UC-59-help-notification.txt` still shows the short one.
 
 ### UC-60 — `e` opens the editor window
 **Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
@@ -1506,9 +1516,11 @@ depending on which pane has focus.
 
 ### UC-89 — Controls render as buttons
 **Area:** Visual | **Priority:** P1 | 🟢 EXECUTED (Rust)
-**Expected:** every control renders as a filled pill (`▐ Label ▏`), visibly a
-button rather than plain text, with the focused one highlighted and destructive
-ones red.
+**Expected:** every control renders as a three-row bordered box
+(`┌────────┐` / `│ Editor │` / `└────────┘`), visibly a button rather than plain
+text, with the focused one highlighted and destructive ones red. An earlier cut
+drew filled pills (`▐ Label ▏`); the boxes are what matches Textual's
+`Button { border: solid; height: 3 }` and what every committed baseline shows.
 **Fails if:** controls read as flat labels — a user reported exactly that.
 
 ---
@@ -1519,19 +1531,20 @@ Found by rendering both builds on the same fixture and comparing the captured
 PNGs pair by pair (`doc/rust-rewrite/screenshots/<build>/`). Text frames prove
 the *content* matches; these cover how it *looks*.
 
-### UC-90 — Mouse reporting is on, but not any-motion
-**Area:** Mouse | **Priority:** P0 | 🟢 EXECUTED (both builds; the second half is Rust-only)
+### UC-90 — Mouse reporting is on, in any-motion mode
+**Area:** Mouse | **Priority:** P0 | 🟢 EXECUTED (both builds)
 **Steps:** `tu mouse state --name <session>` right after launch.
-**Expected (both):** `enabled: true` — without it no click reaches the app at all.
-**Expected (Rust):** the mode is **not** `AnyMotion`. `EnableMouseCapture` turns on
-`?1003h`, so the terminal reports every pointer movement; the Rust loop redraws
-per event, so that showed up as the whole app flickering when the mouse merely
-moved across it. The build now requests `?1000h` + `?1006h` — buttons and wheel
-only — and drains queued events before repainting.
-**Not asserted for Python:** Textual legitimately uses any-motion tracking
-because it supports hover.
-**Fails if:** a click does nothing (reporting off), or the app repaints on
-pointer movement (flicker).
+**Expected (both):** `enabled: true` and the mode **is** `AnyMotion`. `?1003h`
+is the only way a terminal reports a bare pointer move, so without it hover is
+impossible rather than merely unstyled — and the stylesheet this port follows
+has 25 `:hover` rules. An earlier revision of this case demanded the opposite,
+because every motion report used to wake the loop and repaint, which read as
+the app flickering under a moving mouse. That was fixed at the source instead:
+`App::handle_mouse` marks the frame dirty only when the *hovered target
+changes*, so motion is affordable and both builds legitimately want it on.
+**Fails if:** a click does nothing (reporting off), hover never lights a
+control (mode is not `AnyMotion`), or the app repaints continuously under
+pointer motion (the redraw gate regressed).
 
 ### UC-91 — A modal dims what is behind it
 **Area:** Visual | **Priority:** P1 | 🟢 EXECUTED (both builds)
@@ -1561,6 +1574,27 @@ session and each GitHub issue, and the LOCATION path in a bordered box. Without
 them the pane reads as one flat undifferentiated list, which is what a user
 comparing the two builds side by side noticed first.
 
+### UC-95 — The fixture exercises every section it claims to compare
+**Area:** Harness | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Steps:** part of `scripts/tu-sweep.sh`; the throwaway forest is seeded with
+Claude session files and a stubbed `gh` before the app is launched.
+**Expected:** the sweep's repository pane shows real sessions and real issues,
+not the empty state. A sweep that never renders a section reports parity for it
+regardless of what the two builds would have drawn there.
+**Fails if:** any section falls back to `No sessions found`, `No issues found`
+or `No repositories`. The session cards went uncompared that way for days, and
+the issue rows right behind them.
+
+### UC-96 — The comparison frame is tall enough to hold the pane
+**Area:** Harness | **Priority:** P0 | 🟢 EXECUTED (both builds)
+**Steps:** `tu resize --name <session> 140x140`, then capture.
+**Expected:** the whole repository pane is inside one frame — `msgs` from a
+session card and the `#326`/`#298` issue rows all present — so the diff covers
+it. At the sweep's normal 140x44 the sections below the fold are absent from
+the frame and therefore absent from the comparison.
+**Fails if:** the tall capture is missing either marker, which means the frame
+being diffed stops short of the content the case exists to compare.
+
 ---
 
 ## Known visual divergences (accepted, not defects)
@@ -1573,14 +1607,13 @@ frames — most of them are invisible in a frame diff.
 
 | | Textual | ratatui |
 |---|---|---|
-| Sidebar tree | `▼` arrows, repositories collapse | flat list, no collapse |
 | Sidebar guides | tree guide *and* a hand-drawn prefix, so a worktree reads `└ └─  wt-a` | one prefix, `└─ wt-a` |
-| Sidebar branch | swallowed by console-markup parsing | shown, as intended |
+| Sidebar branch | swallowed by console-markup parsing | shown only when it says something the name does not (`hot [release-2]`); a branch that is just `<prefix><name>` again is omitted |
 | Sidebar cursor | nothing highlighted until the cursor is first moved | the selected row is highlighted from boot |
 | Selects | dropdown overlay | `◂ value ▸` cycled with Left/Right |
 | Footer | `a` first, because Textual lists the focused widget's bindings ahead of the app's; includes `^p` command palette | fixed order; no command palette |
 | Button labels | carry a vestigial leading space (`Button(" Editor")`), so every box is a cell wider | no leading space |
-| `↓ Git Pull` | one space after the glyph | two, because `⟳` is double-width in some terminals |
+| Git Pull glyph | `⟳` padded with two spaces (the glyph is double-width in some terminals) | `↓` with one space — `⟳` is missing from every common monospace font and renders as tofu without a fallback chain |
 
 Everything else in the detail pane, the sidebar header box and the modals is
 matched deliberately, down to the blank rows Textual's margins produced. If a
@@ -1606,7 +1639,7 @@ composite shows a difference not listed above, treat it as a regression.
 | Flows & mouse | 78–89 | 8 |
 | Visual parity | 90–94 | 1 |
 
-**94 use cases · 50 P0 · 76 executed live · 17 written from source only.**
+**96 use cases · 52 P0 · 78 executed live · 17 written from source only.**
 
 UC-01–52 were written against the Python build on 2026-08-14 (35 executed).
 UC-53–70 are the automated sweep and have been executed against **both** builds;

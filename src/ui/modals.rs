@@ -3,10 +3,10 @@
 //! `src/modal.rs` owns the state and the keys; this file draws, and records
 //! where every control landed so a click can be routed back to it. Controls are
 //! laid out in focus-index order so the picture and the key handling cannot
-//! drift apart — read a `handle_key` there and the matching block here should
-//! name the same indices.
+//! drift apart — both sides name the same `FOCUS_*` constants on the modal
+//! struct rather than repeating a number, so there is one place to change.
 
-use crate::app::{App, HitTarget, ModalClick};
+use crate::app::{App, Direction, HitTarget, ModalClick};
 use crate::modal::{
     AddRepositoryModal, AddWorktreeModal, ConfirmModal, CreateFromIssueModal, CustomButtonsModal,
     EDITORS, EditButtonModal, Modal, SPINNER, SettingsModal, THEMES,
@@ -38,9 +38,9 @@ const GAP: u16 = 1;
 const CHROME: u16 = 6;
 
 /// Where the controls of one modal landed: a rectangle and the focus index a
-/// click inside it selects. The indices are the ones `Modal::set_focus` and the
-/// modal's `handle_key` use — anything else would focus one control and act on
-/// another.
+/// click inside it selects. The indices are the modal's own `FOCUS_*` constants,
+/// which `Modal::set_focus` and `handle_key` also use — anything else would
+/// focus one control and act on another.
 pub type Hits = Vec<(Rect, usize, ModalClick)>;
 
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -181,16 +181,27 @@ impl Column {
         // answered from the keyboard, with nothing on screen saying so — pin it
         // to the last three rows. The body above it loses those rows instead,
         // which is at least visible.
-        let rect = self.take(BUTTON_HEIGHT).unwrap_or_else(|| {
-            let y = (self.area.y + self.area.height).saturating_sub(BUTTON_HEIGHT);
-            self.y = self.area.y + self.area.height;
-            Rect {
-                x: self.area.x,
-                y,
-                width: self.area.width,
-                height: BUTTON_HEIGHT.min(self.area.height),
+        let rect = match self.take(BUTTON_HEIGHT) {
+            Some(rect) => rect,
+            None => {
+                let y = (self.area.y + self.area.height).saturating_sub(BUTTON_HEIGHT);
+                self.y = self.area.y + self.area.height;
+                let pinned = Rect {
+                    x: self.area.x,
+                    y,
+                    width: self.area.width,
+                    height: BUTTON_HEIGHT.min(self.area.height),
+                };
+                // Every row that overflows lands on this same strip, so an
+                // earlier one is painted over by whatever comes after it.
+                // Its hit regions have to go with it: a control nobody can see
+                // must not answer a click, and the blank margin either side of
+                // a centred button row is exactly where those stale regions
+                // would still be sitting.
+                hits.retain(|(recorded, _, _)| !recorded.intersects(pinned));
+                pinned
             }
-        });
+        };
         let total = controls
             .iter()
             .map(|(_, width, _, _)| width.saturating_add(GAP))
@@ -327,13 +338,21 @@ fn cycle(value: &str, focused: bool, index: usize) -> Control {
         theme::Variant::Normal,
         index,
     );
-    (spans, width, index, ModalClick::Cycle)
+    (spans, width, index, ModalClick::Cycle(Direction::Next))
+}
+
+/// One segment of a two-option row, which selects itself rather than toggling
+/// the row. `direction` is the key that lands on this option: the pair reads as
+/// Left for the first and Right for the second, both idempotent.
+fn option(label: &str, active: bool, index: usize, direction: Direction) -> Control {
+    let (spans, width, index, _) = control(label, active, theme::Variant::Normal, index);
+    (spans, width, index, ModalClick::Cycle(direction))
 }
 
 /// A bare arrow beside a control, standing for the key that drives it. Clicking
 /// one does what that key does, so it carries the control's index too. It is one
 /// cell wide on all three rows, so the buttons after it stay aligned.
-fn arrow(glyph: char, focused: bool, index: usize) -> Control {
+fn arrow(glyph: char, direction: Direction, focused: bool, index: usize) -> Control {
     let style = if focused {
         theme::accent()
     } else {
@@ -348,7 +367,7 @@ fn arrow(glyph: char, focused: bool, index: usize) -> Control {
         ],
         1,
         index,
-        ModalClick::Cycle,
+        ModalClick::Cycle(direction),
     )
 }
 
@@ -360,7 +379,13 @@ fn add_repository(frame: &mut Frame, modal: &AddRepositoryModal, area: Rect, hit
     let mut column = dialog(frame, rect, "Add Repository", theme::title());
 
     column.line(frame, widgets::section("Repository Path"));
-    column.input(frame, hits, &modal.path, modal.focus, 0);
+    column.input(
+        frame,
+        hits,
+        &modal.path,
+        modal.focus,
+        AddRepositoryModal::FOCUS_PATH,
+    );
 
     let (status, valid) = modal.status();
     let style = if !valid && !status.is_empty() {
@@ -377,8 +402,8 @@ fn add_repository(frame: &mut Frame, modal: &AddRepositoryModal, area: Rect, hit
         vec![checkbox(
             "Import existing worktrees",
             modal.import_worktrees,
-            modal.focus == 1,
-            1,
+            modal.focus == AddRepositoryModal::FOCUS_IMPORT,
+            AddRepositoryModal::FOCUS_IMPORT,
         )],
         false,
     );
@@ -389,11 +414,16 @@ fn add_repository(frame: &mut Frame, modal: &AddRepositoryModal, area: Rect, hit
         vec![
             control(
                 "Add Repository",
-                modal.focus == 2,
+                modal.focus == AddRepositoryModal::FOCUS_ADD,
                 theme::Variant::Primary,
-                2,
+                AddRepositoryModal::FOCUS_ADD,
             ),
-            control("Cancel", modal.focus == 3, theme::Variant::Normal, 3),
+            control(
+                "Cancel",
+                modal.focus == AddRepositoryModal::FOCUS_CANCEL,
+                theme::Variant::Normal,
+                AddRepositoryModal::FOCUS_CANCEL,
+            ),
         ],
         true,
     );
@@ -415,7 +445,13 @@ fn add_worktree(frame: &mut Frame, modal: &AddWorktreeModal, area: Rect, hits: &
 
     column.text(frame, format!("to {}", modal.repo_name), theme::secondary());
     column.line(frame, widgets::section("Worktree Name"));
-    column.input(frame, hits, &modal.name, modal.focus, 0);
+    column.input(
+        frame,
+        hits,
+        &modal.name,
+        modal.focus,
+        AddWorktreeModal::FOCUS_NAME,
+    );
 
     let preview = modal
         .path_preview()
@@ -425,25 +461,39 @@ fn add_worktree(frame: &mut Frame, modal: &AddWorktreeModal, area: Rect, hits: &
 
     column.line(frame, widgets::section("Branch"));
     // Left/Right switch modes here, so the arrows are literal: they light up
-    // only while the toggle holds the focus. The whole row is one control, so
-    // every part of it toggles — which is what Enter on it does too.
-    let toggle_focused = modal.focus == 1;
+    // only while the toggle holds the focus. Each option *selects* itself
+    // rather than toggling the row — Left is "New Branch" and Right is
+    // "Existing" whichever is current, so clicking the option that is already
+    // active does nothing instead of switching away from it.
+    let mode = AddWorktreeModal::FOCUS_MODE;
+    let toggle_focused = modal.focus == mode;
     column.controls(
         frame,
         hits,
         vec![
-            arrow('◂', toggle_focused, 1),
-            control("New Branch", modal.new_branch, theme::Variant::Normal, 1),
-            control("Existing", !modal.new_branch, theme::Variant::Normal, 1),
-            arrow('▸', toggle_focused, 1),
+            arrow('◂', Direction::Previous, toggle_focused, mode),
+            option("New Branch", modal.new_branch, mode, Direction::Previous),
+            option("Existing", !modal.new_branch, mode, Direction::Next),
+            arrow('▸', Direction::Next, toggle_focused, mode),
         ],
         false,
     );
 
-    if modal.new_branch {
-        column.input(frame, hits, &modal.branch, modal.focus, 2);
+    // One input slot either way; only which TextInput fills it depends on
+    // the mode.
+    let branch_input = if modal.new_branch {
+        &modal.branch
     } else {
-        column.input(frame, hits, &modal.search, modal.focus, 2);
+        &modal.search
+    };
+    column.input(
+        frame,
+        hits,
+        branch_input,
+        modal.focus,
+        AddWorktreeModal::FOCUS_BRANCH,
+    );
+    if !modal.new_branch {
         let query = modal.search.value();
         column.text(
             frame,
@@ -455,8 +505,9 @@ fn add_worktree(frame: &mut Frame, modal: &AddWorktreeModal, area: Rect, hits: &
         let space = column.remaining().saturating_sub(2 + BUTTON_HEIGHT) as usize;
         let visible = DROPDOWN_ROWS.min(space);
         let first = modal.search_index.saturating_sub(visible.saturating_sub(1));
-        // The list is one focus stop, index 3, so every row carries that index.
-        let focused = modal.focus == 3;
+        // The list is one focus stop, so every row carries the same index.
+        let results = AddWorktreeModal::FOCUS_RESULTS;
+        let focused = modal.focus == results;
         for (offset, (branch, _)) in matches.iter().skip(first).take(visible).enumerate() {
             let selected = first + offset == modal.search_index;
             let style = match (selected, focused) {
@@ -469,7 +520,7 @@ fn add_worktree(frame: &mut Frame, modal: &AddWorktreeModal, area: Rect, hits: &
                 hits,
                 branch_line(branch, query, style),
                 style,
-                3,
+                results,
                 first + offset,
             );
         }
@@ -478,7 +529,9 @@ fn add_worktree(frame: &mut Frame, modal: &AddWorktreeModal, area: Rect, hits: &
     column.text(frame, modal.error.clone(), theme::destructive());
     column.gap();
 
-    let create = modal.field_count() - 2;
+    // Create and Cancel close the ring, so their indices follow the mode.
+    let create = modal.create_index();
+    let cancel = modal.cancel_index();
     let create_control = if modal.can_create() {
         control(
             "Create Worktree",
@@ -496,9 +549,9 @@ fn add_worktree(frame: &mut Frame, modal: &AddWorktreeModal, area: Rect, hits: &
             create_control,
             control(
                 "Cancel",
-                modal.focus == create + 1,
+                modal.focus == cancel,
                 theme::Variant::Normal,
-                create + 1,
+                cancel,
             ),
         ],
         true,
@@ -554,7 +607,13 @@ fn create_from_issue(frame: &mut Frame, modal: &CreateFromIssueModal, area: Rect
     column.text(frame, modal.issue_title.clone(), theme::muted());
 
     column.line(frame, widgets::section("Worktree Name"));
-    column.input(frame, hits, &modal.name, modal.focus, 0);
+    column.input(
+        frame,
+        hits,
+        &modal.name,
+        modal.focus,
+        CreateFromIssueModal::FOCUS_NAME,
+    );
     column.text(
         frame,
         format!("Path: {}", modal.path_preview().display()),
@@ -562,10 +621,22 @@ fn create_from_issue(frame: &mut Frame, modal: &CreateFromIssueModal, area: Rect
     );
 
     column.line(frame, widgets::section("Branch Name"));
-    column.input(frame, hits, &modal.branch, modal.focus, 1);
+    column.input(
+        frame,
+        hits,
+        &modal.branch,
+        modal.focus,
+        CreateFromIssueModal::FOCUS_BRANCH,
+    );
 
     column.line(frame, widgets::section("Base Branch"));
-    column.input(frame, hits, &modal.base_branch, modal.focus, 2);
+    column.input(
+        frame,
+        hits,
+        &modal.base_branch,
+        modal.focus,
+        CreateFromIssueModal::FOCUS_BASE,
+    );
     // The completion the Textual suggester used to ghost inside the input.
     // Right accepts it, so say so; the row is always reserved to stop the
     // controls below jumping as the user types.
@@ -585,7 +656,12 @@ fn create_from_issue(frame: &mut Frame, modal: &CreateFromIssueModal, area: Rect
     column.controls(
         frame,
         hits,
-        vec![control(&fetch, modal.focus == 3, theme::Variant::Normal, 3)],
+        vec![control(
+            &fetch,
+            modal.focus == CreateFromIssueModal::FOCUS_FETCH,
+            theme::Variant::Normal,
+            CreateFromIssueModal::FOCUS_FETCH,
+        )],
         false,
     );
     column.controls(
@@ -594,24 +670,34 @@ fn create_from_issue(frame: &mut Frame, modal: &CreateFromIssueModal, area: Rect
         vec![checkbox(
             "Pull repo before creating",
             modal.pull_first,
-            modal.focus == 4,
-            4,
+            modal.focus == CreateFromIssueModal::FOCUS_PULL,
+            CreateFromIssueModal::FOCUS_PULL,
         )],
         false,
     );
     column.gap();
 
     let create = if modal.can_create() {
-        control("Create", modal.focus == 5, theme::Variant::Primary, 5)
+        control(
+            "Create",
+            modal.focus == CreateFromIssueModal::FOCUS_CREATE,
+            theme::Variant::Primary,
+            CreateFromIssueModal::FOCUS_CREATE,
+        )
     } else {
-        disabled("Create", 5)
+        disabled("Create", CreateFromIssueModal::FOCUS_CREATE)
     };
     column.controls(
         frame,
         hits,
         vec![
             create,
-            control("Cancel", modal.focus == 6, theme::Variant::Normal, 6),
+            control(
+                "Cancel",
+                modal.focus == CreateFromIssueModal::FOCUS_CANCEL,
+                theme::Variant::Normal,
+                CreateFromIssueModal::FOCUS_CANCEL,
+            ),
         ],
         true,
     );
@@ -628,17 +714,36 @@ fn settings(frame: &mut Frame, modal: &SettingsModal, area: Rect, hits: &mut Hit
         .get(modal.editor_index)
         .map_or("", |(name, _)| *name);
     column.line(frame, widgets::section("DEFAULT EDITOR"));
-    column.controls(frame, hits, vec![cycle(editor, modal.focus == 0, 0)], false);
+    column.controls(
+        frame,
+        hits,
+        vec![cycle(
+            editor,
+            modal.focus == SettingsModal::FOCUS_EDITOR,
+            SettingsModal::FOCUS_EDITOR,
+        )],
+        false,
+    );
 
     column.line(frame, widgets::section("BRANCH PREFIX"));
-    column.input(frame, hits, &modal.branch_prefix, modal.focus, 1);
+    column.input(
+        frame,
+        hits,
+        &modal.branch_prefix,
+        modal.focus,
+        SettingsModal::FOCUS_PREFIX,
+    );
 
     let theme_name = THEMES.get(modal.theme_index).map_or("", |(name, _)| *name);
     column.line(frame, widgets::section("THEME"));
     column.controls(
         frame,
         hits,
-        vec![cycle(theme_name, modal.focus == 2, 2)],
+        vec![cycle(
+            theme_name,
+            modal.focus == SettingsModal::FOCUS_THEME,
+            SettingsModal::FOCUS_THEME,
+        )],
         false,
     );
 
@@ -649,9 +754,9 @@ fn settings(frame: &mut Frame, modal: &SettingsModal, area: Rect, hits: &mut Hit
         hits,
         vec![control(
             "Manage Custom Buttons...",
-            modal.focus == 3,
+            modal.focus == SettingsModal::FOCUS_MANAGE,
             theme::Variant::Normal,
-            3,
+            SettingsModal::FOCUS_MANAGE,
         )],
         false,
     );
@@ -660,8 +765,18 @@ fn settings(frame: &mut Frame, modal: &SettingsModal, area: Rect, hits: &mut Hit
         frame,
         hits,
         vec![
-            control("Save", modal.focus == 4, theme::Variant::Primary, 4),
-            control("Cancel", modal.focus == 5, theme::Variant::Normal, 5),
+            control(
+                "Save",
+                modal.focus == SettingsModal::FOCUS_SAVE,
+                theme::Variant::Primary,
+                SettingsModal::FOCUS_SAVE,
+            ),
+            control(
+                "Cancel",
+                modal.focus == SettingsModal::FOCUS_CANCEL,
+                theme::Variant::Normal,
+                SettingsModal::FOCUS_CANCEL,
+            ),
         ],
         true,
     );
@@ -751,7 +866,13 @@ fn edit_button(frame: &mut Frame, modal: &EditButtonModal, area: Rect, hits: &mu
     let mut column = dialog(frame, rect, modal.title(), theme::title());
 
     column.line(frame, widgets::section("LABEL"));
-    column.input(frame, hits, &modal.label, modal.focus, 0);
+    column.input(
+        frame,
+        hits,
+        &modal.label,
+        modal.focus,
+        EditButtonModal::FOCUS_LABEL,
+    );
     column.text(
         frame,
         "Shown on the button (e.g., 'New Session: YoloDisc')",
@@ -759,7 +880,13 @@ fn edit_button(frame: &mut Frame, modal: &EditButtonModal, area: Rect, hits: &mu
     );
 
     column.line(frame, widgets::section("TMUX PREFIX"));
-    column.input(frame, hits, &modal.prefix, modal.focus, 1);
+    column.input(
+        frame,
+        hits,
+        &modal.prefix,
+        modal.focus,
+        EditButtonModal::FOCUS_PREFIX,
+    );
     column.text(
         frame,
         "Window prefix: <prefix>:<worktree>. Auto-derived from label until you edit it.",
@@ -767,7 +894,13 @@ fn edit_button(frame: &mut Frame, modal: &EditButtonModal, area: Rect, hits: &mu
     );
 
     column.line(frame, widgets::section("COMMAND"));
-    column.input(frame, hits, &modal.command, modal.focus, 2);
+    column.input(
+        frame,
+        hits,
+        &modal.command,
+        modal.focus,
+        EditButtonModal::FOCUS_COMMAND,
+    );
     column.text(
         frame,
         "Run as-is. If it contains --dangerously-skip-permissions the button is styled red.",
@@ -780,8 +913,18 @@ fn edit_button(frame: &mut Frame, modal: &EditButtonModal, area: Rect, hits: &mu
         frame,
         hits,
         vec![
-            control("Save", modal.focus == 3, theme::Variant::Primary, 3),
-            control("Cancel", modal.focus == 4, theme::Variant::Normal, 4),
+            control(
+                "Save",
+                modal.focus == EditButtonModal::FOCUS_SAVE,
+                theme::Variant::Primary,
+                EditButtonModal::FOCUS_SAVE,
+            ),
+            control(
+                "Cancel",
+                modal.focus == EditButtonModal::FOCUS_CANCEL,
+                theme::Variant::Normal,
+                EditButtonModal::FOCUS_CANCEL,
+            ),
         ],
         true,
     );
@@ -864,6 +1007,19 @@ mod tests {
         // Columns are cells, not bytes: the pills and borders are multi-byte.
         let column = line[..byte].chars().count() as u16;
         (column, row as u16)
+    }
+
+    /// What a click on a cell does, resolved the way `App::hit_at` does.
+    fn index_click(hits: &Hits, (column, row): (u16, u16)) -> Option<ModalClick> {
+        hits.iter()
+            .rev()
+            .find(|(rect, _, _)| {
+                column >= rect.x
+                    && column < rect.x + rect.width
+                    && row >= rect.y
+                    && row < rect.y + rect.height
+            })
+            .map(|(_, _, click)| *click)
     }
 
     /// The focus index recorded for a cell, resolved the way `App::hit_at` does.
@@ -992,6 +1148,65 @@ mod tests {
         assert!(checked >= 4, "expected several modals to have buttons");
     }
 
+    /// The other half of the short-terminal contract: what is *not* drawn must
+    /// not be clickable.
+    ///
+    /// Every row that overflows the dialog is pinned to the same three rows at
+    /// the bottom, so each one is painted over by whatever is drawn after it.
+    /// Their hit regions used to survive that, stacked on top of each other —
+    /// an invisible control answering clicks from the margin around the row
+    /// that replaced it. Two controls claiming one cell is the signature, and
+    /// no dialog that fits has any business producing it either.
+    #[test]
+    fn controls_never_claim_the_same_cell_twice() {
+        let mut checked = 0;
+        for (modal, title) in every_modal() {
+            for height in [8, 10, 12, 14, 24] {
+                let (screen, hits) = render_with_hits(&modal, 80, height);
+                checked += 1;
+
+                for (a, first) in hits.iter().enumerate() {
+                    for second in hits.iter().skip(a + 1) {
+                        assert!(
+                            !first.0.intersects(second.0),
+                            "{title} at 80x{height}: focus {} and focus {} both \
+                             claim {:?} ∩ {:?} — one of them is not on screen:\n{screen}",
+                            first.1,
+                            second.1,
+                            first.0,
+                            second.0
+                        );
+                    }
+                }
+            }
+        }
+        assert!(checked >= 20, "expected every modal at every height");
+    }
+
+    /// Clicking the mode option that is already active must not switch away
+    /// from it. Both segments used to carry the row's Enter, which toggles.
+    #[test]
+    fn clicking_the_active_mode_option_keeps_it() {
+        let modal = worktree_modal(true);
+        let (screen, hits) = render_with_hits(&modal, 100, 30);
+
+        let new_branch = index_click(&hits, cell_of(&screen, "New Branch"));
+        let existing = index_click(&hits, cell_of(&screen, "Existing"));
+
+        // Left selects "New Branch", Right selects "Existing" — the same key
+        // whichever mode is current, so re-clicking the active one is a no-op.
+        assert_eq!(
+            new_branch,
+            Some(ModalClick::Cycle(Direction::Previous)),
+            "the New Branch pill does not select New Branch"
+        );
+        assert_eq!(
+            existing,
+            Some(ModalClick::Cycle(Direction::Next)),
+            "the Existing pill does not select Existing"
+        );
+    }
+
     #[test]
     fn add_repository_shows_the_validation_message() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1010,7 +1225,7 @@ mod tests {
             panic!("wrong modal");
         };
         modal.search.set_value("main");
-        modal.focus = 3;
+        modal.focus = AddWorktreeModal::FOCUS_RESULTS;
         let screen = render(&Modal::AddWorktree(modal), 100, 40);
         // Two of the three branches match "main", so the count line says so.
         assert!(screen.contains("2 matches"), "{screen}");
@@ -1064,18 +1279,18 @@ mod tests {
 
     #[test]
     fn clicking_a_modal_control_maps_to_its_focus_index() {
-        // Every index below is the one documented on the modal in `src/modal.rs`;
+        // Every index below is the constant the modal in `src/modal.rs` acts on;
         // a click that focused anything else would act on the wrong control.
         let settings = Modal::Settings(Box::new(SettingsModal::new(&Settings::default())));
         let (screen, hits) = render_with_hits(&settings, 160, 40);
         for (needle, index) in [
-            ("│ ◂ Vim (tmux) ▸ │", 0),
-            ("feat/", 1),
-            ("│ ◂ System ▸ │", 2),
-            ("│ Manage Custom Buttons... │", 3),
+            ("│ ◂ Vim (tmux) ▸ │", SettingsModal::FOCUS_EDITOR),
+            ("feat/", SettingsModal::FOCUS_PREFIX),
+            ("│ ◂ System ▸ │", SettingsModal::FOCUS_THEME),
+            ("│ Manage Custom Buttons... │", SettingsModal::FOCUS_MANAGE),
             // Short labels are padded out to Textual's `min-width: 10`.
-            ("│  Save  │", 4),
-            ("│ Cancel │", 5),
+            ("│  Save  │", SettingsModal::FOCUS_SAVE),
+            ("│ Cancel │", SettingsModal::FOCUS_CANCEL),
         ] {
             assert_eq!(
                 index_at(&hits, cell_of(&screen, needle)),
@@ -1089,16 +1304,23 @@ mod tests {
         let (column, row) = cell_of(&screen, "│  Save  │");
         for offset in [-1i16, 0, 1] {
             let y = row.saturating_add_signed(offset);
-            assert_eq!(index_at(&hits, (column, y)), Some(4), "row {y}:\n{screen}");
+            assert_eq!(
+                index_at(&hits, (column, y)),
+                Some(SettingsModal::FOCUS_SAVE),
+                "row {y}:\n{screen}"
+            );
         }
 
         let add = Modal::AddRepository(AddRepositoryModal::new());
         let (screen, hits) = render_with_hits(&add, 100, 20);
         for (needle, index) in [
-            ("Enter path or paste", 0),
-            ("│ [ ] Import existing worktrees │", 1),
-            ("│ Add Repository │", 2),
-            ("│ Cancel │", 3),
+            ("Enter path or paste", AddRepositoryModal::FOCUS_PATH),
+            (
+                "│ [ ] Import existing worktrees │",
+                AddRepositoryModal::FOCUS_IMPORT,
+            ),
+            ("│ Add Repository │", AddRepositoryModal::FOCUS_ADD),
+            ("│ Cancel │", AddRepositoryModal::FOCUS_CANCEL),
         ] {
             assert_eq!(
                 index_at(&hits, cell_of(&screen, needle)),
@@ -1133,12 +1355,16 @@ mod tests {
     fn branch_rows_are_clickable() {
         let (screen, hits) = render_with_hits(&worktree_modal(false), 100, 40);
         // The dropdown is a single focus stop, so every visible row records a
-        // region against index 3 — the results list.
-        let rows = hits.iter().filter(|(_, index, _)| *index == 3).count();
+        // region against the results-list index.
+        let results = AddWorktreeModal::FOCUS_RESULTS;
+        let rows = hits
+            .iter()
+            .filter(|(_, index, _)| *index == results)
+            .count();
         assert_eq!(rows, 3, "one region per visible branch:\n{screen}");
         assert_eq!(
             index_at(&hits, cell_of(&screen, "origin/main")),
-            Some(3),
+            Some(results),
             "{screen}"
         );
     }
