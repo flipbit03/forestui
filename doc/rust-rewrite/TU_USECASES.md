@@ -1574,14 +1574,13 @@ frames — most of them are invisible in a frame diff.
 
 | | Textual | ratatui |
 |---|---|---|
-| Sidebar tree | `▼` arrows, repositories collapse | flat list, no collapse |
 | Sidebar guides | tree guide *and* a hand-drawn prefix, so a worktree reads `└ └─  wt-a` | one prefix, `└─ wt-a` |
-| Sidebar branch | swallowed by console-markup parsing | shown, as intended |
+| Sidebar branch | swallowed by console-markup parsing | shown only when it says something the name does not (`hot [release-2]`); a branch that is just `<prefix><name>` again is omitted |
 | Sidebar cursor | nothing highlighted until the cursor is first moved | the selected row is highlighted from boot |
 | Selects | dropdown overlay | `◂ value ▸` cycled with Left/Right |
 | Footer | `a` first, because Textual lists the focused widget's bindings ahead of the app's; includes `^p` command palette | fixed order; no command palette |
 | Button labels | carry a vestigial leading space (`Button(" Editor")`), so every box is a cell wider | no leading space |
-| `↓ Git Pull` | one space after the glyph | two, because `⟳` is double-width in some terminals |
+| Git Pull glyph | `⟳` padded with two spaces (the glyph is double-width in some terminals) | `↓` with one space — `⟳` is missing from every common monospace font and renders as tofu without a fallback chain |
 
 Everything else in the detail pane, the sidebar header box and the modals is
 matched deliberately, down to the blank rows Textual's margins produced. If a

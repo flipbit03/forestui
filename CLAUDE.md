@@ -90,7 +90,7 @@ Always run `make check` before committing changes.
 
 ### Immediate-mode UI
 ratatui redraws the whole frame every event; there are no persistent widget
-objects and no CSS. Two consequences shape the code:
+objects and no CSS. Three consequences shape the code:
 
 1. **Focus is an index, not a widget.** `app/detail.rs::content()` walks the
    current selection once and produces the pane's full node list — text, cards,
@@ -98,6 +98,13 @@ objects and no CSS. Two consequences shape the code:
    focusable items from that list and `ui/detail.rs` renders the same list, so
    item N on screen is item N in the key handler *by construction*. To add or
    move a control, change the content walk; both consumers follow automatically.
+
+   Activation goes through one more indirection: each frame the renderer
+   snapshots the drawn items onto `App::drawn_items` (with each control's
+   enabled bit), and a click or `Enter` resolves against that snapshot — never
+   against a freshly derived list, which a background event drained in the same
+   batch may already have reshaped. The snapshot is what was on screen, which
+   is what the user acted on; a control drawn as disabled must not fire.
 2. **Layout is `Layout`/`Constraint`, not stylesheets.** Sizes are computed per
    frame; nothing is "auto height".
 3. **Mouse support is manual.** There is no widget tree to hit-test against, so
@@ -138,6 +145,19 @@ scanning session files):
 
 Late results must be discarded when the selection has moved on — compare the
 event's `path` against the current one before applying it.
+
+**The main loop is the single writer of `.forestui-config.json`.** Background
+tasks never load or save state themselves — they send their results as data
+(`WorktreeAdded`, `WorktreesImported`, `WorktreeRenamed`) and `App::handle_event`
+folds them in and persists. Two writers means last-write-wins, and a user
+action mid-flight silently clobbers the task's save. Success toasts belong in
+the fold, not the task: a result the fold drops must not be announced.
+
+**The tick must earn its repaints.** Ticks arrive ten times a second; an idle
+frame repaints once a second (matching the second granularity of the relative
+times on screen) and at full rate only while a spinner is actually visible.
+Anything animated that is added later has to mark the frame dirty from
+`App::on_tick`, or it freezes; anything that is not visibly changing must not.
 
 ### Services
 Services are free functions in modules, not singletons. Shared caches (the
@@ -196,6 +216,11 @@ filenames and JSON schemas the Python build used, so a user can move between
 builds without losing state. Every field is `#[serde(default)]` so partial and
 older files load cleanly. **Do not rename or restructure these fields.**
 
+Both files are written via `util::write_atomically` (sibling temp file +
+rename). A corrupt config deliberately loads as *empty* state so a bad byte
+never blocks startup — which is exactly why the write itself must never be
+able to produce a torn file.
+
 ### Coexistence with forest (macOS)
 - forestui uses `.forestui-config.json`
 - forest uses `.forest-config.json`
@@ -217,6 +242,13 @@ older files load cleanly. **Do not rename or restructure these fields.**
 3. Handle it in `App::run_action` in `src/app/actions.rs`
 4. If it needs a new visual shape (not a boxed control), add a `DetailNode`
    variant and render it in `render_node` in `src/ui/detail.rs`
+
+### Adding a Key Binding
+1. Add it to `BINDINGS` in `src/app/keys.rs` if it should appear in the footer
+   (the footer is Textual-parity: think before growing it), or to
+   `EXTRA_BINDINGS` if only the `?` help toast should list it — both derive
+   from these tables, so there is no second list to update
+2. Handle the key in the `handle_key` match in the same file
 
 ### Adding a Modal
 1. Add the state struct and its `handle_key` to `src/modal.rs`, declaring a
@@ -250,11 +282,13 @@ interactions, or UI regressions. Use the `test-forestui` skill to drive forestui
 in a headless terminal with `tu` and verify the change works. Do this
 proactively, not only when asked.
 
-`doc/rust-rewrite/TU_USECASES.md` is the acceptance playbook: 77 numbered
+`doc/rust-rewrite/TU_USECASES.md` is the acceptance playbook: 94 numbered
 scenarios with exact keystrokes and expected output. The P0 cases are the
 regression suite — run the relevant ones after any behavioural change.
 
-UC-53–70 are automated. Capture a build and compare two builds with:
+UC-53–70, the flow cases UC-78–84/86, and the guards UC-90/96 are automated —
+frames plus on-disk assertions (`ASSERTIONS.txt`). Capture a build and compare
+two builds with:
 
 ```bash
 scripts/tu-sweep.sh rust ./target/release/forestui
@@ -262,9 +296,12 @@ scripts/tu-compare.sh rust python
 scripts/tu-composite.sh rust python   # side-by-side PNGs, one per case
 ```
 
-Compare the Python build against the **installed release** (`uv tool install
-forestui`, currently 1.3.0), not a source checkout — that is the build users
-actually ran, and it is the reference the frames are diffed against.
+The committed `baseline/python/` frames are a **frozen reference**, captured
+from the installed 1.3.0 release (the build users actually ran). That release
+is no longer installed here, so treat those frames as read-only history:
+re-sweep `rust` freely, never regenerate `python`. `tu-compare.sh` works from
+the committed frames; `tu-composite.sh` needs PNGs from a live sweep of both
+builds, which the Python side can no longer produce.
 
 Each case writes a normalised text frame to
 `doc/rust-rewrite/baseline/<build>/` (committed — this is the diffable
@@ -288,8 +325,12 @@ The harness waits on screen conditions, never fixed sleeps — Textual repaints
 far slower than ratatui, and fixed sleeps produced false mismatches. Anything
 added to the sweep must use `await <regex>`.
 
-Note that `ensure_tmux` re-executes the binary, so for `tu` runs you must build
-first (`cargo build`) and point `$FUI_CMD` at `target/debug/forestui`.
+Note that `ensure_tmux` re-executes the binary, so for `tu` runs you must
+build first and pass the built binary's path as the sweep's command argument
+(e.g. `scripts/tu-sweep.sh rust ./target/release/forestui`) — `cargo run` does
+not work under `tu`. Pass an absolute path when the tu session's working
+directory is not the repo. Run only one tu-driving script at a time:
+concurrent drivers corrupt each other's sessions.
 
 ## Versioning
 
@@ -314,8 +355,9 @@ gh release create v0.10.0 --generate-notes
 ```
 
 This triggers the release workflow, which stamps the version from the tag,
-builds binaries for macOS (arm64, x86_64) and Linux (x86_64), attaches them to
-the release, and publishes to crates.io.
+builds the static musl binaries for Linux (x86_64, aarch64) and the macOS
+Apple-silicon binary, attaches them to the release with their checksums, and
+publishes to crates.io.
 
 ## Git Commits
 

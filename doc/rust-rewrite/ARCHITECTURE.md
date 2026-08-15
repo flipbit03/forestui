@@ -302,6 +302,12 @@ tests/
   render.rs             ~120   TestBackend + insta snapshots
 ```
 
+> **Layout update (2026-08-15).** The single `app.rs` proposed here grew to
+> 2,600 lines and was split in #34 into `src/app/{mod,detail,keys,mouse,actions}.rs`,
+> with `app/detail.rs` holding the content walk that both `detail_items()` and
+> the renderer derive from. Line references to `src/app.rs` elsewhere in these
+> documents predate that split.
+
 ≈3.6k lines, versus 6.3k Python. The saving is almost entirely `theme.py` (696 lines of CSS →
 ~40 lines of `Color::Rgb` consts) and the disappearance of per-widget message plumbing.
 

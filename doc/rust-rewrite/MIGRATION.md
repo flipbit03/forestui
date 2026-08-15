@@ -589,6 +589,39 @@ promises); phases 3–6 are the remaining work.
 | R11 | **Non-atomic config writes.** `src/state.rs:52` is a plain `fs::write`; a crash mid-write truncates `.forestui-config.json`. Same as Python, so not a regression — but the port was the moment to fix it, and the loader silently falls back to an empty repository list (`src/state.rs:29-34`), so the damage looks like "all my repos disappeared". | Low | High when it happens | Write to a temp file in the same directory and `rename` — four lines |
 | R12 | **`naturaltime` is a re-implementation, not `humanize`.** `src/util.rs:51-87` matches on the six tested cases but is not the same algorithm; boundary phrasings ("a year ago" vs "1 year ago") can drift from the strings the acceptance blocks recorded. | Medium | Low — cosmetic | Assert the exact strings in the UC-12/UC-16 Expected blocks, or accept a documented divergence |
 
+### Status update (2026-08-15)
+
+The register above is kept as written — it is the review that shaped the port —
+but several rows have since been resolved and the file paths moved when
+`src/app.rs` split into `src/app/{mod,detail,keys,mouse,actions}.rs` (#34):
+
+- **R1, R2 — fixed.** `cli::VERSION` is `env!("CARGO_PKG_VERSION")`, and the
+  unconditional `cargo install` at startup became `version_check` (#32): a
+  cached daily check on a background task, binary-release builds swap
+  themselves in place, cargo installs only report.
+- **R3 — closed (#34).** The pane's items and rendering both derive from one
+  content walk (`app/detail.rs::content`), and activation resolves against the
+  per-frame `App::drawn_items` snapshot, so neither drift nor the
+  list-grew-under-the-cursor race can fire the wrong action.
+- **R4 — closed (#34).** `StateChanged` no longer exists. Background tasks send
+  `WorktreeAdded` / `WorktreesImported` / `WorktreeRenamed`; the main loop is
+  the single writer of the state file and carries the selection explicitly.
+- **R7 — fixed.** The release matrix is musl Linux x86_64 + aarch64 and macOS
+  aarch64, matching `install.sh`, which now verifies checksums.
+- **R10 — largely closed.** Still no `insta`, but the unit suite grew from the
+  port's baseline to 137 tests over `TestBackend`, and `scripts/tu-sweep.sh`
+  diffs committed per-case frames (`baseline/rust/`) — a render regression net
+  the register asked for in different clothes.
+- **R11 — closed (#34).** `util::write_atomically` (sibling temp + rename) for
+  both the state file and `settings.json`.
+- **R12 — accepted.** `naturaldelta` is transcribed from `humanize` with a
+  27-case boundary table test (`src/util.rs`).
+- **R5, R6, R8, R9** — R6 resolved (crate published); R5 exercised by the
+  grouped-session sweep cases (UC-81/82); R8 remains a documentation matter
+  (README tells Python-build users to `uv tool uninstall forestui`); R9 remains
+  open and low-impact.
+
+
 ---
 
 ## 9. Post-merge checklist — cutting the first Rust release
