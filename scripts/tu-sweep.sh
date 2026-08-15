@@ -35,7 +35,11 @@ SESS="sweep-$LABEL"
 
 # tmux refuses long socket paths, so the server dir has to be short.
 TMUXDIR="$(mktemp -d /tmp/fuisweepXXXX)"
-ROOT="$(mktemp -d)"
+# A fixed template, not the platform default: the LOCATION box hugs the path,
+# so the path's *length* is part of every frame that shows it. macOS's default
+# mktemp dir lands under /var/folders/<xx>/<random>/T with a variable-length
+# prefix, which is why committed baselines did not reproduce across machines.
+ROOT="$(mktemp -d /tmp/fui-sweep.XXXXXX)"
 
 cleanup() {
   tu kill --name "$SESS" >/dev/null 2>&1
@@ -190,8 +194,11 @@ root = os.environ["ROOT"]
 text = json.load(sys.stdin)["content"]
 text = text.replace(root, "<ROOT>")
 text = re.sub(r"\b[0-9a-f]{7}\b", "<sha>", text)
-text = re.sub(r"\(\d+ (seconds?|minutes?|hours?|days?) ago\)", "(<rel>)", text)
-text = re.sub(r"\((an?|a) (second|minute|hour|day) ago\)", "(<rel>)", text)
+# Bare or parenthesised: session cards and issue rows print "N days ago"
+# with no parentheses, and an unmasked one rots the committed frames daily.
+text = re.sub(r"\b(\d+|an?) (seconds?|minutes?|hours?|days?|months?|years?) ago\b", "<rel>", text)
+text = re.sub(r"\ba moment ago\b", "<rel>", text)
+text = re.sub(r"\(now\)", "(<rel>)", text)
 text = re.sub(r"dev-\d{4}", "dev-<hhmm>", text)
 # Grouped sessions are named "forestui-<forest>-<pid>", so the pid would
 # otherwise make every run dirty the committed baseline.
@@ -324,8 +331,9 @@ done
 focus_app; press e
 # Nothing new appears — that is the whole point of the case — so there is no
 # screen condition to wait on. `await "edit:alpha"` looked like one but matched
-# the status bar UC-60 already left behind.
-sleep 1.5
+# the status bar UC-60 already left behind. The extra settle also carries the
+# UC-60 editor toast safely past its 5 s expiry before UC-67 captures.
+sleep 2.0
 capture UC-65 window-editor-reused
 focus_app; press t
 await "term:alpha:wt-a:2"; sleep 1.0
@@ -334,10 +342,13 @@ capture UC-66 window-terminal-uniquified
 focus_app; press A; sleep 1.2
 capture UC-67 archived-section-toggle
 focus_app; press h
-await "│ Unarchive │"; sleep 0.8
+# The MANAGE section's box is below the fold at 140x44; what archiving visibly
+# changes is the sidebar, where the worktree moves into the Archived section.
+# The settle also outlives the UC-66 terminal toast, keeping the frame clean.
+await 'wt-a \(alpha\)'; sleep 2.5
 capture UC-68 worktree-archived
 focus_app; press h
-await "│ Archive │"; sleep 0.8
+await '└─ wt-a'; sleep 0.8
 capture UC-69 worktree-unarchived
 
 focus_app; press r; sleep 1.5
