@@ -41,10 +41,12 @@ detect_target() {
     os="$(uname -s)"
     arch="$(uname -m)"
     case "$os/$arch" in
-        Darwin/arm64)  echo "aarch64-apple-darwin" ;;
-        Darwin/x86_64) echo "x86_64-apple-darwin" ;;
-        Linux/x86_64)  echo "x86_64-unknown-linux-gnu" ;;
-        *)             echo "" ;;
+        Darwin/arm64)   echo "aarch64-apple-darwin" ;;
+        Darwin/x86_64)  echo "x86_64-apple-darwin" ;;
+        Linux/x86_64)   echo "x86_64-unknown-linux-gnu" ;;
+        Linux/aarch64)  echo "aarch64-unknown-linux-gnu" ;;
+        Linux/arm64)    echo "aarch64-unknown-linux-gnu" ;;
+        *)              echo "" ;;
     esac
 }
 
@@ -82,6 +84,28 @@ else
 
         info "Downloading forestui $VERSION..."
         if curl -fsSL "$URL" -o "$TMPDIR/$ARCHIVE"; then
+            # The release publishes a checksum beside every archive; an install
+            # script that downloads a binary and runs it should check it rather
+            # than trust whatever arrived over the wire.
+            if curl -fsSL "$URL.sha256" -o "$TMPDIR/$ARCHIVE.sha256"; then
+                SHA_TOOL=""
+                if check_command shasum; then
+                    SHA_TOOL="shasum -a 256"
+                elif check_command sha256sum; then
+                    SHA_TOOL="sha256sum"
+                fi
+
+                if [ -z "$SHA_TOOL" ]; then
+                    warn "Neither shasum nor sha256sum found; skipping verification."
+                elif ( cd "$TMPDIR" && $SHA_TOOL -c "$ARCHIVE.sha256" ) >/dev/null 2>&1; then
+                    info "Checksum verified."
+                else
+                    error "Checksum mismatch for $ARCHIVE. Refusing to install."
+                fi
+            else
+                warn "No published checksum for $ARCHIVE; skipping verification."
+            fi
+
             tar -xzf "$TMPDIR/$ARCHIVE" -C "$TMPDIR"
             mkdir -p "$INSTALL_DIR"
             install -m 755 "$TMPDIR/forestui" "$INSTALL_DIR/forestui"
