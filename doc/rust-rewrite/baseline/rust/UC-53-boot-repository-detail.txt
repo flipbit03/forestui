@@ -3,7 +3,7 @@
      gh cli: ok (sweep-user)      │
 ──────────────────────────────────│  MAIN REPOSITORY
 ▼ alpha                           │  Repository: alpha
-└─ wt-a [feat/wt-a]               │  Branch:     main
+└─ wt-a                           │  Branch:     main
   beta                            │  Commit:     <sha> (<rel>)
                                   │
                                   │  ┌─────────────────────────┐ ┌──────────────┐

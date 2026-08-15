@@ -39,6 +39,7 @@ forestui/
 │   ├── state.rs              # Persisted repositories (.forestui-config.json)
 │   ├── theme.rs              # Colour palette and shared styles
 │   ├── util.rs               # Paths, slugs, relative times, fuzzy branch search
+│   ├── version_check.rs      # Startup self-update (see below)
 │   ├── ui/
 │   │   ├── mod.rs            # draw(): layout, header, footer, notifications
 │   │   ├── sidebar.rs        # Repository/worktree tree
@@ -100,7 +101,16 @@ objects and no CSS. Two consequences shape the code:
    against that list (last recorded wins, so a modal takes clicks from the panes
    it covers). A control that is drawn but never recorded is dead to the mouse —
    that was a real regression: the first Rust build enabled no mouse capture at
-   all and every click did nothing. `main.rs` must keep `EnableMouseCapture`.
+   all and every click did nothing.
+
+   `main.rs` writes the mouse modes by hand rather than using crossterm's
+   `EnableMouseCapture`, and **must keep `?1003h` (any-motion) among them** —
+   without it the terminal never reports a bare pointer move, so hover becomes
+   impossible rather than merely unstyled. Motion is affordable because
+   `App::handle_mouse` sets `App::redraw` only when the *hovered target changes*.
+   That gate is what stops a moving mouse repainting the app continuously;
+   removing it brings back the flicker that motion reporting was first disabled
+   for.
 
 Controls are drawn with `ui::button()`, which renders a filled pill with rounded
 half-block caps so they read as buttons rather than plain labels. Use
@@ -136,6 +146,32 @@ fast switching between editor, app, and Claude windows.
 
 The re-exec uses `std::env::current_exe()`, so a `cargo run` build re-launches
 itself rather than whatever `forestui` happens to be on `PATH`.
+
+### Self-update
+forestui keeps itself current the way the Python build did — automatically, on
+launch — but never on the UI thread. `App::check_for_update` spawns the check
+once the terminal is up, and the only visible result is a notification after a
+new version is already in place.
+
+What it does depends on how the binary got there:
+
+- **From a GitHub release** — built with `--features binary-release`, so it
+  downloads the asset for its platform and renames it over `current_exe()`.
+  Replacing the file under a running process is safe on Unix; the new build
+  takes effect on the next launch.
+- **From `cargo install`** — the feature is off, so it only reports that a newer
+  version exists. Recompiling a crate underneath a running TUI is not something
+  to do unasked.
+- **From source** (version `0.0.0`) — nothing at all, which is what stops
+  `cargo run` in a checkout from overwriting itself.
+
+`--no-self-update` skips the check. The answer is cached for 24h in
+`~/.config/forestui/latest_version_check.json`, so this is not a network call on
+every launch.
+
+`release_asset_url` must keep producing `forestui_<os>_<arch>`, matching
+`install.sh` and the release workflow. Drift there is a silent 404 on every
+update, which is why a test asserts the shape.
 
 ### Multi-Forest Support
 The forest directory is a CLI argument, not a setting:

@@ -3,7 +3,7 @@
      gh cli: ok (sweep-user)      │
 ──────────────────────────────────│  WORKTREE
 ▼ alpha                           │  Repository: alpha
-└─ wt-a [feat/wt-a]               │  Worktree:   wt-a
+└─ wt-a                           │  Worktree:   wt-a
   beta                            │  Branch:     feat/wt-a
                                   │  Based on:   main (<sha>)
                                   │  Commit:     <sha> (<rel>)
