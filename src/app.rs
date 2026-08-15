@@ -93,6 +93,19 @@ impl ScrollbarGeom {
     }
 }
 
+/// The branch to show beside a worktree name, or `None` when it only repeats it.
+///
+/// `w` creates `<branch_prefix><name>`, which is the overwhelmingly common case,
+/// so showing it back costs a third of the sidebar and tells the user nothing. A
+/// branch that genuinely differs — an existing branch checked out under another
+/// name — is worth the space.
+fn informative_branch(branch: &str, name: &str, prefix: &str) -> Option<String> {
+    if branch == name || branch == format!("{prefix}{name}") {
+        return None;
+    }
+    Some(branch.to_string())
+}
+
 /// Is this cell inside that rectangle?
 fn contains(rect: ratatui::layout::Rect, column: u16, row: u16) -> bool {
     column >= rect.x
@@ -122,7 +135,11 @@ pub enum SidebarRow {
         repo_id: Uuid,
         id: Uuid,
         name: String,
-        branch: String,
+        /// The branch, when it says something the name does not. A worktree
+        /// created here is `<branch_prefix><name>`, so printing that beside the
+        /// name is pure repetition — and in a 35-column sidebar the repetition
+        /// is what gets truncated, leaving every row ending in `[feat/doc-impro`.
+        branch: Option<String>,
         is_last: bool,
     },
     ArchivedHeader,
@@ -283,6 +300,9 @@ pub struct App {
     pub scroll_drag: Option<u16>,
     /// Repositories folded shut in the sidebar.
     pub collapsed: std::collections::HashSet<Uuid>,
+    /// Whether to check for a newer release at startup; `--no-self-update`
+    /// clears it.
+    pub self_update: bool,
 
     pub name_input: TextInput,
     pub branch_input: TextInput,
@@ -332,6 +352,7 @@ impl App {
             scrollbar: None,
             scroll_drag: None,
             collapsed: std::collections::HashSet::new(),
+            self_update: true,
             name_input: TextInput::new(""),
             branch_input: TextInput::new(""),
             rename_target: None,
@@ -362,6 +383,30 @@ impl App {
         }
         self.reload_detail();
         self.load_gh_status();
+        if self.self_update {
+            self.check_for_update();
+        }
+    }
+
+    /// Keep the binary current, the way the Python build did on every launch.
+    ///
+    /// Deliberately fire-and-forget on a background task: the UI is already up
+    /// by the time this runs, so a slow or unreachable GitHub costs nothing but
+    /// a notification that never arrives. Failures are silent for the same
+    /// reason — being offline is the common case, and it is not the user's
+    /// problem to solve mid-session.
+    fn check_for_update(&self) {
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            if let Ok(Some(version)) = crate::version_check::update_if_stale().await {
+                let message = if crate::version_check::installs_in_place() {
+                    format!("forestui v{version} installed — restart to use it")
+                } else {
+                    format!("forestui v{version} is available — `cargo install forestui`")
+                };
+                tx.notify(message, Severity::Information);
+            }
+        });
     }
 
     fn load_gh_status(&self) {
@@ -393,7 +438,11 @@ impl App {
                     repo_id: repo.id,
                     id: worktree.id,
                     name: worktree.name.clone(),
-                    branch: worktree.branch.clone(),
+                    branch: informative_branch(
+                        &worktree.branch,
+                        &worktree.name,
+                        &self.settings.branch_prefix,
+                    ),
                     is_last: index == last_index,
                 });
             }
@@ -2514,6 +2563,25 @@ mod tests {
         })));
 
         assert!(app.redraw, "the tick's repaint was swallowed by the move");
+    }
+
+    /// The sidebar's branch column earns its space or does not appear.
+    #[test]
+    fn only_a_branch_that_differs_from_the_name_is_shown() {
+        // What `w` creates: prefix + name, and so pure repetition.
+        assert_eq!(informative_branch("feat/wt-a", "wt-a", "feat/"), None);
+        // No prefix configured.
+        assert_eq!(informative_branch("wt-a", "wt-a", ""), None);
+        // An existing branch checked out under a different worktree name.
+        assert_eq!(
+            informative_branch("release-2", "hotfix", "feat/"),
+            Some("release-2".to_string())
+        );
+        // Same name, different prefix — still worth showing.
+        assert_eq!(
+            informative_branch("bugfix/wt-a", "wt-a", "feat/"),
+            Some("bugfix/wt-a".to_string())
+        );
     }
 
     /// Folding a repository hides its worktrees without moving the selection.

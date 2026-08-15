@@ -29,11 +29,11 @@ forestui brings Git worktree management to the terminal with a TUI built on
 
 ### Quick Install (recommended)
 
-Downloads a prebuilt binary, falling back to a source build when no binary
-matches your platform.
+Downloads the prebuilt binary for your platform and verifies its published
+checksum before installing.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/flipbit03/forestui/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/flipbit03/forestui/main/install.sh | sh
 ```
 
 ### Install with cargo
@@ -42,15 +42,39 @@ curl -fsSL https://raw.githubusercontent.com/flipbit03/forestui/main/install.sh 
 cargo install forestui --locked
 ```
 
-Prebuilt binaries are published for `aarch64-apple-darwin`,
-`x86_64-apple-darwin`, and `x86_64-unknown-linux-gnu`. Every other platform
-builds from source with `cargo install`.
+Prebuilt binaries are published for:
+
+| Platform | Target |
+|---|---|
+| Linux x86_64 | `x86_64-unknown-linux-musl` |
+| Linux aarch64 | `aarch64-unknown-linux-musl` |
+| macOS Apple silicon | `aarch64-apple-darwin` |
+
+The Linux binaries are statically linked, so they carry no glibc floor and run
+anywhere. Intel Macs and every other platform build from source with
+`cargo install forestui`.
 
 ### Updating
 
-```bash
-cargo install forestui --locked   # or re-run install.sh
+forestui keeps itself up to date. It checks for a new release in the background
+after the UI is up — never blocking startup — and tells you once a newer version
+is in place:
+
 ```
+forestui v2.0.1 installed — restart to use it
+```
+
+A binary installed from a release replaces itself. One installed with
+`cargo install` reports the new version instead of recompiling underneath you,
+so you can update when it suits:
+
+```bash
+cargo install forestui --locked
+```
+
+Pass `--no-self-update` to skip the check entirely. The result is cached for a
+day, so this is not a network call on every launch, and a build from source
+(version `0.0.0`) never updates itself at all.
 
 > **Migrating from the Python build.** forestui was a Python/Textual
 > application through v0.9.x. The Rust rewrite reads the same config files, so
@@ -101,10 +125,17 @@ manager uses `a` add, `e` edit, `d` delete, `K` / `J` reorder, `s` save.
 
 ### Mouse
 
-The mouse works everywhere the keyboard does: click a repository or worktree in
-the sidebar to select it, click a control in the detail pane to run it, click a
-field to focus it, and click any modal button. The scroll wheel moves the
-focused pane.
+The mouse works everywhere the keyboard does. Controls light up as the pointer
+crosses them, so what is clickable is visible rather than guessed at:
+
+- **Click** a repository or worktree in the sidebar, a control in the detail
+  pane, a field to focus it, any modal button, or a key in the footer bar —
+  clicking `s Settings` there is the same as pressing `s`.
+- **The `▼` / `▶` twisty** beside a repository folds its worktrees away without
+  changing what is selected.
+- **The scroll wheel** scrolls whichever pane the pointer is over, whether or
+  not it holds the keyboard focus.
+- **The scrollbar** can be dragged, and clicking its track pages to that point.
 
 ### TUI Editor Integration
 

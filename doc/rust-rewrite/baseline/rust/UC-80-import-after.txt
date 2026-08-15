@@ -6,9 +6,9 @@
 └─ wt-a-renamed [feat/wt-a-v2]    │  Branch:     main
   beta                            │  Commit:     <sha> (<rel>)
 ▼ gamma                           │
-└─ gamma-imported [feat/imported] │  ┌─────────────────────────┐ ┌──────────────┐
-                                  │  │ ⟳  Git Pull (No remote) │ │ Add Worktree │
-                                  │  └─────────────────────────┘ └──────────────┘
+└─ gamma-imported [feat/imported] │  ┌────────────────────────┐ ┌──────────────┐
+                                  │  │ ↓ Git Pull (No remote) │ │ Add Worktree │
+                                  │  └────────────────────────┘ └──────────────┘
                                   │
                                   │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │

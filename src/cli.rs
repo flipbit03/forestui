@@ -24,8 +24,8 @@ pub struct Args {
     /// Path to the forest directory (default: ~/forest)
     pub forest_path: Option<String>,
 
-    /// Accepted for compatibility with the Python build; the Rust build never
-    /// self-updates, so this is a no-op.
+    /// Skip the startup update check. forestui otherwise keeps itself current
+    /// the way the Python build did, in the background once the UI is up.
     #[arg(long = "no-self-update")]
     pub no_self_update: bool,
 

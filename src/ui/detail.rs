@@ -644,17 +644,22 @@ fn commit_line(pane: &mut Pane, app: &App) {
     pane.text(text, theme::muted());
 }
 
-/// The `⟳ Git Pull` control. Disabled when there is no remote to pull from, or
+/// The `↓ Git Pull` control. Disabled when there is no remote to pull from, or
 /// — for worktrees — when the directory is gone.
+///
+/// The Textual build used `⟳` (U+27F3). It is a poor choice for a terminal: no
+/// monospace font checked here carries it — not DejaVu Sans Mono, Liberation
+/// Mono, Noto Mono, Ubuntu Mono, nor the JetBrains Mono the screenshot tooling
+/// embeds — so it lands as a `.notdef` box wherever the terminal has no font
+/// fallback to lean on. `↓` is in every one of them, is single-width rather than
+/// ambiguous, and says the same thing more plainly: a pull brings work down.
 fn sync_control(app: &App, missing_directory: bool) -> Control {
-    // Two spaces after the glyph: ⟳ is double-width in many terminals, and with a
-    // single space it eats the gap and the label reads as "⟳Git Pull".
     if missing_directory {
-        Control::disabled("⟳  Git Pull (Directory missing)")
+        Control::disabled("↓ Git Pull (Directory missing)")
     } else if app.meta.has_remote {
-        Control::new("⟳  Git Pull", theme::Variant::Normal)
+        Control::new("↓ Git Pull", theme::Variant::Normal)
     } else {
-        Control::disabled("⟳  Git Pull (No remote)")
+        Control::disabled("↓ Git Pull (No remote)")
     }
 }
 

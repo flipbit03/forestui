@@ -98,7 +98,10 @@ jobs:
           sed -i'' -e "/^name = \"forestui\"$/{n;s/^version = \"0.0.0\"/version = \"${VERSION}\"/;}" Cargo.lock
 
       - name: Build binary
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        # `binary-release` is what tells the shipped binary it came from a
+        # release and may replace itself in place; a `cargo install` build
+        # leaves it off and defers to cargo.
+        run: cargo build --release --locked --target ${{ matrix.target }} --features binary-release
 
       # A checksum beside every asset, so `install.sh` can verify what it just
       # downloaded rather than trusting whatever arrived over the wire.
