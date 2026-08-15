@@ -101,7 +101,7 @@ uv at the real cache so the venv is not rebuilt on every run. Harmless for Rust.
 Deterministic test forest: **2 repos** (`alpha` clean with an extra branch and one
 pre-existing worktree, `beta` with a dirty tree), an empty forest dir, and an
 isolated `HOME`. Neither repo has a remote — that is intentional and pins the
-`⟳ Git Pull (No remote)` assertions.
+`↓ Git Pull (No remote)` assertions.
 
 ```bash
 fui_fixture() {
@@ -410,7 +410,7 @@ MAIN REPOSITORY
 Repository: alpha
 Branch:     main
 Commit:     <7-hex> (<humanized time>)
-[ ⟳ Git Pull (No remote) ]  [  Add Worktree ]
+[ ↓ Git Pull (No remote) ]  [  Add Worktree ]
 LOCATION
 <absolute source path>
 OPEN IN
@@ -437,9 +437,9 @@ enabled for a repo with no remote.
 **Steps:**
 1. `tu screenshot --name fui --png -o /tmp/uc13.png`; `Read` it.
 
-**Expected:** the button reads exactly `⟳ Git Pull (No remote)` and is rendered
+**Expected:** the button reads exactly `↓ Git Pull (No remote)` and is rendered
 disabled (dimmed, not focusable).
-**Fails if:** the button says `⟳ Git Pull` and is clickable — pulling a repo with no
+**Fails if:** the button says `↓ Git Pull` and is clickable — pulling a repo with no
 upstream errors out and the app would surface a raw git error.
 
 ---
@@ -489,7 +489,7 @@ Worktree:   wt-two
 Branch:     feat/wt-two
 Based on:   main (<7-hex>)
 Commit:     <7-hex> (<humanized time>)
-[ ⟳ Git Pull (No remote) ]
+[ ↓ Git Pull (No remote) ]
 LOCATION
 <forest>/alpha/wt-two
 OPEN IN
@@ -1009,7 +1009,7 @@ Worktree:   wt-two
 Branch:     feat/wt-two
 ⚠ MISSING:   directory no longer exists on disk
 Based on:   main (<7-hex>)
-[ ⟳ Git Pull (Directory missing) ]      <- disabled
+[ ↓ Git Pull (Directory missing) ]      <- disabled
 LOCATION
 <path>  (missing)                        <- destructive colour
 ```
@@ -1271,7 +1271,7 @@ that the tmux session dies instantly. The Rust build resolves itself through
 **Setup:** harness fixture — repos `alpha` (one worktree `wt-a`) and `beta`, one
 custom Claude button `Opus`.
 **Expected:** `MAIN REPOSITORY`, `Repository: alpha`, `Branch:     main`,
-`Commit:     <sha> (<rel>)`, `⟳ Git Pull (No remote)`.
+`Commit:     <sha> (<rel>)`, `↓ Git Pull (No remote)`.
 **Fails if:** the commit line is missing (fixture has no commits) or the sync
 control is enabled without a remote.
 
@@ -1580,7 +1580,7 @@ frames — most of them are invisible in a frame diff.
 | Selects | dropdown overlay | `◂ value ▸` cycled with Left/Right |
 | Footer | `a` first, because Textual lists the focused widget's bindings ahead of the app's; includes `^p` command palette | fixed order; no command palette |
 | Button labels | carry a vestigial leading space (`Button(" Editor")`), so every box is a cell wider | no leading space |
-| `⟳ Git Pull` | one space after the glyph | two, because `⟳` is double-width in some terminals |
+| `↓ Git Pull` | one space after the glyph | two, because `⟳` is double-width in some terminals |
 
 Everything else in the detail pane, the sidebar header box and the modals is
 matched deliberately, down to the blank rows Textual's margins produced. If a

@@ -10,6 +10,7 @@ mod state;
 mod theme;
 mod ui;
 mod util;
+mod version_check;
 
 use app::App;
 use clap::Parser;
@@ -31,7 +32,7 @@ fn main() -> anyhow::Result<()> {
         .enable_all()
         .build()?;
 
-    let result = runtime.block_on(run());
+    let result = runtime.block_on(run(!args.no_self_update));
 
     if let Err(error) = &result {
         report_crash(error);
@@ -39,9 +40,10 @@ fn main() -> anyhow::Result<()> {
     result
 }
 
-async fn run() -> anyhow::Result<()> {
+async fn run(self_update: bool) -> anyhow::Result<()> {
     let (tx, mut rx) = event::start();
     let mut app = App::new(tx, cli::VERSION.to_string());
+    app.self_update = self_update;
 
     let mut terminal = ratatui::init();
     enable_mouse();

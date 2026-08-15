@@ -17,11 +17,21 @@ exclude = ["doc/", "scripts/", ".github/", ".claude/", "install.sh", "CLAUDE.md"
 name = "forestui"
 path = "src/main.rs"
 
+[features]
+# Enabled only by the release build. It is how the binary knows it came from a
+# GitHub release and may replace itself in place, rather than having been built
+# by `cargo install`, where the update path is cargo's.
+binary-release = []
+
 [dependencies]
 anyhow = "1.0.104"
 chrono = { version = "0.4.45", features = ["serde", "clock"] }
 clap = { version = "4.6.6", features = ["derive"] }
 ratatui = "0.30.2"
+# `default-features = false` + `rustls-tls` drops the native-tls/OpenSSL system
+# dependency, which is what lets the musl release targets link statically.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+semver = "1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 shlex = "1.3.0"
@@ -31,6 +41,8 @@ tokio = { version = "1", features = [
     "process",
     "time",
     "sync",
+    # Staging and renaming the downloaded release binary.
+    "fs",
 ] }
 uuid = { version = "1.24.0", features = ["v4", "serde"] }
 
