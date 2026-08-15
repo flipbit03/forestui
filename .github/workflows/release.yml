@@ -4,78 +4,127 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  binaries:
-    name: Build ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          echo "VERSION=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      # The checked-in version is 0.0.0, which is also what auto-enables dev mode
+      # when running from source. The tag is the only source of truth.
+      - name: Patch version in Cargo.toml
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          sed -i "s/^version = \"0.0.0\"/version = \"${VERSION}\"/" Cargo.toml
+          cargo update --workspace -p forestui
+          grep '^version' Cargo.toml
+
+      - name: Publish
+        run: cargo publish --no-verify --allow-dirty
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - name: Linux x86_64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            asset: forestui_linux_x86_64
+          - name: Linux aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            asset: forestui_linux_aarch64
+          - name: macOS aarch64
+            runner: macos-latest
             target: aarch64-apple-darwin
-          - os: macos-latest
-            target: x86_64-apple-darwin
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-
+            asset: forestui_macos_aarch64
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      # The tag is the source of truth for the version; the checked-in value is 0.0.0.
-      - name: Set version from the tag
-        run: |
-          VERSION="${GITHUB_REF##*/}"
-          VERSION="${VERSION#v}"
-          echo "Setting version to $VERSION"
-          sed -i.bak "0,/^version = \".*\"/s//version = \"$VERSION\"/" Cargo.toml
-          rm -f Cargo.toml.bak
-          grep '^version' Cargo.toml
+      # musl gives a static binary with no glibc floor, so one Linux artifact
+      # runs everywhere rather than only on distros as new as the builder.
+      - name: Install musl-tools (Linux only)
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - name: Build
+      - name: Cache cargo registry & build
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: release-${{ matrix.target }}-cargo-
+
+      - name: Patch version in Cargo.toml
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+          sed -i'' -e "s/^version = \"0.0.0\"/version = \"${VERSION}\"/" Cargo.toml
+
+      - name: Build binary
         run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Package
+      # A checksum beside every asset, so `install.sh` can verify what it just
+      # downloaded rather than trusting whatever arrived over the wire.
+      - name: Rename binary and checksum it
         run: |
-          VERSION="${GITHUB_REF##*/}"
-          ARCHIVE="forestui-${VERSION}-${{ matrix.target }}.tar.gz"
-          tar -czf "$ARCHIVE" -C "target/${{ matrix.target }}/release" forestui
-          shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
-          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+          cp target/${{ matrix.target }}/release/forestui ${{ matrix.asset }}
+          shasum -a 256 ${{ matrix.asset }} > ${{ matrix.asset }}.sha256
 
-      - name: Upload to the release
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.sha256
+
+  release:
+    name: Upload release binaries
+    needs: [publish, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Upload binaries to release
+        run: gh release upload "${{ github.event.release.tag_name }}" artifacts/forestui_*
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${GITHUB_REF##*/}" "$ARCHIVE" "$ARCHIVE.sha256" --clobber
-
-  crates-io:
-    name: Publish to crates.io
-    runs-on: ubuntu-latest
-    needs: binaries
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Set version from the tag
-        run: |
-          VERSION="${GITHUB_REF##*/}"
-          VERSION="${VERSION#v}"
-          sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" Cargo.toml
-          grep '^version' Cargo.toml
-
-      - name: Publish
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --allow-dirty
