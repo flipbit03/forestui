@@ -68,25 +68,60 @@ pub fn cursor_unfocused() -> Style {
     Style::default().bg(BG_SELECTED).fg(TEXT_PRIMARY)
 }
 
-/// Background of a control ("button"), also used to draw its rounded caps.
+/// Which of Textual's button variants a control carries.
 ///
-/// The unfocused destructive shade matches the Textual build's
-/// `Button.-destructive` background, so a Delete button still reads as dangerous
-/// when the cursor is elsewhere.
-pub fn action_bg(focused: bool, destructive_action: bool) -> Color {
-    match (focused, destructive_action) {
-        (true, true) => Color::Rgb(0x4D, 0x28, 0x28),
-        (true, false) => ACCENT_DARK,
-        (false, true) => Color::Rgb(0x3D, 0x20, 0x20),
-        (false, false) => BG_ELEVATED,
+/// `Primary` is `Button.-primary` — the accent pair the Textual build put on
+/// "New Session" and every non-YOLO custom button. Without it those read as
+/// ordinary buttons, which is a real difference: the green is how the safe
+/// Claude action is told apart from the red one beside it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Variant {
+    #[default]
+    Normal,
+    Primary,
+    Destructive,
+}
+
+impl Variant {
+    /// `-destructive` for a YOLO-style action, `-primary` otherwise — the split
+    /// `repository_detail.py` made from `CustomClaudeButton.is_yolo_style`.
+    pub fn claude(yolo: bool) -> Self {
+        if yolo {
+            Self::Destructive
+        } else {
+            Self::Primary
+        }
+    }
+
+    pub fn is_destructive(self) -> bool {
+        self == Self::Destructive
+    }
+}
+
+/// `Button.-destructive { background: #3d2020 }`.
+const DESTRUCTIVE_BG: Color = Color::Rgb(0x3D, 0x20, 0x20);
+/// `Button.-destructive { border: solid #5a3030 }`.
+const DESTRUCTIVE_BORDER: Color = Color::Rgb(0x5A, 0x30, 0x30);
+
+/// Background of a control ("button"). It depends only on the variant.
+///
+/// Textual's `Button:focus` changed the *border* and nothing else, so focus must
+/// not touch the fill here either: tinting a focused plain button with the
+/// accent would make it indistinguishable from a resting `-primary` one, which
+/// is the difference between "the cursor is here" and "this is the safe action".
+pub fn action_bg(variant: Variant) -> Color {
+    match variant {
+        Variant::Normal => BG_ELEVATED,
+        Variant::Primary => ACCENT_DARK,
+        Variant::Destructive => DESTRUCTIVE_BG,
     }
 }
 
 /// Style for an actionable item ("button") in the detail pane.
-pub fn action(focused: bool, destructive_action: bool) -> Style {
+pub fn action(focused: bool, variant: Variant) -> Style {
     let style = Style::default()
-        .bg(action_bg(focused, destructive_action))
-        .fg(if destructive_action {
+        .bg(action_bg(variant))
+        .fg(if variant.is_destructive() {
             DESTRUCTIVE
         } else {
             TEXT_PRIMARY
@@ -95,5 +130,18 @@ pub fn action(focused: bool, destructive_action: bool) -> Style {
         style.add_modifier(Modifier::BOLD)
     } else {
         style
+    }
+}
+
+/// Border of a control's box. `Button:focus { border: solid $accent }` wins over
+/// the variant's own colour, which is the only thing that marks the cursor.
+pub fn action_border(focused: bool, variant: Variant) -> Style {
+    if focused {
+        return Style::default().fg(ACCENT);
+    }
+    match variant {
+        Variant::Normal => border(),
+        Variant::Primary => Style::default().fg(ACCENT),
+        Variant::Destructive => Style::default().fg(DESTRUCTIVE_BORDER),
     }
 }

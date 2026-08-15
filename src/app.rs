@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-pub const NOTIFICATION_TTL: Duration = Duration::from_secs(4);
+/// Textual's `App.NOTIFICATION_TIMEOUT`, which every `notify()` here inherited.
+pub const NOTIFICATION_TTL: Duration = Duration::from_secs(5);
 pub const ISSUE_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 pub const SESSION_LIMIT: usize = 5;
 pub const ISSUE_LIMIT: usize = 10;

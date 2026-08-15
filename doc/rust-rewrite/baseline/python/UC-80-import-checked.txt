@@ -29,7 +29,7 @@
                               │                                                                              │
                               │  Repository Path                                                             │
                               │  ┌────────────────────────────────────────────────────────────────────────┐  │
-                              │  │  olders/q5/_wy0ccmd4lx3khrz8tlz_g2c0000gn/T/tmp.wEMAwIFEfH/src/gamma   │  │
+                              │  │  olders/q5/_wy0ccmd4lx3khrz8tlz_g2c0000gn/T/tmp.XjSJSzbq0w/src/gamma   │  │
                               │  └────────────────────────────────────────────────────────────────────────┘  │
                               │  Repository: gamma                                                           │
                               │  ▊▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▎                                          │
@@ -67,4 +67,4 @@
 
 
 
-[forestui-0:forestui-dev-<hhmm>* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:al>"<host>" <clock>
+[forestui-0:forestui* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:alpha:wt-a  5:yolo:alp>"<host>" <clock>

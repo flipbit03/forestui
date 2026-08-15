@@ -1,4 +1,4 @@
-kirill@4dcd18a4-5639-4fc1-8222-667be7d02158 wt-a %
+<user>@<host> wt-a %
 
 
 
@@ -41,4 +41,4 @@ kirill@4dcd18a4-5639-4fc1-8222-667be7d02158 wt-a %
 
 
 
-[forestui-<pha:wt-a  3:files:alpha:wt-a  4:claude:alpha:wt-a  5:yolo:alpha:wt-a  6:term:alpha:wt-a:2*"<host>" <clock>
+[forestui-<  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:alpha:wt-a  5:yolo:alpha:wt-a  6:term:alpha:wt-a:2*"<host>" <clock>

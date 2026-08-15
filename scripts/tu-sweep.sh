@@ -171,7 +171,8 @@ await() { tu wait --name "$SESS" --text "$1" --timeout "${2:-12000}" >/dev/null 
 capture() {
   local id="$1" slug="$2" sess="${3:-$SESS}"
   tu screenshot --name "$sess" --png -o "$SHOTS/$id-$slug.png" >/dev/null 2>&1
-  tu screenshot --name "$sess" 2>/dev/null | ROOT="$ROOT" python3 -c '
+  tu screenshot --name "$sess" 2>/dev/null \
+    | ROOT="$ROOT" HOST="$(hostname)" HOST_SHORT="$(hostname -s)" WHO="$(id -un)" python3 -c '
 import json, os, re, sys
 root = os.environ["ROOT"]
 text = json.load(sys.stdin)["content"]
@@ -184,7 +185,17 @@ text = re.sub(r"dev-\d{4}", "dev-<hhmm>", text)
 # otherwise make every run dirty the committed baseline.
 text = re.sub(r"(forestui-[a-z0-9-]+?)-\d+\b", r"\1-<pid>", text)
 text = re.sub(r"\d{2}:\d{2} \d{2}-\w{3}-\d{2}", "<clock>", text)
+# tmux prints the machine name in its status bar and the shell prompt inside a
+# terminal window prints `user@host`. These frames are committed and travel to a
+# public PR, so neither the machine nor the account reaches the baseline. Longest
+# first: the short name is a prefix of the FQDN.
+text = text.replace(os.environ["HOST"], "<host>")
+text = text.replace(os.environ["HOST_SHORT"], "<host>")
+text = text.replace(os.environ["WHO"], "<user>")
 text = re.sub(r"\"[0-9a-f-]{8,}\"", "\"<host>\"", text)
+# The Rust build runs from source at 0.0.0 while the Python build is an
+# installed release; masking the version keeps the header comparable.
+text = re.sub(r"forestui v\S+", "forestui v<version>", text)
 print("\n".join(line.rstrip() for line in text.splitlines()))
 ' > "$FRAMES/$id-$slug.txt"
   printf '  %s %s\n' "$id" "$slug"

@@ -1,6 +1,6 @@
- ⭘                                                           forestui v0.0.0
+ ⭘                                                           forestui v<version>
                                   │
-         gh cli: unauth'd         │
+     gh cli: ok (sweep-user)      │
 ──────────────────────────────────│  MAIN REPOSITORY
  ▼  alpha                         │  Repository: alpha
  └ └─  wt-a                       │  Branch:     main
@@ -17,7 +17,7 @@
                                   │  ┌───────────────────────────────────────────────────────────────────────────┐
                                   │  │ <ROOT>/src/alpha │
                                   │  └───────────────────────────────────────────────────────────────────────────┘
-                                  │                                                                                                     ▄▄
+                                  │
                                   │  ─────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
                                   │  OPEN IN
@@ -41,4 +41,4 @@
                                   │  │ session 3: refactor the detail pane so the cards line up                                      │
                                   │
  a Add Repo  q Quit  w Add Worktree  e Editor  t Terminal  o Files  n Claude  y ClaudeYOLO  h Archive  d Delete  s Settings  ? H▏^p palette
-[forestui-0:forestui-dev-<hhmm>*                                                                       "<host>" <clock>
+[forestui-0:forestui*                                                                                           "<host>" <clock>

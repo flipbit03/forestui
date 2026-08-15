@@ -1,44 +1,44 @@
- forestui v0.0.0
-         gh cli: unauth'd           MAIN REPOSITORY
- alpha                            │ Repository: gamma
-└─ wt-a-renamed [feat/wt-a-v2]    │ Branch:     main
- beta                             │ Commit:     <sha> (<rel>)
- gamma                            │ ▐ ⟳  Git Pull (No remote) ▌ ▐ Add Worktree ▌
-└─ gamma-imported [feat/imported] │
-                                  │ ───────────────────────────────────────────────────────────────────────────────────────────────────────
+ ⭘                                                            forestui v<version>
                                   │
-                                  │ LOCATION
-                                  │ ┌───────────────────────────────────────────────────────────────────────────┐
-                                  │ │ <ROOT>/src/gamma │
-                                  │ └───────────────────────────────────────────────────────────────────────────┘
+     gh cli: ok (sweep-user)      │
+──────────────────────────────────│  MAIN REPOSITORY
+ alpha                            │  Repository: gamma
+└─ wt-a-renamed [feat/wt-a-v2]    │  Branch:     main
+ beta                             │  Commit:     <sha> (<rel>)
+ gamma                            │
+└─ gamma-imported [feat/imported] │  ┌─────────────────────────┐ ┌──────────────┐
+                                  │  │ ⟳  Git Pull (No remote) │ │ Add Worktree │
+                                  │  └─────────────────────────┘ └──────────────┘
                                   │
-                                  │ ───────────────────────────────────────────────────────────────────────────────────────────────────────
+                                  │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
-                                  │ OPEN IN
-                                  │ ▐ Editor ▌ ▐ Terminal ▌ ▐ Files ▌
+                                  │  LOCATION
+                                  │  ┌───────────────────────────────────────────────────────────────────────────┐
+                                  │  │ <ROOT>/src/gamma │
+                                  │  └───────────────────────────────────────────────────────────────────────────┘
                                   │
-                                  │ ───────────────────────────────────────────────────────────────────────────────────────────────────────
+                                  │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
-                                  │ CLAUDE
-                                  │ ▐ New Session ▌ ▐ New Session: YOLO ▌ ▐ Opus ▌
+                                  │  OPEN IN
                                   │
-                                  │ RECENT SESSIONS
-                                  │ No sessions found
+                                  │  ┌────────┐ ┌──────────┐ ┌───────┐
+                                  │  │ Editor │ │ Terminal │ │ Files │
+                                  │  └────────┘ └──────────┘ └───────┘
                                   │
-                                  │ ───────────────────────────────────────────────────────────────────────────────────────────────────────
+                                  │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
-                                  │ MY OPEN GITHUB ISSUES ▐ ↻ ▌
-                                  │ No issues found
+                                  │  CLAUDE
                                   │
-                                  │ ───────────────────────────────────────────────────────────────────────────────────────────────────────
+                                  │  ┌─────────────┐ ┌───────────────────┐ ┌──────┐
+                                  │  │ New Session │ │ New Session: YOLO │ │ Opus │
+                                  │  └─────────────┘ └───────────────────┘ └──────┘
                                   │
-                                  │ MANAGE
-                                  │ ▐ Remove Repository ▌
+                                  │  RECENT SESSIONS
+                                  │  No sessions found
                                   │
+                                  │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
-                                  │
-                                  │
-                                  │
+                                  │  MY OPEN GITHUB ISSUES ↻
                                   │
  q  Quit   a  Add Repo   w  Add Worktree   e  Editor   t  Terminal   o  Files   n  Claude   y  ClaudeYOLO   h  Archive   d  Delete   s  Sett
-[forestui-0:forestui-dev-<hhmm>* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:al>"<host>" <clock>
+[forestui-0:forestui-dev-<hhmm>* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:alpha:wt-a  5>"<host>" <clock>

@@ -1,4 +1,20 @@
-claude stub --dangerously-skip-permissions
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Accessing workspace:
+
+ /private<ROOT>/forest/alpha/wt-a
+
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from
+ your team). If not, take a moment to review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ Security guide
+
+ ❯ 1. Yes, I trust this folder
+   2. No, exit
+
+ Enter to confirm · Esc to cancel
 
 
 
@@ -25,20 +41,4 @@ claude stub --dangerously-skip-permissions
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-[forestui-<alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:alpha:wt-a  5:yolo:alpha:wt-a*"<host>" <clock>
+[forestui-<ui- 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:alpha:wt-a  5:yolo:alpha:wt-a*"<host>" <clock>

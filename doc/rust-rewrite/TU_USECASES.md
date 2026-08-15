@@ -1225,11 +1225,17 @@ per case, so the same run against two builds can be diffed mechanically.
 ```bash
 # capture a build
 scripts/tu-sweep.sh rust   ./target/release/forestui
-scripts/tu-sweep.sh python /path/to/py-checkout/.venv/bin/forestui
+scripts/tu-sweep.sh python ~/.local/bin/forestui   # the uv-installed release
 
 # compare two captures
-scripts/tu-compare.sh rust python
+scripts/tu-compare.sh   rust python   # text frames + tmux window lists
+scripts/tu-composite.sh rust python   # side-by-side PNGs, one per case
 ```
+
+Capture the Python side from the **installed release** (`uv tool install
+forestui`), not a source checkout. That is the build users actually ran, and a
+checkout reports a different version and window name without differing in any
+way that matters.
 
 **Screenshot protocol.** Each case writes two artifacts:
 
@@ -1237,6 +1243,12 @@ scripts/tu-compare.sh rust python
 |---|---|---|
 | Text frame | `doc/rust-rewrite/baseline/<build>/UC-NN-<slug>.txt` | yes — this is the diffable baseline |
 | Screenshot | `doc/rust-rewrite/screenshots/<build>/UC-NN-<slug>.png` | no (gitignored) — for eyeballing colour and focus |
+| Composite | `doc/rust-rewrite/screenshots/composite/UC-NN-<slug>.png` | no (gitignored) — the two builds' frames side by side |
+
+A frame diff cannot see colour. A button that lost its accent, a focus ring that
+stopped rendering and a selection highlight in the wrong shade all produce a
+byte-identical text frame, so the composites are the only artifact that catches
+them — read them after any change to `theme.rs` or a renderer.
 
 Text frames are normalised before writing: the temp root, commit SHAs, relative
 times, the dev-mode window timestamp and the tmux clock are masked, so two runs
@@ -1556,15 +1568,23 @@ comparing the two builds side by side noticed first.
 These are consequences of the immediate-mode port and are **not** treated as
 regressions. Any change here is a deliberate decision, not a test failure.
 
+Verify these against the composites (`scripts/tu-composite.sh`), not the text
+frames — most of them are invisible in a frame diff.
+
 | | Textual | ratatui |
 |---|---|---|
-| Controls | bordered boxes, three rows tall | one-row filled pills |
-| Consequence | the repository pane needs scrolling to reach MANAGE | the whole pane fits |
-| Sidebar | `▼` arrows, repositories collapse | flat list, no collapse |
-| Selects | dropdown overlay | `◂ value ▸` cycled with Left/Right |
-| Header | title centred | title left-aligned |
-| Footer | includes `^p` command palette | no command palette |
+| Sidebar tree | `▼` arrows, repositories collapse | flat list, no collapse |
+| Sidebar guides | tree guide *and* a hand-drawn prefix, so a worktree reads `└ └─  wt-a` | one prefix, `└─ wt-a` |
 | Sidebar branch | swallowed by console-markup parsing | shown, as intended |
+| Sidebar cursor | nothing highlighted until the cursor is first moved | the selected row is highlighted from boot |
+| Selects | dropdown overlay | `◂ value ▸` cycled with Left/Right |
+| Footer | `a` first, because Textual lists the focused widget's bindings ahead of the app's; includes `^p` command palette | fixed order; no command palette |
+| Button labels | carry a vestigial leading space (`Button(" Editor")`), so every box is a cell wider | no leading space |
+| `⟳ Git Pull` | one space after the glyph | two, because `⟳` is double-width in some terminals |
+
+Everything else in the detail pane, the sidebar header box and the modals is
+matched deliberately, down to the blank rows Textual's margins produced. If a
+composite shows a difference not listed above, treat it as a regression.
 
 ---
 

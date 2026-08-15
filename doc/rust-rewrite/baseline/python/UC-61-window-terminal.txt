@@ -1,4 +1,4 @@
-kirill@4dcd18a4-5639-4fc1-8222-667be7d02158 wt-a %
+<user>@<host> wt-a %
 
 
 
@@ -41,4 +41,4 @@ kirill@4dcd18a4-5639-4fc1-8222-667be7d02158 wt-a %
 
 
 
-[forestui-0:forestui-dev-<hhmm>- 1:edit:alpha:wt-a  2:term:alpha:wt-a*                                 "<host>" <clock>
+[forestui-0:forestui- 1:edit:alpha:wt-a  2:term:alpha:wt-a*                                                     "<host>" <clock>

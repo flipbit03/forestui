@@ -3,7 +3,7 @@
 use crate::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
@@ -154,22 +154,71 @@ pub fn section(title: &str) -> Line<'static> {
     Line::from(Span::styled(title.to_string(), theme::section_header()))
 }
 
-/// Render a bordered box, returning the inner area to draw into.
-pub fn framed(frame: &mut Frame, area: Rect, title: &str, focused: bool) -> Rect {
-    let border_style = if focused {
-        theme::border_focused()
-    } else {
-        theme::border()
-    };
-    let block = Block::default()
+/// Render a modal's box, returning the inner area to draw into.
+///
+/// `.modal-container { background: $bg-elevated; border: solid $border }` — the
+/// dialog is raised off the page and keeps the resting border colour. It never
+/// takes the focus accent: a dialog is always the focused thing, so an accent
+/// border there would say nothing and compete with the button that has one.
+pub fn framed(frame: &mut Frame, area: Rect, title: &str) -> Rect {
+    boxed(frame, area, title, theme::border(), theme::BG_ELEVATED)
+}
+
+fn boxed(frame: &mut Frame, area: Rect, title: &str, border_style: Style, bg: Color) -> Rect {
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
-        .title(Span::styled(format!(" {title} "), theme::title()))
-        .style(Style::default().bg(theme::BG));
+        .style(Style::default().bg(bg));
+    // An empty title means "no title in the border" — the modals put theirs on
+    // the first content row instead, and a `" "` title would punch a hole in
+    // the top border.
+    if !title.is_empty() {
+        block = block.title(Span::styled(format!(" {title} "), theme::title()));
+    }
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
     inner
+}
+
+/// Rows a [`button_box`] occupies — Textual's `Button { height: 3 }`.
+pub const BUTTON_HEIGHT: u16 = 3;
+/// Narrowest a button may render — Textual's `Button { min-width: 10 }`.
+const BUTTON_MIN_WIDTH: u16 = 10;
+
+/// Rendered width of a [`button_box`]: the label padded a cell either side plus
+/// the two border cells, never under Textual's minimum. Measured rather than
+/// counted, because a label can hold a glyph that is not one cell wide.
+pub fn button_box_width(label: &str) -> u16 {
+    let label = u16::try_from(Span::raw(label).width()).unwrap_or(u16::MAX);
+    label.saturating_add(4).max(BUTTON_MIN_WIDTH)
+}
+
+/// The three rows of a bordered button, in the order they are drawn. The fill
+/// runs under the border cells too, which is what Textual's `border: solid` did.
+/// A label the minimum width has padded out is centred, as Textual centred it.
+pub fn button_box(label: &str, border: Style, text: Style) -> [Vec<Span<'static>>; 3] {
+    let inner = button_box_width(label).saturating_sub(2) as usize;
+    let pad = inner.saturating_sub(Span::raw(label).width());
+    let left = pad / 2;
+    let edge = |left: char, right: char| {
+        vec![Span::styled(
+            format!("{left}{}{right}", "─".repeat(inner)),
+            border,
+        )]
+    };
+    [
+        edge('┌', '┐'),
+        vec![
+            Span::styled("│", border),
+            Span::styled(
+                format!("{}{label}{}", " ".repeat(left), " ".repeat(pad - left)),
+                text,
+            ),
+            Span::styled("│", border),
+        ],
+        edge('└', '┘'),
+    ]
 }
 
 /// Centre a fixed-size rect inside `area`, clamped to the available space.

@@ -70,24 +70,69 @@ pub fn naturaltime(when: DateTime<Utc>) -> String {
 }
 
 /// The bare magnitude phrase used by [`naturaltime`].
+///
+/// A port of `humanize.naturaldelta`, which the Textual build called directly.
+/// Its shape is not obvious and the boundaries are not round numbers — sub-day
+/// units are *rounded* rather than truncated, and anything from 16 days up is
+/// fuzzed into months at 30.5 days each — so it is transcribed rather than
+/// reinvented. Getting this wrong is quiet: every session and issue card grows
+/// a slightly different timestamp than the Python build showed.
 pub fn naturaldelta(secs: u64) -> String {
     const MINUTE: u64 = 60;
     const HOUR: u64 = 60 * MINUTE;
     const DAY: u64 = 24 * HOUR;
 
-    match secs {
-        1 => "a second".into(),
-        s if s < MINUTE => format!("{s} seconds"),
-        s if s < 2 * MINUTE => "a minute".into(),
-        s if s < HOUR => format!("{} minutes", s / MINUTE),
-        s if s < 2 * HOUR => "an hour".into(),
-        s if s < DAY => format!("{} hours", s / HOUR),
-        s if s < 2 * DAY => "a day".into(),
-        s if s < 30 * DAY => format!("{} days", s / DAY),
-        s if s < 60 * DAY => "a month".into(),
-        s if s < 365 * DAY => format!("{} months", s / (30 * DAY)),
-        s if s < 730 * DAY => "a year".into(),
-        s => format!("{} years", s / (365 * DAY)),
+    let total_days = secs / DAY;
+    // `timedelta.seconds` is the remainder below a whole day, not the total.
+    let seconds = secs % DAY;
+    let years = total_days / 365;
+    let days = total_days % 365;
+    // `round(days / 30.5)`, kept in integers as `round(2 * days / 61)`.
+    let months = round_half_even(days * 2, 61);
+
+    if total_days == 0 {
+        return match seconds {
+            0 => "a moment".into(),
+            1 => "a second".into(),
+            s if s < MINUTE => format!("{s} seconds"),
+            s if s < HOUR => match round_half_even(s, MINUTE) {
+                1 => "a minute".into(),
+                60 => "an hour".into(),
+                minutes => format!("{minutes} minutes"),
+            },
+            s => match round_half_even(s, HOUR) {
+                1 => "an hour".into(),
+                24 => "a day".into(),
+                hours => format!("{hours} hours"),
+            },
+        };
+    }
+
+    match (years, days, months) {
+        (0, 1, _) => "a day".into(),
+        (0, _, 0) => format!("{days} days"),
+        (0, _, 1) => "a month".into(),
+        (0, _, 12) => "a year".into(),
+        (0, _, _) => format!("{months} months"),
+        (1, 0, 0) => "a year".into(),
+        (1, 1, 0) => "1 year, 1 day".into(),
+        (1, _, 0) => format!("1 year, {days} days"),
+        (1, _, 1) => "1 year, 1 month".into(),
+        (1, _, 12) => "2 years".into(),
+        (1, _, _) => format!("1 year, {months} months"),
+        _ => format!("{years} years"),
+    }
+}
+
+/// Divide and round half to even, the way Python's `round` does. The tie
+/// matters: 90 seconds is 2 minutes but 150 seconds is also 2, not 3.
+fn round_half_even(value: u64, unit: u64) -> u64 {
+    let quotient = value / unit;
+    let twice_remainder = (value % unit) * 2;
+    if twice_remainder > unit || (twice_remainder == unit && quotient % 2 == 1) {
+        quotient + 1
+    } else {
+        quotient
     }
 }
 
@@ -261,21 +306,54 @@ mod tests {
         assert_eq!(slugify("--a--b--"), "a-b");
     }
 
+    /// Every expectation here was read off `humanize.naturaldelta` itself
+    /// rather than reasoned about, because its boundaries are not where you
+    /// would put them: 16 days is already "a month", 150 seconds is 2 minutes
+    /// and not 3, and 364 days is "a year".
     #[test]
-    fn naturaltime_phrasing() {
+    fn naturaldelta_matches_humanize() {
+        const DAY: u64 = 24 * 60 * 60;
+        let cases: [(u64, &str); 27] = [
+            (1, "a second"),
+            (2, "2 seconds"),
+            (59, "59 seconds"),
+            (60, "a minute"),
+            (89, "a minute"),
+            (90, "2 minutes"),
+            (150, "2 minutes"),
+            (151, "3 minutes"),
+            (1800, "30 minutes"),
+            (3599, "an hour"),
+            (3600, "an hour"),
+            (5400, "2 hours"),
+            (18000, "5 hours"),
+            (86399, "a day"),
+            (86400, "a day"),
+            (108000, "a day"),
+            (129600, "a day"),
+            (2 * DAY, "2 days"),
+            (5 * DAY, "5 days"),
+            (15 * DAY, "15 days"),
+            (16 * DAY, "a month"),
+            (45 * DAY, "a month"),
+            (46 * DAY, "2 months"),
+            (200 * DAY, "7 months"),
+            (364 * DAY, "a year"),
+            (366 * DAY, "1 year, 1 day"),
+            (1000 * DAY, "2 years"),
+        ];
+        for (secs, expected) in cases {
+            assert_eq!(naturaldelta(secs), expected, "at {secs} seconds");
+        }
+    }
+
+    #[test]
+    fn naturaltime_adds_tense() {
         let now = Utc::now();
-        assert_eq!(naturaltime(now - Duration::seconds(1)), "a second ago");
         assert_eq!(naturaltime(now - Duration::seconds(30)), "30 seconds ago");
-        assert_eq!(naturaltime(now - Duration::seconds(90)), "a minute ago");
-        assert_eq!(naturaltime(now - Duration::minutes(30)), "30 minutes ago");
-        assert_eq!(naturaltime(now - Duration::minutes(90)), "an hour ago");
-        assert_eq!(naturaltime(now - Duration::hours(5)), "5 hours ago");
         assert_eq!(naturaltime(now - Duration::hours(30)), "a day ago");
-        assert_eq!(naturaltime(now - Duration::days(5)), "5 days ago");
-        assert_eq!(naturaltime(now - Duration::days(45)), "a month ago");
-        assert_eq!(naturaltime(now - Duration::days(200)), "6 months ago");
         // A second of slack: the elapsed time between `now` and the call would
-        // otherwise truncate 5h to 4h.
+        // otherwise round 5h down.
         assert_eq!(
             naturaltime(now + Duration::hours(5) + Duration::seconds(1)),
             "5 hours from now"

@@ -1,6 +1,6 @@
- ⭘                                                           forestui v0.0.0
+ ⭘                                                           forestui v<version>
                                   │
-         gh cli: unauth'd         │
+     gh cli: ok (sweep-user)      │
 ──────────────────────────────────│  MAIN REPOSITORY
  ▼  alpha                         │  Repository: beta
  └ └─  wt-a-renamed               │  Branch:     main
@@ -22,14 +22,14 @@
                                   │
                                   │  OPEN IN
                                   │
-                                  │  ┌─────────┐ ┌───────────┐ ┌────────┐
+                                  │  ┌─────────┐ ┌───────────┐ ┌────────┐                                                               ▂▂
                                   │  │  Editor │ │  Terminal │ │  Files │
                                   │  └─────────┘ └───────────┘ └────────┘
                                   │
                                   │  ─────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
                                   │  CLAUDE
-                                  │                                                                                                     ▆▆
+                                  │
                                   │  ┌─────────────┐ ┌───────────────────┐ ┌────────┐
                                   │  │ New Session │ │ New Session: YOLO │ │  Opus  │
                                   │  └─────────────┘ └───────────────────┘ └────────┘
@@ -41,4 +41,4 @@
                                   │  ─────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
 
-[forestui-0:forestui-dev-<hhmm>* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:al>"<host>" <clock>
+[forestui-0:forestui* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:alpha:wt-a  5:yolo:alp>"<host>" <clock>

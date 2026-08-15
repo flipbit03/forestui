@@ -192,7 +192,7 @@ modules are stubs totalling 18 lines.
 | Archived group with rows `   <name> (<repo>)` | Fixed | Dead code in Python (`sidebar.py:150-163`); reachable in Rust behind `A` (`src/app.rs:260-272`, `src/ui/sidebar.rs:84-94`) |
 | Smart collapse / expand state on repository nodes | Dropped | The flattened row list has no expansion state (`src/app.rs:240-278`); `sidebar.py:187-192` had it |
 | Empty sidebar shows `No repositories` / `Press [a] to add one` | Fixed | Python rendered nothing usable; `src/ui/sidebar.rs:27-33` |
-| Detail-pane empty state visible | Fixed *(pending render pass)* | `EmptyState` collapsed to zero rows in Python (UC-07, `app.py:52-62`). `src/ui/detail.rs:7` is still a no-op, so nothing renders **today** either. |
+| Detail-pane empty state visible | Fixed | `EmptyState` collapsed to zero rows in Python (UC-07, `app.py:52-62`); `src/ui/detail.rs:754` renders it, tested at `:991` |
 
 ### 4.4 Detail pane
 
@@ -210,8 +210,10 @@ modules are stubs totalling 18 lines.
 | Branch rename error toast `Branch rename failed: …` | Identical | `src/app.rs:1183` ↔ `app.py:653` |
 | Hotkeys/actions on a worktree whose directory is gone | Fixed | Rust refuses and toasts `Directory no longer exists: <path>` (`src/app.rs:959-980`); Python created a tmux window that silently landed in `$HOME` (UC-43). **Intentional divergence — UC-43's Expected block must be rewritten.** |
 | Sync (`git pull`) toasts `Syncing...` / `Sync complete` / `Sync failed: …` | Identical | `src/app.rs:1027-1039` ↔ `app.py:407-413` |
-| `⟳ Git Pull (No remote)` / `(Directory missing)` disabled labels | Changed *(pending render pass)* | The refusal is enforced in `run_action` (`src/app.rs:961-980`); the disabled-label text does not exist anywhere in `src/` yet |
-| Section headers `MAIN REPOSITORY` / `WORKTREE` / `LOCATION` / `OPEN IN` / `CLAUDE` / `RECENT SESSIONS` / `MY OPEN GITHUB ISSUES` / `RENAME` / `MANAGE` | Not yet ported | `grep -r` over `src/` finds none of these strings; they arrive with the detail render pass |
+| `⟳ Git Pull (No remote)` / `(Directory missing)` disabled labels | Identical text, one cell wider | `src/ui/detail.rs:560-570`. Two spaces follow the glyph rather than one, because `⟳` is double-width in some terminals and a single space closes up to `⟳Git Pull` there. |
+| Section headers `MAIN REPOSITORY` / `WORKTREE` / `LOCATION` / `OPEN IN` / `CLAUDE` / `RECENT SESSIONS` / `MY OPEN GITHUB ISSUES` / `RENAME` / `MANAGE` | Identical | `src/ui/detail.rs`, and every one of them is asserted present by the UC-96 coverage guard in `scripts/tu-sweep.sh` |
+| Relative timestamps on session and issue cards | Identical | `humanize.naturaldelta` transcribed at `src/util.rs:73-128`, including its 30.5-day month fuzzing and half-to-even rounding, against a 27-case reference table read off humanize itself (`src/util.rs`, `naturaldelta_matches_humanize`). The earlier port used round decade boundaries and rendered 24 days as `24 days ago` where Python said `a month ago`. |
+| Notification lifetime | Identical | 5 s (`src/app.rs:18`) ↔ Textual's `App.NOTIFICATION_TIMEOUT` (`textual/app.py:430`); an earlier 4 s made toasts vanish a step sooner than the Python build's |
 | Issue-refresh spinner cadence | Changed | Global 100 ms tick (`src/event.rs:134`) vs Python's 50 ms interval on the refresh button (`repository_detail.py:393`) |
 | Detail cursor survives async data arrival | Changed (defect) | `AppEvent::Sessions`/`Issues` mutate the list length without re-clamping `detail_index` (`src/app.rs:503-513`). See R3. |
 

@@ -10,7 +10,7 @@ use crate::event::Severity;
 use crate::theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
@@ -42,67 +42,27 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_notifications(frame, app, body_area);
 
     if !app.modals.is_empty() {
-        // Textual dimmed whatever sat behind a modal screen. Without it the
-        // dialog competes with a fully-lit pane and stops reading as modal.
-        dim(frame, area);
+        // Textual's `ModalScreen` painted over the app rather than tinting it —
+        // nothing behind a dialog is visible. A translucent backdrop leaves the
+        // pane competing with the dialog for the eye.
+        frame.render_widget(Clear, area);
+        frame.render_widget(Block::default().style(Style::default().bg(theme::BG)), area);
         modals::draw(frame, app, area);
     }
 }
 
-/// Darken everything already drawn, so the modal on top stands out.
-fn dim(frame: &mut Frame, area: Rect) {
-    let buffer = frame.buffer_mut();
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
-            if let Some(cell) = buffer.cell_mut((x, y)) {
-                let fg = darken(cell.fg);
-                let bg = darken(cell.bg);
-                cell.set_fg(fg);
-                cell.set_bg(bg);
-            }
-        }
-    }
-}
-
-fn darken(color: Color) -> Color {
-    /// The page background, pre-dimmed, for cells the terminal draws default.
-    const DIMMED_PAGE: Color = Color::Rgb(0x1C / 3, 0x1C / 3, 0x1E / 3);
-    match color {
-        Color::Rgb(r, g, b) => Color::Rgb(r / 3, g / 3, b / 3),
-        // An unstyled cell shows the terminal default; treat it as the page
-        // colour so the backdrop dims evenly instead of leaving bright gaps.
-        Color::Reset => DIMMED_PAGE,
-        other => other,
-    }
-}
-
-/// Spans for a control ("button") so it reads as one: a filled pill with
-/// rounded caps. A single row cannot carry a real border, and boxing every
-/// control the way Textual did would push the pane back into scrolling.
-///
-/// The caps are half blocks drawn in the button's own colour *over the page
-/// background*, so only the inner half of the cell is filled and the ends look
-/// rounded rather than sawn off.
-pub fn button(label: &str, focused: bool, destructive: bool) -> Vec<Span<'static>> {
-    let fill = theme::action_bg(focused, destructive);
-    let cap = Style::default().fg(fill).bg(theme::BG);
-    vec![
-        Span::styled("▐", cap),
-        Span::styled(format!(" {label} "), theme::action(focused, destructive)),
-        Span::styled("▌", cap),
-    ]
-}
-
-/// Rendered width of [`button`], for hit-testing and layout.
-pub fn button_width(label: &str) -> u16 {
-    u16::try_from(label.chars().count() + 4).unwrap_or(u16::MAX)
-}
-
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
-    let line = Line::from(vec![Span::styled(
-        format!(" {}", app.title()),
-        theme::title(),
-    )]);
+    // Textual's stock `Header`: its icon sits hard left, the title is centred
+    // across the whole bar.
+    const ICON: &str = " ⭘";
+    let title = app.title();
+    let indent = ((area.width as usize).saturating_sub(title.chars().count()) / 2)
+        .saturating_sub(ICON.chars().count());
+    let line = Line::from(vec![
+        Span::styled(ICON, theme::title()),
+        Span::raw(" ".repeat(indent)),
+        Span::styled(title, theme::title()),
+    ]);
     frame.render_widget(
         Paragraph::new(line).style(Style::default().bg(theme::BG_ELEVATED)),
         area,
@@ -244,12 +204,5 @@ mod tests {
         assert!(wrapped.iter().all(|l| l.chars().count() <= 6));
         assert_eq!(wrapped.concat(), "supercalifragilistic");
         assert!(wrap_words("anything", 0).is_empty());
-    }
-
-    #[test]
-    fn button_width_counts_the_caps() {
-        // Two cap cells plus a space either side of the label.
-        assert_eq!(button_width("Editor") as usize, "Editor".len() + 4);
-        assert_eq!(button("Editor", false, false).len(), 3);
     }
 }

@@ -1,56 +1,56 @@
- forestui v0.0.0
-         gh cli: unauth'd           WORKTREE
- alpha                            │ Repository: alpha
-└─ wt-a-renamed [feat/wt-a-v2]    │ Worktree:   wt-a-renamed
- beta                             │ Branch:     feat/wt-a-v2
-                                  │ Based on:   main (<sha>)
-                                  │ Commit:     <sha> (<rel>)
-                                  │ ▐ ⟳  Git Pull (No remote) ▌
+ ⭘                                                            forestui v<version>
                                   │
-                                  │ ───────────────────────────────────────────────────────────────────────────────────────────────────────
+     gh cli: ok (sweep-user)      │
+──────────────────────────────────│  WORKTREE
+ alpha                            │  Repository: alpha
+└─ wt-a-renamed [feat/wt-a-v2]    │  Worktree:   wt-a-renamed
+ beta                             │  Branch:     feat/wt-a-v2
+                                  │  Based on:   main (<sha>)
+                                  │  Commit:     <sha> (<rel>)
                                   │
-                                  │ LOCATION
-                                  │ ┌───────────────────────────────────────────────────────────────────────────────────────────┐
-                                  │ │ <ROOT>/forest/alpha/wt-a-renamed │
-                                  │ └───────────────────────────────────────────────────────────────────────────────────────────┘
+                                  │  ┌─────────────────────────┐
+                                  │  │ ⟳  Git Pull (No remote) │
+                                  │  └─────────────────────────┘
                                   │
-                                  │ ───────────────────────────────────────────────────────────────────────────────────────────────────────
+                                  │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
-                                  │ OPEN IN
-                                  │ ▐ Editor ▌ ▐ Terminal ▌ ▐ Files ▌
+                                  │  LOCATION
+                                  │  ┌───────────────────────────────────────────────────────────────────────────────────────────┐
+                                  │  │ <ROOT>/forest/alpha/wt-a-renamed │
+                                  │  └───────────────────────────────────────────────────────────────────────────────────────────┘
                                   │
-                                  │ ───────────────────────────────────────────────────────────────────────────────────────────────────────
+                                  │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
-                                  │ CLAUDE
-                                  │ ▐ New Session ▌ ▐ New Session: YOLO ▌ ▐ Opus ▌
+                                  │  OPEN IN
                                   │
-                                  │ RECENT SESSIONS
-                                  │ No sessions found
+                                  │  ┌────────┐ ┌──────────┐ ┌───────┐
+                                  │  │ Editor │ │ Terminal │ │ Files │
+                                  │  └────────┘ └──────────┘ └───────┘
                                   │
-                                  │ ───────────────────────────────────────────────────────────────────────────────────────────────────────
+                                  │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
-                                  │ RENAME
-                                  │ Worktree name  wt-a-renamed
-                                  │ Branch name    feat/wt-a-v2
+                                  │  CLAUDE
                                   │
-                                  │ ───────────────────────────────────────────────────────────────────────────────────────────────────────
+                                  │  ┌─────────────┐ ┌───────────────────┐ ┌──────┐
+                                  │  │ New Session │ │ New Session: YOLO │ │ Opus │
+                                  │  └─────────────┘ └───────────────────┘ └──────┘
                                   │
-                                  │ MANAGE
-                                  │ ▐ Archive ▌ ▐ Delete ▌
+                                  │  RECENT SESSIONS
+                                  │  No sessions found
                                   │
+                                  │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
+                                  │  RENAME
+                                  │  Worktree name  wt-a-renamed
+                                  │  Branch name    feat/wt-a-v2
                                   │
+                                  │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
+                                  │  MANAGE
                                   │
-                                  │
-                                  │
-                                  │
-                                  │
-                                  │
-                                  │
-                                  │
-                                  │
-                                  │
+                                  │  ┌─────────┐ ┌────────┐
+                                  │  │ Archive │ │ Delete │
+                                  │  └─────────┘ └────────┘
                                   │
                                   │
                                   │
@@ -67,4 +67,4 @@
                                   │
                                   │
  q  Quit   a  Add Repo   w  Add Worktree   e  Editor   t  Terminal   o  Files   n  Claude   y  ClaudeYOLO   h  Archive   d  Delete   s  Sett
-[forestui-0:forestui-dev-<hhmm>* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:al>"<host>" <clock>
+[forestui-0:forestui-dev-<hhmm>* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:alpha:wt-a  5>"<host>" <clock>

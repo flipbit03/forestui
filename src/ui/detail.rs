@@ -12,7 +12,6 @@ use crate::app::{App, Focus, HitTarget};
 use crate::models::{ClaudeSession, GitHubIssue};
 use crate::theme;
 use crate::ui::widgets::{TextInput, centered_rect};
-use crate::ui::{button, button_width};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -29,16 +28,31 @@ const FIELD_LABEL_WIDTH: usize = 14;
 /// again on the right. Textual's cards were `border: solid` plus `padding: 1`.
 const CARD_INSET: u16 = 2;
 
+/// Cells left clear on the right of a card or a rule, from the `margin: 0 2 1 0`
+/// Textual gave `.session-item` and `.issue-row` and the `margin: 1 2 1 0` it
+/// gave `Rule.-horizontal`. Without it they run into the edge of the pane.
+const RIGHT_MARGIN: u16 = 2;
+
+/// Rows a control occupies, from Textual's `Button { border: solid; height: 3 }`:
+/// its top border, its label, and its bottom border.
+const CONTROL_HEIGHT: u16 = 3;
+
+/// `#detail-pane { padding: 1 2 }` — the pane's own inset from the divider.
+const PANE_PAD_X: u16 = 2;
+const PANE_PAD_Y: u16 = 1;
+
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
 
-    // One column of padding on each side; the sidebar already draws the divider.
+    // `#detail-pane { padding: 1 2 }` — two columns each side and a blank row
+    // at the top. The sidebar already draws the divider.
     let inner = Rect {
-        x: area.x + 1,
-        width: area.width.saturating_sub(2),
-        ..area
+        x: area.x + PANE_PAD_X,
+        y: area.y + PANE_PAD_Y,
+        width: area.width.saturating_sub(2 * PANE_PAD_X),
+        height: area.height.saturating_sub(PANE_PAD_Y),
     };
 
     let Some(pane) = build(app, inner.width) else {
@@ -51,18 +65,23 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     // The scroll offset decides which line ends up on which screen row, so this
     // is the earliest the clickable regions can be worked out.
     for (index, item) in pane.items.iter().enumerate() {
-        let Some(row) = item.line.checked_sub(offset) else {
+        // A control is three rows tall and so can straddle either edge of the
+        // window. Clip it to what is on screen instead of dropping the region,
+        // or a half-scrolled button would stop answering the mouse.
+        let end = item.line.saturating_add(item.height);
+        if end <= offset {
             continue;
-        };
-        if row >= inner.height {
+        }
+        let top = item.line.max(offset) - offset;
+        if top >= inner.height {
             break;
         }
         app.push_hit(
             Rect {
                 x: inner.x + item.x,
-                y: inner.y + row,
+                y: inner.y + top,
                 width: item.width,
-                height: 1,
+                height: (end - offset - top).min(inner.height - top),
             },
             HitTarget::DetailItem(index),
         );
@@ -93,21 +112,23 @@ struct Item {
     line: u16,
     x: u16,
     width: u16,
+    /// Controls are [`CONTROL_HEIGHT`] rows; a rename field is one.
+    height: u16,
 }
 
 /// A control ("button") waiting to be laid out.
 struct Control {
     label: String,
-    destructive: bool,
+    variant: theme::Variant,
     /// A control that cannot run still occupies a slot in `detail_items()`.
     enabled: bool,
 }
 
 impl Control {
-    fn new(label: impl Into<String>, destructive: bool) -> Self {
+    fn new(label: impl Into<String>, variant: theme::Variant) -> Self {
         Self {
             label: label.into(),
-            destructive,
+            variant,
             enabled: true,
         }
     }
@@ -115,9 +136,66 @@ impl Control {
     fn disabled(label: impl Into<String>) -> Self {
         Self {
             enabled: false,
-            ..Self::new(label, false)
+            ..Self::new(label, theme::Variant::Normal)
         }
     }
+
+    /// Styles for the box: its border, then its label. The border carries the
+    /// state Textual gave it — accent under the cursor, the destructive shade on
+    /// a dangerous action — and the fill runs under the border cells too, which
+    /// is what `border: solid` did there.
+    fn styles(&self, focused: bool) -> (Style, Style) {
+        let fill = theme::action_bg(self.variant);
+        let border = theme::action_border(focused, self.variant);
+        // A control that cannot run keeps its box, so neither the layout nor the
+        // hit region shifts; only the label goes grey — except under the cursor,
+        // which has to stay legible.
+        let label = if self.enabled || focused {
+            theme::action(focused, self.variant)
+        } else {
+            theme::muted().bg(fill)
+        };
+        (border.bg(fill), label)
+    }
+}
+
+/// Rendered width of a control's box: its label padded a cell either side, plus
+/// the two border cells. Measured rather than counted, because a label can hold
+/// a glyph that is not one cell wide.
+fn control_width(label: &str) -> u16 {
+    as_u16(Span::raw(format!(" {label} ")).width()).saturating_add(2)
+}
+
+/// The three rows of one control, in the order they are drawn.
+fn control_box(control: &Control, focused: bool) -> [Vec<Span<'static>>; 3] {
+    let (border, label) = control.styles(focused);
+    let inner = control_width(&control.label).saturating_sub(2) as usize;
+    let edge = |left: char, right: char| {
+        vec![Span::styled(
+            format!("{left}{}{right}", "─".repeat(inner)),
+            border,
+        )]
+    };
+    [
+        edge('┌', '┐'),
+        vec![
+            Span::styled("│", border),
+            Span::styled(format!(" {} ", control.label), label),
+            Span::styled("│", border),
+        ],
+        edge('└', '┘'),
+    ]
+}
+
+/// A card under construction — the bordered, elevated box Textual gave
+/// `.session-item`, `.issue-row` and `.path-display`.
+#[derive(Clone, Copy)]
+struct Card {
+    width: u16,
+    /// Whether the card pads its content vertically. `.session-item` and
+    /// `.issue-row` had `padding: 1`; `.path-display` padded only horizontally,
+    /// so its box hugs the path.
+    padded: bool,
 }
 
 /// Content under construction: the lines to render plus the cells each
@@ -129,8 +207,8 @@ struct Pane {
     focused: Option<usize>,
     /// Width of the content area, so rules and cards can be filled out to it.
     width: u16,
-    /// Width of the card currently open, if any. See [`Pane::card_start`].
-    card: Option<u16>,
+    /// The card currently open, if any. See [`Pane::card_start`].
+    card: Option<Card>,
 }
 
 impl Pane {
@@ -148,15 +226,17 @@ impl Pane {
         self.push_line(vec![Span::styled(text.into(), style)]);
     }
 
+    /// A blank line — inside an open card, a *filled* one, so the card's
+    /// background and borders carry through it rather than punching a hole.
     fn blank(&mut self) {
-        self.lines.push(Line::default());
+        self.push_line(Vec::new());
     }
 
-    /// A section header, spaced away from whatever came before it.
+    /// A section header. `.section-header { margin: 1 0 0 0 }` — the blank row
+    /// above is unconditional, so the very first header is inset from the top of
+    /// the pane exactly like every one after it.
     fn section(&mut self, title: &str) {
-        if !self.lines.is_empty() {
-            self.blank();
-        }
+        self.blank();
         self.text(title.to_string(), theme::section_header());
     }
 
@@ -165,7 +245,8 @@ impl Pane {
     /// [`Pane::section`], which already spaces a header away from what precedes it.
     fn rule(&mut self) {
         self.blank();
-        self.text("─".repeat(self.width as usize), theme::border());
+        let width = self.width.saturating_sub(RIGHT_MARGIN);
+        self.text("─".repeat(width as usize), theme::border());
     }
 
     /// Push a line built from spans returned by [`Pane::control`].
@@ -173,35 +254,39 @@ impl Pane {
         self.push_line(spans);
     }
 
-    /// Open a card — the bordered, elevated box Textual gave `.session-item` and
-    /// `.issue-row`. Lines pushed until [`Pane::card_end`] land inside it.
-    fn card_start(&mut self, width: u16) {
+    /// Open a card. Lines pushed until [`Pane::card_end`] land inside it.
+    fn card_start(&mut self, width: u16, padded: bool) {
         self.lines.push(card_edge(width, '┌', '┐'));
-        self.card = Some(width);
+        self.card = Some(Card { width, padded });
+        if padded {
+            self.blank();
+        }
     }
 
     fn card_end(&mut self) {
-        if let Some(width) = self.card.take() {
-            self.lines.push(card_edge(width, '└', '┘'));
+        let Some(card) = self.card else {
+            return;
+        };
+        if card.padded {
+            self.blank();
         }
+        self.card = None;
+        self.lines.push(card_edge(card.width, '└', '┘'));
     }
 
     /// Push one content line, wrapped in the open card's border and background.
     fn push_line(&mut self, mut spans: Vec<Span<'static>>) {
-        let Some(width) = self.card else {
+        let Some(card) = self.card else {
             self.lines.push(Line::from(spans));
             return;
         };
+        let width = card.width;
         let filled = Style::default().bg(theme::BG_ELEVATED);
         // Text styles carry a foreground only, so without this the page colour
         // shows through the card. Spans that set their own background — the
-        // controls — keep it, which is what makes a pill read as raised.
+        // controls — keep it, which is what makes one read as raised.
         for span in &mut spans {
-            // A pill's rounded caps are drawn in the button colour over the
-            // *page* background. On a card that leaves a dark notch either side
-            // of every button, which reads as a stray bar rather than a rounded
-            // end — so re-seat those caps on the card instead.
-            if span.style.bg.is_none() || span.style.bg == Some(theme::BG) {
+            if span.style.bg.is_none() {
                 span.style = span.style.bg(theme::BG_ELEVATED);
             }
         }
@@ -219,16 +304,17 @@ impl Pane {
         self.lines.push(Line::from(line));
     }
 
-    /// Claim the next focusable slot at `x` on the line that is about to be
-    /// pushed, returning whether it is the focused one. Callers must push that
-    /// line before adding any other, or the recorded cells drift from the
-    /// content.
-    fn claim(&mut self, x: u16, width: u16) -> bool {
+    /// Claim the next focusable slot at `x`, `height` rows tall, starting on the
+    /// line that is about to be pushed, and return whether it is the focused one.
+    /// Callers must push those lines before adding any other, or the recorded
+    /// cells drift from the content.
+    fn claim(&mut self, x: u16, width: u16, height: u16) -> bool {
         let focused = self.focused == Some(self.items.len());
         self.items.push(Item {
             line: as_u16(self.lines.len()),
             x,
             width,
+            height,
         });
         focused
     }
@@ -236,45 +322,79 @@ impl Pane {
     /// Lay out a row of controls after `lead`, which is whatever non-clickable
     /// text shares the line. Each control's extent is recorded as it is placed,
     /// because that running x offset is the only place it is ever known.
+    ///
+    /// The row costs three lines, since every control is a box: `lead` sits on
+    /// the middle one, level with the labels.
     fn controls(&mut self, lead: Vec<Span<'static>>, controls: &[Control]) {
-        let mut spans = lead;
-        let inset = self.card.map_or(0, |_| CARD_INSET);
-        let mut x = inset.saturating_add(as_u16(spans.iter().map(Span::width).sum()));
+        // `.action-row { margin: 1 0 }` — a blank line above every row of
+        // buttons. Inside a card the `padding: 1` already supplies it.
+        let inset = match self.card {
+            Some(_) => CARD_INSET,
+            None => {
+                self.blank();
+                0
+            }
+        };
+        let lead_width = as_u16(lead.iter().map(Span::width).sum());
+
+        // `.session-buttons { align: right middle }` and `.issue-info { width:
+        // 1fr }` both push a card's buttons against its right edge, one cell
+        // clear of the border. Outside a card they stay left-aligned.
+        let row_width = controls
+            .iter()
+            .map(|control| control_width(&control.label))
+            .sum::<u16>()
+            .saturating_add(as_u16(controls.len().saturating_sub(1)));
+        let pad = self.card.map_or(0, |card| {
+            card.width
+                .saturating_sub(CARD_INSET + 2)
+                .saturating_sub(lead_width.saturating_add(row_width))
+        });
+
+        let blank = |width: u16| Span::raw(" ".repeat(width as usize));
+        let mut x = inset.saturating_add(lead_width).saturating_add(pad);
+        let mut lead = lead;
+        lead.push(blank(pad));
+        let mut rows = [
+            vec![blank(lead_width.saturating_add(pad))],
+            lead,
+            vec![blank(lead_width.saturating_add(pad))],
+        ];
+
         for (index, control) in controls.iter().enumerate() {
             if index > 0 {
-                spans.push(Span::raw(" "));
+                for row in &mut rows {
+                    row.push(blank(1));
+                }
                 x = x.saturating_add(1);
             }
-            let width = button_width(&control.label);
-            let focused = self.claim(x, width);
-            let mut pill = button(&control.label, focused, control.destructive);
-            // A control that cannot run keeps the pill and its width, so neither
-            // the layout nor the hit region shifts; it only loses its colour —
-            // except under the cursor, which has to stay visible.
-            if !control.enabled && !focused {
-                for span in &mut pill {
-                    span.style = theme::muted();
-                }
+            let width = control_width(&control.label);
+            let focused = self.claim(x, width, CONTROL_HEIGHT);
+            for (row, mut spans) in rows.iter_mut().zip(control_box(control, focused)) {
+                row.append(&mut spans);
             }
-            spans.append(&mut pill);
             x = x.saturating_add(width);
         }
-        self.push_line(spans);
+
+        for row in rows {
+            self.push_line(row);
+        }
     }
 
     /// Offset that keeps the focused control on screen. `draw` builds the pane
     /// fresh each frame, so this is derived rather than stored on the app.
     fn scroll_offset(&self, height: u16) -> u16 {
-        let Some(row) = self
-            .focused
-            .and_then(|index| self.items.get(index))
-            .map(|item| item.line)
-        else {
+        let Some(item) = self.focused.and_then(|index| self.items.get(index)) else {
             return 0;
         };
         let max = as_u16(self.lines.len()).saturating_sub(height);
-        // Aim to keep two lines of context below the cursor where there is room.
-        row.saturating_add(3).saturating_sub(height).min(max)
+        // Aim to clear the whole control plus two lines of context below it,
+        // where there is room.
+        item.line
+            .saturating_add(item.height)
+            .saturating_add(2)
+            .saturating_sub(height)
+            .min(max)
     }
 }
 
@@ -306,7 +426,7 @@ fn path_box(pane: &mut Pane, path: String, style: Style) {
         path
     };
     let width = as_u16(path.chars().count()).saturating_add(2 * CARD_INSET);
-    pane.card_start(width);
+    pane.card_start(width, false);
     pane.text(path, style);
     pane.card_end();
 }
@@ -331,7 +451,7 @@ fn repository(pane: &mut Pane, app: &App) {
         Vec::new(),
         &[
             sync_control(app, false),
-            Control::new("Add Worktree", false),
+            Control::new("Add Worktree", theme::Variant::Normal),
         ],
     );
 
@@ -351,7 +471,13 @@ fn repository(pane: &mut Pane, app: &App) {
 
     pane.rule();
     pane.section("MANAGE");
-    pane.controls(Vec::new(), &[Control::new("Remove Repository", true)]);
+    pane.controls(
+        Vec::new(),
+        &[Control::new(
+            "Remove Repository",
+            theme::Variant::Destructive,
+        )],
+    );
 }
 
 fn worktree(pane: &mut Pane, app: &App) {
@@ -414,8 +540,11 @@ fn worktree(pane: &mut Pane, app: &App) {
     pane.controls(
         Vec::new(),
         &[
-            Control::new(if archived { "Unarchive" } else { "Archive" }, false),
-            Control::new("Delete", true),
+            Control::new(
+                if archived { "Unarchive" } else { "Archive" },
+                theme::Variant::Normal,
+            ),
+            Control::new("Delete", theme::Variant::Destructive),
         ],
     );
 }
@@ -441,7 +570,7 @@ fn sync_control(app: &App, missing_directory: bool) -> Control {
     if missing_directory {
         Control::disabled("⟳  Git Pull (Directory missing)")
     } else if app.meta.has_remote {
-        Control::new("⟳  Git Pull", false)
+        Control::new("⟳  Git Pull", theme::Variant::Normal)
     } else {
         Control::disabled("⟳  Git Pull (No remote)")
     }
@@ -452,9 +581,9 @@ fn open_in(pane: &mut Pane) {
     pane.controls(
         Vec::new(),
         &[
-            Control::new("Editor", false),
-            Control::new("Terminal", false),
-            Control::new("Files", false),
+            Control::new("Editor", theme::Variant::Normal),
+            Control::new("Terminal", theme::Variant::Normal),
+            Control::new("Files", theme::Variant::Normal),
         ],
     );
 }
@@ -462,8 +591,8 @@ fn open_in(pane: &mut Pane) {
 fn claude(pane: &mut Pane, app: &App) {
     pane.section("CLAUDE");
     let mut controls = vec![
-        Control::new("New Session", false),
-        Control::new("New Session: YOLO", true),
+        Control::new("New Session", theme::Variant::Primary),
+        Control::new("New Session: YOLO", theme::Variant::Destructive),
     ];
     controls.extend(custom_controls(app));
     pane.controls(Vec::new(), &controls);
@@ -472,10 +601,12 @@ fn claude(pane: &mut Pane, app: &App) {
 /// The user's own Claude buttons, which follow both the new-session and the
 /// resume controls.
 fn custom_controls(app: &App) -> impl Iterator<Item = Control> + '_ {
-    app.settings
-        .custom_buttons
-        .iter()
-        .map(|custom| Control::new(custom.label.as_str(), custom.is_yolo_style()))
+    app.settings.custom_buttons.iter().map(|custom| {
+        Control::new(
+            custom.label.as_str(),
+            theme::Variant::claude(custom.is_yolo_style()),
+        )
+    })
 }
 
 fn sessions(pane: &mut Pane, app: &App) {
@@ -488,16 +619,16 @@ fn sessions(pane: &mut Pane, app: &App) {
         pane.text("No sessions found", theme::muted());
         return;
     }
-    for (index, session) in list.iter().enumerate() {
-        if index > 0 {
-            pane.blank();
-        }
+    // Every card is spaced away from what precedes it — the header included,
+    // which is Textual's `.session-item { margin: 0 2 1 0 }` seen from above.
+    for session in list {
+        pane.blank();
         session_item(pane, app, session);
     }
 }
 
 fn session_item(pane: &mut Pane, app: &App, session: &ClaudeSession) {
-    pane.card_start(pane.width);
+    pane.card_start(pane.width.saturating_sub(RIGHT_MARGIN), true);
     pane.text(crate::util::truncate(&session.title, 60), theme::primary());
     if !session.last_message.is_empty() && session.last_message != session.title {
         pane.text(
@@ -505,6 +636,9 @@ fn session_item(pane: &mut Pane, app: &App, session: &ClaudeSession) {
             theme::secondary(),
         );
     }
+    // `.session-preview { margin-bottom: 1 }` — the meta line is spaced away
+    // from the message preview above it.
+    pane.blank();
     pane.text(
         format!(
             "{} • {} msgs",
@@ -514,27 +648,43 @@ fn session_item(pane: &mut Pane, app: &App, session: &ClaudeSession) {
         theme::muted(),
     );
 
-    let mut controls = vec![Control::new("Resume", false), Control::new("YOLO", true)];
+    let mut controls = vec![
+        Control::new("Resume", theme::Variant::Normal),
+        Control::new("YOLO", theme::Variant::Destructive),
+    ];
     controls.extend(custom_controls(app));
     pane.controls(Vec::new(), &controls);
     pane.card_end();
 }
 
 fn issues(pane: &mut Pane, app: &App) {
-    // The refresh control sits on the header line and doubles as the loading
-    // spinner, the same as the Textual button it replaces.
-    pane.blank();
+    // The refresh control rides the header line and doubles as the loading
+    // spinner. Unlike every other control it is drawn flat, because Textual's
+    // `.refresh-btn` was `height: 1; border: none; background: transparent` —
+    // boxing it would push the header between two border rows.
+    const HEADER: &str = "MY OPEN GITHUB ISSUES";
     let label = match app.issues {
         Some(_) => "↻".to_string(),
         None => SPINNER[app.spinner_index % SPINNER.len()].to_string(),
     };
-    pane.controls(
-        vec![
-            Span::styled("MY OPEN GITHUB ISSUES", theme::section_header()),
-            Span::raw(" "),
-        ],
-        &[Control::new(label, false)],
-    );
+    if !pane.lines.is_empty() {
+        pane.blank();
+    }
+    // `.refresh-btn { min-width: 3; width: 3 }` — the glyph is narrower than the
+    // control, and it is the control that takes the click.
+    let focused = pane.claim(as_u16(HEADER.chars().count() + 1), 3, 1);
+    pane.row(vec![
+        Span::styled(HEADER, theme::section_header()),
+        Span::raw(" "),
+        Span::styled(
+            label,
+            if focused {
+                theme::accent()
+            } else {
+                theme::secondary()
+            },
+        ),
+    ]);
 
     let Some(list) = app.issues.as_deref() else {
         pane.text("Loading...", theme::muted());
@@ -544,16 +694,14 @@ fn issues(pane: &mut Pane, app: &App) {
         pane.text("No issues found", theme::muted());
         return;
     }
-    for (index, issue) in list.iter().enumerate() {
-        if index > 0 {
-            pane.blank();
-        }
+    for issue in list {
+        pane.blank();
         issue_item(pane, issue);
     }
 }
 
 fn issue_item(pane: &mut Pane, issue: &GitHubIssue) {
-    pane.card_start(pane.width);
+    pane.card_start(pane.width.saturating_sub(RIGHT_MARGIN), true);
     pane.text(
         format!(
             "#{} {}",
@@ -575,7 +723,7 @@ fn issue_item(pane: &mut Pane, issue: &GitHubIssue) {
     }
     pane.controls(
         vec![Span::styled(format!("{meta}  "), theme::muted())],
-        &[Control::new("Create WT", false)],
+        &[Control::new("Create WT", theme::Variant::Normal)],
     );
     pane.card_end();
 }
@@ -586,7 +734,7 @@ fn field(pane: &mut Pane, label: &str, input: &TextInput) {
     // Measured without consulting focus: the caret only ever occupies the one
     // trailing cell already counted here, so the click target is stable.
     let width = as_u16(FIELD_LABEL_WIDTH + 2 + input.value().chars().count());
-    let focused = pane.claim(0, width);
+    let focused = pane.claim(0, width, 1);
     let mut spans = vec![Span::styled(
         format!("{label:<FIELD_LABEL_WIDTH$} "),
         theme::secondary(),
@@ -707,8 +855,13 @@ mod tests {
         terminal.backend().buffer().clone()
     }
 
+    /// Three-row controls and padded cards make the pane far taller than the
+    /// terminal it usually runs in, so tests that want the whole thing on screen
+    /// unscrolled have to ask for the room.
+    const TALL: u16 = 80;
+
     fn render(app: &mut App) -> String {
-        buffer_text(&render_buffer(app, 100, 40))
+        buffer_text(&render_buffer(app, 100, TALL))
     }
 
     /// Cell of the first occurrence of `needle`. Byte offsets would not do: the
@@ -805,10 +958,10 @@ mod tests {
         with_repository(&mut app);
         app.sessions = Some(vec![a_session()]);
         app.issues = Some(vec![an_issue()]);
-        let buffer = render_buffer(&mut app, 100, 60);
-        // The pane keeps a column of padding on each side, so a full-width card
-        // ends one cell in from the right edge of the screen.
-        let right = buffer.area.width - 2;
+        let buffer = render_buffer(&mut app, 100, TALL);
+        // The pane is inset by its own padding and the card keeps a right margin
+        // inside that, so the card's edge lands short of the screen edge.
+        let right = buffer.area.width - PANE_PAD_X - RIGHT_MARGIN - 1;
 
         for label in ["Refactor the detail pane", "#42 Fix login bug"] {
             let (x, y) = find_cell(&buffer, label);
@@ -819,8 +972,16 @@ mod tests {
             };
 
             let left = x - CARD_INSET;
-            assert_eq!(cell(left, y - 1).symbol(), "┌", "{label}: top left");
-            assert_eq!(cell(right, y - 1).symbol(), "┐", "{label}: top right");
+            // `padding: 1` puts a blank card row between the top edge and the
+            // first line of content.
+            assert_eq!(cell(left, y - 2).symbol(), "┌", "{label}: top left");
+            assert_eq!(cell(right, y - 2).symbol(), "┐", "{label}: top right");
+            assert_eq!(cell(left, y - 1).symbol(), "│", "{label}: padding row");
+            assert_eq!(
+                cell(x, y - 1).bg,
+                theme::BG_ELEVATED,
+                "{label}: padding row is filled",
+            );
             assert_eq!(cell(left, y).symbol(), "│", "{label}: left border");
             assert_eq!(cell(right, y).symbol(), "│", "{label}: right border");
             assert_eq!(cell(left, y).fg, theme::BORDER, "{label}: border colour");
@@ -969,7 +1130,7 @@ mod tests {
         let mut app = test_app(&dir);
         with_worktree(&mut app);
         app.sessions = Some(vec![a_session()]);
-        let buffer = render_buffer(&mut app, 100, 60);
+        let buffer = render_buffer(&mut app, 100, TALL);
 
         let index_of = |item: &DetailItem| {
             app.detail_items()
@@ -997,6 +1158,44 @@ mod tests {
         }
     }
 
+    /// Textual drew every `Button` as a bordered box three rows tall, and its
+    /// border is part of the button: clicking the top edge has to fire the same
+    /// action as clicking the label under it.
+    #[tokio::test]
+    async fn a_control_is_three_rows_and_clickable_on_its_border() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = test_app(&dir);
+        with_repository(&mut app);
+        app.sessions = Some(vec![]);
+        app.issues = Some(vec![]);
+        let buffer = render_buffer(&mut app, 100, TALL);
+
+        let (x, y) = find_cell(&buffer, "Add Worktree");
+        let symbol = |x: u16, y: u16| {
+            buffer
+                .cell((x, y))
+                .unwrap_or_else(|| panic!("no cell at {x},{y}"))
+                .symbol()
+                .to_string()
+        };
+
+        // The label sits behind the left border and its padding cell.
+        let left = x - 2;
+        assert_eq!(symbol(left, y - 1), "┌", "top left");
+        assert_eq!(symbol(left, y), "│", "left border");
+        assert_eq!(symbol(left, y + 1), "└", "bottom left");
+
+        let target = app.hit_at(x, y);
+        assert!(
+            matches!(target, Some(HitTarget::DetailItem(_))),
+            "the label is clickable: {target:?}"
+        );
+        assert_eq!(app.hit_at(x, y - 1), target, "top border row");
+        assert_eq!(app.hit_at(x, y + 1), target, "bottom border row");
+        // One row further out is a different item, or none at all.
+        assert_ne!(app.hit_at(x, y + 2), target, "below the box");
+    }
+
     #[tokio::test]
     async fn every_focusable_item_is_clickable_when_visible() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1011,13 +1210,13 @@ mod tests {
 
         with_worktree(&mut app);
         // Tall and wide enough that nothing is scrolled or clipped away.
-        render_buffer(&mut app, 120, 60);
+        render_buffer(&mut app, 120, TALL);
         assert_eq!(detail_hits(&app), app.detail_items().len(), "worktree");
 
         let dir = tempfile::tempdir().expect("tempdir");
         app.state = AppState::load_from(dir.path().join(".forestui-config.json"));
         with_repository(&mut app);
-        render_buffer(&mut app, 120, 60);
+        render_buffer(&mut app, 120, TALL);
         assert_eq!(detail_hits(&app), app.detail_items().len(), "repository");
     }
 }

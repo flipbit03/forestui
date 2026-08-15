@@ -27,8 +27,25 @@ if not da.is_dir() or not db.is_dir():
 BOX = "│┌┐└┘─▊▔▁▎▐▏▃▅▂█▌▄╭╮╯╰┏┓┗┛━┃⭘"
 
 def window_list(text):
+    """The tmux windows forestui opened, in order, and which one is active.
+
+    Only the `<n>:<name>` entries are compared. The session-name prefix is
+    deliberately excluded: a source build auto-enables dev mode and calls its
+    own window `forestui-dev-<hhmm>` where a release calls it `forestui`, and
+    that difference also shifts where tmux truncates the status bar. Comparing
+    the raw line reported DIFF on every case, which hides the regressions this
+    column exists to catch.
+    """
     found = re.findall(r"\[forestui\S*[^\"]*", text)
-    return found[-1].strip() if found else ""
+    if not found:
+        return ""
+    line = re.sub(r"forestui-dev-<hhmm>", "forestui", found[-1].strip())
+    entries = re.findall(r"\b\d+:[\w:.\-/]+\*?", line)
+    # tmux cuts the status bar with a trailing `>`, leaving the last entry a
+    # fragment. Comparing a fragment against a whole name is a false alarm.
+    if line.endswith(">") and entries:
+        entries = entries[:-1]
+    return entries
 
 def phrases(text):
     out = set()
@@ -51,7 +68,11 @@ for fa in sorted(da.glob("UC-*.txt")):
         continue
     ta, tb = fa.read_text(), fb.read_text()
     wa, wb = window_list(ta), window_list(tb)
-    verdict = "n/a" if not wa and not wb else ("same" if wa == wb else "DIFF")
+    # The two builds' status bars truncate at different points, because a
+    # dev-mode window name is longer than a release one. Only the entries both
+    # bars had room to print can be compared.
+    shared = min(len(wa), len(wb))
+    verdict = "n/a" if not wa and not wb else ("same" if wa[:shared] == wb[:shared] else "DIFF")
     if verdict == "DIFF":
         fail += 1
     pa, pb = phrases(ta), phrases(tb)

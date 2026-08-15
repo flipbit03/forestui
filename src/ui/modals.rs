@@ -12,11 +12,10 @@ use crate::modal::{
     EDITORS, EditButtonModal, Modal, SPINNER, SettingsModal, THEMES,
 };
 use crate::theme;
-use crate::ui::widgets::{self, TextInput};
-use crate::ui::{button, button_width};
+use crate::ui::widgets::{self, BUTTON_HEIGHT, TextInput};
 use crate::util;
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -31,8 +30,12 @@ const DROPDOWN_ROWS: usize = 10;
 const BUTTON_LIST_ROWS: usize = 15;
 /// Rows one custom-button block takes: label, prefix, command.
 const BUTTON_BLOCK: usize = 3;
-/// Space between two controls sharing a row.
-const GAP: &str = "  ";
+/// Space between two controls sharing a row. Textual gave every button
+/// `margin: 0 1` and then collapsed the pair, so neighbours sit one cell apart.
+const GAP: u16 = 1;
+/// Rows the box spends on chrome before any content: two borders, the two
+/// `padding: 1 2` rows, the title, and `.modal-title { margin-bottom: 1 }`.
+const CHROME: u16 = 6;
 
 /// Where the controls of one modal landed: a rectangle and the focus index a
 /// click inside it selects. The indices are the ones `Modal::set_focus` and the
@@ -154,13 +157,47 @@ impl Column {
     }
 
     /// Draw a row of controls left to right, recording where each one landed.
-    fn controls(&mut self, frame: &mut Frame, hits: &mut Hits, controls: Vec<Control>) {
-        let Some(rect) = self.take(1) else {
-            return;
+    /// `centre` groups them in the middle of the box, the way Textual's
+    /// `.modal-buttons { align: center middle }` did with the dialog's buttons.
+    fn controls(
+        &mut self,
+        frame: &mut Frame,
+        hits: &mut Hits,
+        controls: Vec<Control>,
+        centre: bool,
+    ) {
+        // Boxing the buttons made every dialog several rows taller, and a
+        // dialog is capped at the height of the terminal. Rather than let the
+        // button row fall off the bottom — leaving a dialog that can only be
+        // answered from the keyboard, with nothing on screen saying so — pin it
+        // to the last three rows. The body above it loses those rows instead,
+        // which is at least visible.
+        let rect = self.take(BUTTON_HEIGHT).unwrap_or_else(|| {
+            let y = (self.area.y + self.area.height).saturating_sub(BUTTON_HEIGHT);
+            self.y = self.area.y + self.area.height;
+            Rect {
+                x: self.area.x,
+                y,
+                width: self.area.width,
+                height: BUTTON_HEIGHT.min(self.area.height),
+            }
+        });
+        let total = controls
+            .iter()
+            .map(|(_, width, _, _)| width.saturating_add(GAP))
+            .sum::<u16>()
+            .saturating_sub(GAP);
+        let indent = if centre {
+            rect.width.saturating_sub(total) / 2
+        } else {
+            0
         };
         let right = rect.x + rect.width;
-        let mut spans = Vec::new();
-        let mut x = rect.x;
+        let mut rows: [Vec<Span<'static>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let mut x = rect.x.saturating_add(indent);
+        for row in &mut rows {
+            row.push(Span::raw(" ".repeat(indent as usize)));
+        }
         for (control, width, index, click) in controls {
             // A control the box is too narrow to show must not be clickable.
             let visible = width.min(right.saturating_sub(x));
@@ -170,60 +207,110 @@ impl Column {
                         x,
                         y: rect.y,
                         width: visible,
-                        height: 1,
+                        height: BUTTON_HEIGHT,
                     },
                     index,
                     click,
                 ));
             }
-            spans.extend(control);
-            spans.push(Span::raw(GAP));
-            x = x.saturating_add(width).saturating_add(GAP.len() as u16);
+            for (row, spans) in rows.iter_mut().zip(control) {
+                row.extend(spans);
+                row.push(Span::raw(" ".repeat(GAP as usize)));
+            }
+            x = x.saturating_add(width).saturating_add(GAP);
         }
-        frame.render_widget(Paragraph::new(Line::from(spans)), rect);
+        frame.render_widget(Paragraph::new(rows.map(Line::from).to_vec()), rect);
     }
+}
+
+/// Draw the dialog box and return a column over its content.
+///
+/// Textual gave `.modal-container` `padding: 1 2` and put the title in a label
+/// on the first content row — never in the border — followed by the blank row
+/// `.modal-title { margin-bottom: 1 }` left behind. The leading space is the
+/// one the Python labels carried literally (`Label(" Add Repository")`).
+fn dialog(frame: &mut Frame, rect: Rect, title: &str, style: Style) -> Column {
+    // `.modal-container { background: $bg-elevated; border: solid $border }` —
+    // the box is raised off the page and its border is the resting colour, not
+    // the focus accent. A dialog is always the focused thing, so an accent
+    // border says nothing and competes with the button that does have one.
+    let inner = widgets::framed(frame, rect, "").inner(Margin::new(2, 1));
+    let mut column = Column::new(inner);
+    column.text(frame, format!(" {title}"), style);
+    column.gap();
+    column
 }
 
 // ------------------------------------------------------------------ Controls
 
-/// One piece of a control row: what to draw, how wide it renders, the focus
-/// index a click selects, and what that click does.
-type Control = (Vec<Span<'static>>, u16, usize, ModalClick);
+/// One piece of a control row: its three rows of spans, how wide it renders,
+/// the focus index a click selects, and what that click does. Every piece is
+/// the same height so a row of them lines up.
+type Control = ([Vec<Span<'static>>; 3], u16, usize, ModalClick);
 
-/// A button, drawn as the shared pill so it reads as one.
-fn control(label: &str, focused: bool, destructive: bool, index: usize) -> Control {
+/// A button, drawn as the bordered box Textual drew.
+fn control(label: &str, focused: bool, variant: theme::Variant, index: usize) -> Control {
+    boxed(label, focused, variant, true, index)
+}
+
+/// The greyed-out form of [`control`], for a button Textual would `disable`.
+/// Built from the same box so neither the layout nor the click region moves
+/// when the button becomes enabled.
+fn disabled(label: &str, index: usize) -> Control {
+    boxed(label, false, theme::Variant::Normal, false, index)
+}
+
+/// The shared body of [`control`] and [`disabled`]: the box, styled the way
+/// `ui/detail.rs` styles its controls, so both panes read as one app.
+fn boxed(
+    label: &str,
+    focused: bool,
+    variant: theme::Variant,
+    enabled: bool,
+    index: usize,
+) -> Control {
+    let fill = theme::action_bg(variant);
+    let border = theme::action_border(focused, variant);
+    // A control that cannot run keeps its box, so neither the layout nor the
+    // hit region shifts; only the label goes grey — except under the cursor,
+    // which has to stay legible.
+    let text = if enabled || focused {
+        theme::action(focused, variant)
+    } else {
+        theme::muted().bg(fill)
+    };
     (
-        button(label, focused, destructive),
-        button_width(label),
+        widgets::button_box(label, border.bg(fill), text),
+        widgets::button_box_width(label),
         index,
         ModalClick::Activate,
     )
 }
 
-/// The greyed-out form of [`control`], for a button Textual would `disable`.
-/// Built from the same pill so neither the layout nor the click region moves
-/// when the button becomes enabled.
-fn disabled(label: &str, index: usize) -> Control {
-    let spans = button(label, false, false)
-        .into_iter()
-        .map(|span| span.style(theme::muted()))
-        .collect();
-    (spans, button_width(label), index, ModalClick::Activate)
-}
-
 fn checkbox(label: &str, checked: bool, focused: bool, index: usize) -> Control {
     let mark = if checked { 'x' } else { ' ' };
-    control(&format!("[{mark}] {label}"), focused, false, index)
+    control(
+        &format!("[{mark}] {label}"),
+        focused,
+        theme::Variant::Normal,
+        index,
+    )
 }
 
 /// A value Left/Right cycles through — the stand-in for Textual's `Select`.
 fn cycle(value: &str, focused: bool, index: usize) -> Control {
-    let (spans, width, index, _) = control(&format!("◂ {value} ▸"), focused, false, index);
+    let (spans, width, index, _) = control(
+        &format!("◂ {value} ▸"),
+        focused,
+        theme::Variant::Normal,
+        index,
+    );
     (spans, width, index, ModalClick::Cycle)
 }
 
 /// A bare arrow beside a control, standing for the key that drives it. Clicking
-/// one does what that key does, so it carries the control's index too.
+/// one does what that key does, so it carries the control's index too. It is one
+/// cell wide on all three rows, so the buttons after it stay aligned.
 fn arrow(glyph: char, focused: bool, index: usize) -> Control {
     let style = if focused {
         theme::accent()
@@ -232,7 +319,11 @@ fn arrow(glyph: char, focused: bool, index: usize) -> Control {
     };
     // The arrows stand for Left/Right, so clicking one cycles the value.
     (
-        vec![Span::styled(glyph.to_string(), style)],
+        [
+            vec![Span::raw(" ")],
+            vec![Span::styled(glyph.to_string(), style)],
+            vec![Span::raw(" ")],
+        ],
         1,
         index,
         ModalClick::Cycle,
@@ -242,8 +333,9 @@ fn arrow(glyph: char, focused: bool, index: usize) -> Control {
 // ----------------------------------------------------------- Add repository
 
 fn add_repository(frame: &mut Frame, modal: &AddRepositoryModal, area: Rect, hits: &mut Hits) {
-    let rect = widgets::centered_rect(WIDTH, 11, area);
-    let mut column = Column::new(widgets::framed(frame, rect, "Add Repository", true));
+    // Label, input, status, gap, checkbox, gap, buttons.
+    let rect = widgets::centered_rect(WIDTH, CHROME + 13, area);
+    let mut column = dialog(frame, rect, "Add Repository", theme::title());
 
     column.line(frame, widgets::section("Repository Path"));
     column.input(frame, hits, &modal.path, modal.focus, 0);
@@ -266,15 +358,22 @@ fn add_repository(frame: &mut Frame, modal: &AddRepositoryModal, area: Rect, hit
             modal.focus == 1,
             1,
         )],
+        false,
     );
     column.gap();
     column.controls(
         frame,
         hits,
         vec![
-            control("Add Repository", modal.focus == 2, false, 2),
-            control("Cancel", modal.focus == 3, false, 3),
+            control(
+                "Add Repository",
+                modal.focus == 2,
+                theme::Variant::Primary,
+                2,
+            ),
+            control("Cancel", modal.focus == 3, theme::Variant::Normal, 3),
         ],
+        true,
     );
 }
 
@@ -288,8 +387,9 @@ fn add_worktree(frame: &mut Frame, modal: &AddWorktreeModal, area: Rect, hits: &
     } else {
         matches.len().min(DROPDOWN_ROWS) + 1
     };
-    let rect = widgets::centered_rect(WIDTH, 16 + dropdown as u16, area);
-    let mut column = Column::new(widgets::framed(frame, rect, "Add Worktree", true));
+    // Repo, label, input, preview, label, toggle, input, error, gap, buttons.
+    let rect = widgets::centered_rect(WIDTH, CHROME + 18 + dropdown as u16, area);
+    let mut column = dialog(frame, rect, "Add Worktree", theme::title());
 
     column.text(frame, format!("to {}", modal.repo_name), theme::secondary());
     column.line(frame, widgets::section("Worktree Name"));
@@ -311,10 +411,11 @@ fn add_worktree(frame: &mut Frame, modal: &AddWorktreeModal, area: Rect, hits: &
         hits,
         vec![
             arrow('◂', toggle_focused, 1),
-            control("New Branch", modal.new_branch, false, 1),
-            control("Existing", !modal.new_branch, false, 1),
+            control("New Branch", modal.new_branch, theme::Variant::Normal, 1),
+            control("Existing", !modal.new_branch, theme::Variant::Normal, 1),
             arrow('▸', toggle_focused, 1),
         ],
+        false,
     );
 
     if modal.new_branch {
@@ -328,8 +429,8 @@ fn add_worktree(frame: &mut Frame, modal: &AddWorktreeModal, area: Rect, hits: &
             theme::muted(),
         );
 
-        // Leave room for the error line and the buttons below the list.
-        let space = column.remaining().saturating_sub(3) as usize;
+        // Leave room for the error line, the gap and the buttons below the list.
+        let space = column.remaining().saturating_sub(2 + BUTTON_HEIGHT) as usize;
         let visible = DROPDOWN_ROWS.min(space);
         let first = modal.search_index.saturating_sub(visible.saturating_sub(1));
         // The list is one focus stop, index 3, so every row carries that index.
@@ -357,7 +458,12 @@ fn add_worktree(frame: &mut Frame, modal: &AddWorktreeModal, area: Rect, hits: &
 
     let create = modal.field_count() - 2;
     let create_control = if modal.can_create() {
-        control("Create Worktree", modal.focus == create, false, create)
+        control(
+            "Create Worktree",
+            modal.focus == create,
+            theme::Variant::Primary,
+            create,
+        )
     } else {
         disabled("Create Worktree", create)
     };
@@ -366,8 +472,14 @@ fn add_worktree(frame: &mut Frame, modal: &AddWorktreeModal, area: Rect, hits: &
         hits,
         vec![
             create_control,
-            control("Cancel", modal.focus == create + 1, false, create + 1),
+            control(
+                "Cancel",
+                modal.focus == create + 1,
+                theme::Variant::Normal,
+                create + 1,
+            ),
         ],
+        true,
     );
 }
 
@@ -412,9 +524,10 @@ fn branch_line(branch: &str, query: &str, style: Style) -> Line<'static> {
 // -------------------------------------------------------- Create from issue
 
 fn create_from_issue(frame: &mut Frame, modal: &CreateFromIssueModal, area: Rect, hits: &mut Hits) {
-    let rect = widgets::centered_rect(WIDTH, 21, area);
+    // Issue, three labelled fields with a hint each, fetch, checkbox, gap, buttons.
+    let rect = widgets::centered_rect(WIDTH, CHROME + 25, area);
     let title = format!("Create Worktree from Issue #{}", modal.issue_number);
-    let mut column = Column::new(widgets::framed(frame, rect, &title, true));
+    let mut column = dialog(frame, rect, &title, theme::title());
 
     column.text(frame, modal.issue_title.clone(), theme::muted());
 
@@ -450,7 +563,8 @@ fn create_from_issue(frame: &mut Frame, modal: &CreateFromIssueModal, area: Rect
     column.controls(
         frame,
         hits,
-        vec![control(&fetch, modal.focus == 3, false, 3)],
+        vec![control(&fetch, modal.focus == 3, theme::Variant::Normal, 3)],
+        false,
     );
     column.controls(
         frame,
@@ -461,39 +575,50 @@ fn create_from_issue(frame: &mut Frame, modal: &CreateFromIssueModal, area: Rect
             modal.focus == 4,
             4,
         )],
+        false,
     );
     column.gap();
 
     let create = if modal.can_create() {
-        control("Create", modal.focus == 5, false, 5)
+        control("Create", modal.focus == 5, theme::Variant::Primary, 5)
     } else {
         disabled("Create", 5)
     };
     column.controls(
         frame,
         hits,
-        vec![create, control("Cancel", modal.focus == 6, false, 6)],
+        vec![
+            create,
+            control("Cancel", modal.focus == 6, theme::Variant::Normal, 6),
+        ],
+        true,
     );
 }
 
 // ------------------------------------------------------------------ Settings
 
 fn settings(frame: &mut Frame, modal: &SettingsModal, area: Rect, hits: &mut Hits) {
-    let rect = widgets::centered_rect(WIDE, 15, area);
-    let mut column = Column::new(widgets::framed(frame, rect, "Settings", true));
+    // Three labelled controls, then the buttons section, the gap and the buttons.
+    let rect = widgets::centered_rect(WIDE, CHROME + 21, area);
+    let mut column = dialog(frame, rect, "Settings", theme::title());
 
     let editor = EDITORS
         .get(modal.editor_index)
         .map_or("", |(name, _)| *name);
     column.line(frame, widgets::section("DEFAULT EDITOR"));
-    column.controls(frame, hits, vec![cycle(editor, modal.focus == 0, 0)]);
+    column.controls(frame, hits, vec![cycle(editor, modal.focus == 0, 0)], false);
 
     column.line(frame, widgets::section("BRANCH PREFIX"));
     column.input(frame, hits, &modal.branch_prefix, modal.focus, 1);
 
     let theme_name = THEMES.get(modal.theme_index).map_or("", |(name, _)| *name);
     column.line(frame, widgets::section("THEME"));
-    column.controls(frame, hits, vec![cycle(theme_name, modal.focus == 2, 2)]);
+    column.controls(
+        frame,
+        hits,
+        vec![cycle(theme_name, modal.focus == 2, 2)],
+        false,
+    );
 
     column.line(frame, widgets::section("CUSTOM CLAUDE BUTTONS"));
     column.text(frame, modal.buttons_summary(), theme::muted());
@@ -503,18 +628,20 @@ fn settings(frame: &mut Frame, modal: &SettingsModal, area: Rect, hits: &mut Hit
         vec![control(
             "Manage Custom Buttons...",
             modal.focus == 3,
-            false,
+            theme::Variant::Normal,
             3,
         )],
+        false,
     );
     column.gap();
     column.controls(
         frame,
         hits,
         vec![
-            control("Save", modal.focus == 4, false, 4),
-            control("Cancel", modal.focus == 5, false, 5),
+            control("Save", modal.focus == 4, theme::Variant::Primary, 4),
+            control("Cancel", modal.focus == 5, theme::Variant::Normal, 5),
         ],
+        true,
     );
 }
 
@@ -526,8 +653,9 @@ fn custom_buttons(frame: &mut Frame, modal: &CustomButtonsModal, area: Rect, hit
     } else {
         (modal.buttons.len() * BUTTON_BLOCK).min(BUTTON_LIST_ROWS)
     };
-    let rect = widgets::centered_rect(WIDE, list_rows as u16 + 6, area);
-    let mut column = Column::new(widgets::framed(frame, rect, "Custom Claude Buttons", true));
+    // Intro, gap, the list, gap, help footer.
+    let rect = widgets::centered_rect(WIDE, CHROME + list_rows as u16 + 4, area);
+    let mut column = dialog(frame, rect, "Custom Claude Buttons", theme::title());
 
     column.text(
         frame,
@@ -596,8 +724,9 @@ fn custom_buttons(frame: &mut Frame, modal: &CustomButtonsModal, area: Rect, hit
 // -------------------------------------------------------------- Edit button
 
 fn edit_button(frame: &mut Frame, modal: &EditButtonModal, area: Rect, hits: &mut Hits) {
-    let rect = widgets::centered_rect(WIDTH, 20, area);
-    let mut column = Column::new(widgets::framed(frame, rect, modal.title(), true));
+    // Three labelled fields with a hint each, the error line, gap, buttons.
+    let rect = widgets::centered_rect(WIDTH, CHROME + 20, area);
+    let mut column = dialog(frame, rect, modal.title(), theme::title());
 
     column.line(frame, widgets::section("LABEL"));
     column.input(frame, hits, &modal.label, modal.focus, 0);
@@ -629,9 +758,10 @@ fn edit_button(frame: &mut Frame, modal: &EditButtonModal, area: Rect, hits: &mu
         frame,
         hits,
         vec![
-            control("Save", modal.focus == 3, false, 3),
-            control("Cancel", modal.focus == 4, false, 4),
+            control("Save", modal.focus == 3, theme::Variant::Primary, 3),
+            control("Cancel", modal.focus == 4, theme::Variant::Normal, 4),
         ],
+        true,
     );
 }
 
@@ -639,13 +769,11 @@ fn edit_button(frame: &mut Frame, modal: &EditButtonModal, area: Rect, hits: &mu
 
 fn confirm(frame: &mut Frame, modal: &ConfirmModal, area: Rect, hits: &mut Hits) {
     let message: Vec<&str> = modal.message.split('\n').collect();
-    let rect = widgets::centered_rect(WIDTH, message.len() as u16 + 8, area);
-    // The title belongs in the body, not the border: `framed` paints its title
-    // with `theme::title()`, and this one has to read as destructive.
-    let mut column = Column::new(widgets::framed(frame, rect, "", true));
+    // The message, gap, buttons, gap, key hints.
+    let rect = widgets::centered_rect(WIDTH, CHROME + message.len() as u16 + 6, area);
+    // Python gave this one title `label-destructive`, so it reads as a warning.
+    let mut column = dialog(frame, rect, &modal.title, theme::destructive());
 
-    column.text(frame, modal.title.clone(), theme::destructive());
-    column.gap();
     for line in message {
         column.text(frame, line.to_string(), theme::secondary());
     }
@@ -655,9 +783,15 @@ fn confirm(frame: &mut Frame, modal: &ConfirmModal, area: Rect, hits: &mut Hits)
         frame,
         hits,
         vec![
-            control("Cancel", !modal.confirm_focused, false, 0),
-            control("Delete", modal.confirm_focused, true, 1),
+            control("Cancel", !modal.confirm_focused, theme::Variant::Normal, 0),
+            control(
+                "Delete",
+                modal.confirm_focused,
+                theme::Variant::Destructive,
+                1,
+            ),
         ],
+        true,
     );
     column.gap();
     column.text(frame, "y confirm · n / Esc cancel", theme::muted());
@@ -806,6 +940,36 @@ mod tests {
         }
     }
 
+    /// A dialog taller than the terminal must still show the row you act on.
+    /// Boxing the buttons made every modal 6-10 rows taller, and an 80x24
+    /// terminal is not unusual — dropping the button row there would leave a
+    /// dialog you can only dismiss from the keyboard, with nothing on screen
+    /// saying so.
+    #[test]
+    fn buttons_survive_a_short_terminal() {
+        let mut checked = 0;
+        for (modal, title) in every_modal() {
+            // Not every dialog has a button row — the list editors drive
+            // themselves from a key hint instead. Ask a roomy render which ones
+            // do, so this cannot quietly pass by checking nothing.
+            if !render(&modal, 160, 40).contains("Cancel") {
+                continue;
+            }
+            checked += 1;
+            let (screen, hits) = render_with_hits(&modal, 80, 24);
+            assert!(
+                screen.contains("Cancel"),
+                "{title}: button row fell off an 80x24 terminal:\n{screen}"
+            );
+            let cell = cell_of(&screen, "Cancel");
+            assert!(
+                index_at(&hits, cell).is_some(),
+                "{title}: Cancel drawn but not clickable at 80x24:\n{screen}"
+            );
+        }
+        assert!(checked >= 4, "expected several modals to have buttons");
+    }
+
     #[test]
     fn add_repository_shows_the_validation_message() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -883,12 +1047,13 @@ mod tests {
         let settings = Modal::Settings(Box::new(SettingsModal::new(&Settings::default())));
         let (screen, hits) = render_with_hits(&settings, 160, 40);
         for (needle, index) in [
-            ("▐ ◂ Vim (tmux) ▸ ▌", 0),
+            ("│ ◂ Vim (tmux) ▸ │", 0),
             ("feat/", 1),
-            ("▐ ◂ System ▸ ▌", 2),
-            ("▐ Manage Custom Buttons... ▌", 3),
-            ("▐ Save ▌", 4),
-            ("▐ Cancel ▌", 5),
+            ("│ ◂ System ▸ │", 2),
+            ("│ Manage Custom Buttons... │", 3),
+            // Short labels are padded out to Textual's `min-width: 10`.
+            ("│  Save  │", 4),
+            ("│ Cancel │", 5),
         ] {
             assert_eq!(
                 index_at(&hits, cell_of(&screen, needle)),
@@ -897,13 +1062,21 @@ mod tests {
             );
         }
 
+        // A button is three rows tall, and every one of them has to answer the
+        // mouse — its border is part of the button.
+        let (column, row) = cell_of(&screen, "│  Save  │");
+        for offset in [-1i16, 0, 1] {
+            let y = row.saturating_add_signed(offset);
+            assert_eq!(index_at(&hits, (column, y)), Some(4), "row {y}:\n{screen}");
+        }
+
         let add = Modal::AddRepository(AddRepositoryModal::new());
         let (screen, hits) = render_with_hits(&add, 100, 20);
         for (needle, index) in [
             ("Enter path or paste", 0),
-            ("▐ [ ] Import existing worktrees ▌", 1),
-            ("▐ Add Repository ▌", 2),
-            ("▐ Cancel ▌", 3),
+            ("│ [ ] Import existing worktrees │", 1),
+            ("│ Add Repository │", 2),
+            ("│ Cancel │", 3),
         ] {
             assert_eq!(
                 index_at(&hits, cell_of(&screen, needle)),
@@ -923,12 +1096,12 @@ mod tests {
         let (screen, hits) = render_with_hits(&modal, 100, 20);
         // `Modal::set_focus` reads 0 as Cancel and 1 as the destructive choice.
         assert_eq!(
-            index_at(&hits, cell_of(&screen, "▐ Cancel ▌")),
+            index_at(&hits, cell_of(&screen, "│ Cancel │")),
             Some(0),
             "{screen}"
         );
         assert_eq!(
-            index_at(&hits, cell_of(&screen, "▐ Delete ▌")),
+            index_at(&hits, cell_of(&screen, "│ Delete │")),
             Some(1),
             "{screen}"
         );

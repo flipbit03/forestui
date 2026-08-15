@@ -9,21 +9,24 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
+    // `#sidebar-header-box { height: 3; padding: 1 0 0 0; border-bottom: solid }`
+    // — a blank row, the centred status, then the rule that closes the box.
     let [header_area, tree_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+        Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(area);
 
-    draw_gh_status(frame, app, header_area);
-
-    let block =
-        Block::default()
-            .borders(Borders::RIGHT)
-            .border_style(if app.focus == Focus::Sidebar {
-                theme::border_focused()
-            } else {
-                theme::border()
-            });
+    // `#sidebar { border-right: solid }` runs the sidebar's whole height, header
+    // box included, so it is drawn over `area` rather than just the tree.
+    // Always the resting border colour: `#sidebar { border-right: solid $border }`
+    // had no focus rule, and focus is already legible from the cursor row, which
+    // is the thing that actually moves.
+    let block = Block::default()
+        .borders(Borders::RIGHT)
+        .border_style(theme::border());
     let inner = block.inner(tree_area);
-    frame.render_widget(block, tree_area);
+    let status_area = block.inner(header_area);
+    frame.render_widget(block, area);
+
+    draw_gh_status(frame, app, status_area);
 
     if app.rows.is_empty() {
         let lines = vec![
@@ -78,10 +81,19 @@ fn draw_gh_status(frame: &mut Frame, app: &App, area: Rect) {
     let text = format!("gh cli: {}", app.gh_status);
     let padding = (area.width as usize).saturating_sub(text.chars().count()) / 2;
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw(" ".repeat(padding)),
-            Span::styled(text, style),
-        ]))
+        Paragraph::new(vec![
+            Line::default(),
+            Line::from(vec![
+                Span::raw(" ".repeat(padding)),
+                Span::styled(text, style),
+            ]),
+            // The box's `border-bottom`, drawn across the sidebar and its divider
+            // so the two borders meet rather than leaving a notch.
+            Line::from(Span::styled(
+                "─".repeat(area.width as usize),
+                theme::border(),
+            )),
+        ])
         .style(Style::default().bg(theme::BG_ELEVATED)),
         area,
     );

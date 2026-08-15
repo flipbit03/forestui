@@ -1,44 +1,44 @@
- forestui v0.0.0
-         gh cli: unauth'd           MAIN REPOSITORY
- alpha                            │ Repository: alpha
-└─ wt-a [feat/wt-a]               │ Branch:     main
- beta                             │ Commit:     <sha> (<rel>)
-                                  │ ▐ ⟳  Git Pull (No remote) ▌ ▐ Add Worktree ▌
+ ⭘                                                            forestui v<version>
                                   │
-                                  │ ───────────────────────────────────────────────────────────────────────────────────────────────────────
+     gh cli: ok (sweep-user)      │
+──────────────────────────────────│  MAIN REPOSITORY
+ alpha                            │  Repository: alpha
+└─ wt-a [feat/wt-a]               │  Branch:     main
+ beta                             │  Commit:     <sha> (<rel>)
                                   │
-                                  │ LOCATION
-                                  │ ┌───────────────────────────────────────────────────────────────────────────┐
-                                  │ │ <ROOT>/src/alpha │
-                                  │ └───────────────────────────────────────────────────────────────────────────┘
+                                  │  ┌─────────────────────────┐ ┌──────────────┐
+                                  │  │ ⟳  Git Pull (No remote) │ │ Add Worktree │
+                                  │  └─────────────────────────┘ └──────────────┘
                                   │
-                                  │ ───────────────────────────────────────────────────────────────────────────────────────────────────────
+                                  │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
-                                  │ OPEN IN
-                                  │ ▐ Editor ▌ ▐ Terminal ▌ ▐ Files ▌
+                                  │  LOCATION
+                                  │  ┌───────────────────────────────────────────────────────────────────────────┐
+                                  │  │ <ROOT>/src/alpha │
+                                  │  └───────────────────────────────────────────────────────────────────────────┘
                                   │
-                                  │ ───────────────────────────────────────────────────────────────────────────────────────────────────────
+                                  │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
-                                  │ CLAUDE
-                                  │ ▐ New Session ▌ ▐ New Session: YOLO ▌ ▐ Opus ▌
+                                  │  OPEN IN
                                   │
-                                  │ RECENT SESSIONS
-                                  │ ┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐
-                                  │ │ session 3: refactor the detail pane so the cards line up                                            │
-                                  │ │ > and then check it against the python bui...                                                       │
-                                  │ │ 11 days ago • 2 msgs                                                                                │
-                                  │ │ ▐ Resume ▌ ▐ YOLO ▌ ▐ Opus ▌                                                                        │
-                                  │ └─────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                  │  ┌────────┐ ┌──────────┐ ┌───────┐
+                                  │  │ Editor │ │ Terminal │ │ Files │
+                                  │  └────────┘ └──────────┘ └───────┘
                                   │
-                                  │ ┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐
-                                  │ │ session 2: refactor the detail pane so the cards line up                                            │
-                                  │ │ > and then check it against the python bui...                                                       │
-                                  │ │ 12 days ago • 2 msgs                                                                                │
-                                  │ │ ▐ Resume ▌ ▐ YOLO ▌ ▐ Opus ▌                                                                        │
-                                  │ └─────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                  │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
-                                  │ ┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐
-                                  │ │ session 1: refactor the detail pane so the cards line up                                            │
-                                  │ │ > and then check it against the python bui...                                                       │
+                                  │  CLAUDE
+                                  │
+                                  │  ┌─────────────┐ ┌───────────────────┐ ┌──────┐
+                                  │  │ New Session │ │ New Session: YOLO │ │ Opus │
+                                  │  └─────────────┘ └───────────────────┘ └──────┘
+                                  │
+                                  │  RECENT SESSIONS
+                                  │
+                                  │  ┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
+                                  │  │                                                                                                 │
+                                  │  │ session 3: refactor the detail pane so the cards line up                                        │
+                                  │  │ > and then check it against the python bui...                                                   │
+                                  │  │                                                                                                 │
  q  Quit   a  Add Repo   w  Add Worktree   e  Editor   t  Terminal   o  Files   n  Claude   y  ClaudeYOLO   h  Archive   d  Delete   s  Sett
-[forestui-0:forestui-dev-<hhmm>*                                                                       "<host>" <clock>
+[forestui-0:forestui-dev-<hhmm>*                                                                                  "<host>" <clock>

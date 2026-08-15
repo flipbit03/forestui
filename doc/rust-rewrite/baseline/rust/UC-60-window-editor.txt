@@ -41,4 +41,4 @@ vim stub .
 
 
 
-[forestui-0:forestui-dev-<hhmm>- 1:edit:alpha:wt-a*                                                    "<host>" <clock>
+[forestui-0:forestui-dev-<hhmm>- 1:edit:alpha:wt-a*                                                               "<host>" <clock>
