@@ -1,10 +1,14 @@
-# Python-generated files
+# Rust
+/target
+**/*.rs.bk
+
+# Leftovers from the pre-Rust Python implementation, so old checkouts stay clean
 __pycache__/
 *.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-
-# Virtual environments
 .venv
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# tu sweep screenshots — regenerate with scripts/tu-sweep.sh
+doc/rust-rewrite/screenshots/

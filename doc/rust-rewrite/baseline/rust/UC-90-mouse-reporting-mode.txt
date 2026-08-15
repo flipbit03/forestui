@@ -1,0 +1,44 @@
+                                                              forestui v<version>
+                                  │
+     gh cli: ok (sweep-user)      │
+──────────────────────────────────│  MAIN REPOSITORY
+▼ alpha                           │  Repository: alpha
+└─ wt-a [feat/wt-a]               │  Branch:     main
+  beta                            │  Commit:     <sha> (<rel>)
+                                  │
+                                  │  ┌─────────────────────────┐ ┌──────────────┐
+                                  │  │ ⟳  Git Pull (No remote) │ │ Add Worktree │
+                                  │  └─────────────────────────┘ └──────────────┘
+                                  │
+                                  │  ───────────────────────────────────────────────────────────────────────────────────────────────────
+                                  │
+                                  │  LOCATION
+                                  │  ┌───────────────────────────────┐
+                                  │  │ <ROOT>/src/alpha │
+                                  │  └───────────────────────────────┘
+                                  │
+                                  │  ───────────────────────────────────────────────────────────────────────────────────────────────────
+                                  │
+                                  │  OPEN IN
+                                  │
+                                  │  ┌────────┐ ┌──────────┐ ┌───────┐
+                                  │  │ Editor │ │ Terminal │ │ Files │
+                                  │  └────────┘ └──────────┘ └───────┘
+                                  │
+                                  │  ───────────────────────────────────────────────────────────────────────────────────────────────────
+                                  │
+                                  │  CLAUDE
+                                  │
+                                  │  ┌─────────────┐ ┌───────────────────┐ ┌──────┐
+                                  │  │ New Session │ │ New Session: YOLO │ │ Opus │
+                                  │  └─────────────┘ └───────────────────┘ └──────┘
+                                  │
+                                  │  RECENT SESSIONS
+                                  │
+                                  │  ┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
+                                  │  │                                                                                                 │
+                                  │  │ session 3: refactor the detail pane so the cards line up                                        │
+                                  │  │ > and then check it against the python bui...                                                   │
+                                  │  │                                                                                                 │
+ a Add Repo  q Quit  w Add Worktree  e Editor  t Terminal  o Files  n Claude  y ClaudeYOLO  h Archive  d Delete  s Settings  ? Help
+[forestui-0:forestui-dev-<hhmm>*                                                                              "<host>" <clock>

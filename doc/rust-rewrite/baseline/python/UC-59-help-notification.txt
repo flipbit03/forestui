@@ -1,0 +1,44 @@
+ ⭘                                                           forestui v<version>
+                                  │
+     gh cli: ok (sweep-user)      │
+──────────────────────────────────│  WORKTREE
+ ▼  alpha                         │  Repository: alpha
+ └ └─  wt-a                       │  Worktree:   wt-a
+ ▼  beta                          │  Branch:     feat/wt-a
+                                  │  Based on:   main (<sha>)
+                                  │  Commit:     <sha> (<rel>)
+                                  │
+                                  │  ┌────────────────────────┐
+                                  │  │ ⟳ Git Pull (No remote) │
+                                  │  └────────────────────────┘
+                                  │
+                                  │
+                                  │  ─────────────────────────────────────────────────────────────────────────────────────────────────
+                                  │
+                                  │  LOCATION
+                                  │  ┌───────────────────────────────────────┐
+                                  │  │ <ROOT>/forest/alpha/wt-a │
+                                  │  └───────────────────────────────────────┘
+                                  │
+                                  │  ─────────────────────────────────────────────────────────────────────────────────────────────────
+                                  │
+                                  │  OPEN IN
+                                  │
+                                  │  ┌─────────┐ ┌───────────┐ ┌────────┐
+                                  │  │  Editor │ │  Terminal │ │  Files │                                                               ▅▅
+                                  │  └─────────┘ └───────────┘ └────────┘
+                                  │
+                                  │  ─────────────────────────────────────────────────────────────────────────────────────────────────
+                                  │
+                                  │  CLAUDE
+                                  │
+                                  │  ┌─────────────┐ ┌───────────────────┐ ┌────────┐
+                                  │  │ New Session │ │ New Session: YOLO │ │  Opus  │
+                                  │  └─────────────┘ └───────────────────┘ └────────┘
+                                  │                                           ▌
+                                  │  RECENT SESSIONS                          ▌ a: Add Repo | w: Add Worktree | e: Editor | t: Terminal |
+                                  │                                           ▌ n: Claude | h: Archive | d: Delete | s: Settings | q:
+                                  │  No sessions found                        ▌ Quit
+                                  │                                           ▌
+ a Add Repo  q Quit  w Add Worktree  e Editor  t Terminal  o Files  n Claude  y ClaudeYOLO  h Archive  d Delete  s Settings  ? H▏^p palette
+[forestui-0:forestui*                                                                                       "<host>" <clock>

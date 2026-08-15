@@ -1,94 +1,102 @@
-#!/usr/bin/env bash
-#
-# forestui installer
-#
-# Installs forestui from PyPI using uv.
-#
-# Usage:
-#   curl -fsSL https://raw.githubusercontent.com/flipbit03/forestui/main/install.sh | bash
-#
-
+#!/bin/sh
+# Install forestui — a terminal UI for managing Git worktrees
+# Usage: curl -fsSL https://raw.githubusercontent.com/flipbit03/forestui/main/install.sh | sh
 set -e
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+REPO="flipbit03/forestui"
+INSTALL_DIR="${FORESTUI_INSTALL_DIR:-$HOME/.local/bin}"
 
-info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
-}
-
-warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
-}
-
-error() {
-    echo -e "${RED}[ERROR]${NC} $1" >&2
-    exit 1
-}
-
-check_command() {
-    command -v "$1" &> /dev/null
-}
-
-info "forestui installer"
-echo ""
-
-# Check for tmux (required dependency)
-if ! check_command tmux; then
-    error "tmux is not installed. Please install tmux first:
-
-    macOS:  brew install tmux
-    Ubuntu: sudo apt install tmux
-    Fedora: sudo dnf install tmux"
+# tmux is a hard requirement: forestui re-executes itself into a tmux session.
+if ! command -v tmux >/dev/null 2>&1; then
+  echo "forestui requires tmux. Install it first:" >&2
+  echo "  macOS:  brew install tmux" >&2
+  echo "  Ubuntu: sudo apt install tmux" >&2
+  echo "  Fedora: sudo dnf install tmux" >&2
+  exit 1
 fi
 
-# Install uv if not present
-if ! check_command uv; then
-    info "Installing uv (Python package manager)..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
+# Detect OS and architecture.
+OS="$(uname -s)"
+ARCH="$(uname -m)"
 
-    # Add to PATH for this session
-    export PATH="$HOME/.local/bin:$PATH"
+case "${OS}" in
+  Linux)  OS_TAG="linux" ;;
+  Darwin) OS_TAG="macos" ;;
+  *) echo "Unsupported OS: ${OS}" >&2; exit 1 ;;
+esac
 
-    if ! check_command uv; then
-        error "Failed to install uv. Please install manually: https://docs.astral.sh/uv/"
+case "${ARCH}" in
+  x86_64|amd64)  ARCH_TAG="x86_64" ;;
+  aarch64|arm64) ARCH_TAG="aarch64" ;;
+  *) echo "Unsupported architecture: ${ARCH}" >&2; exit 1 ;;
+esac
+
+# macOS x86_64 binaries are not provided.
+if [ "${OS}" = "Darwin" ] && [ "${ARCH_TAG}" = "x86_64" ]; then
+  echo "macOS x86_64 binaries are not provided. Use: cargo install forestui" >&2
+  exit 1
+fi
+
+ASSET="forestui_${OS_TAG}_${ARCH_TAG}"
+
+# Get latest release tag.
+echo "Fetching latest release..."
+TAG=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
+if [ -z "${TAG}" ]; then
+  echo "Failed to determine latest release" >&2
+  exit 1
+fi
+echo "Latest release: ${TAG}"
+
+URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
+echo "Downloading ${ASSET}..."
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "${TMPDIR}"' EXIT
+
+curl -fsSL "${URL}" -o "${TMPDIR}/forestui"
+
+# The release publishes a checksum beside every asset. An installer that
+# downloads a binary and runs it should check it.
+if curl -fsSL "${URL}.sha256" -o "${TMPDIR}/${ASSET}.sha256" 2>/dev/null; then
+  SHA_TOOL=""
+  if command -v shasum >/dev/null 2>&1; then
+    SHA_TOOL="shasum -a 256"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    SHA_TOOL="sha256sum"
+  fi
+
+  if [ -z "${SHA_TOOL}" ]; then
+    echo "Neither shasum nor sha256sum found; skipping checksum verification." >&2
+  else
+    EXPECTED=$(cut -d' ' -f1 < "${TMPDIR}/${ASSET}.sha256")
+    ACTUAL=$($SHA_TOOL "${TMPDIR}/forestui" | cut -d' ' -f1)
+    if [ "${EXPECTED}" != "${ACTUAL}" ]; then
+      echo "Checksum mismatch for ${ASSET}. Refusing to install." >&2
+      exit 1
     fi
-    info "uv installed successfully"
-fi
-
-# Install forestui from PyPI
-info "Installing forestui from PyPI..."
-if uv tool install forestui; then
-    echo ""
-    info "Installation complete!"
+    echo "Checksum verified."
+  fi
 else
-    error "Failed to install forestui from PyPI"
+  echo "No published checksum for ${ASSET}; skipping verification." >&2
 fi
 
-echo ""
-echo "  Run 'forestui' to start the application."
-echo "  Run 'forestui --help' for usage information."
-echo ""
+# Install.
+mkdir -p "${INSTALL_DIR}"
+mv "${TMPDIR}/forestui" "${INSTALL_DIR}/forestui"
+chmod +x "${INSTALL_DIR}/forestui"
 
-# Check if uv tools are in PATH
-if ! check_command forestui; then
-    warn "forestui was installed but is not in your PATH."
-    echo ""
-    echo "  Add the following to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
-    echo ""
-    echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
-    echo ""
-    echo "  Then restart your shell or run: source ~/.bashrc"
-fi
+echo "Installed forestui ${TAG} to ${INSTALL_DIR}/forestui"
 
-# Notify about old installation directory
-OLD_INSTALL_DIR="$HOME/.forestui-install"
-if [ -d "$OLD_INSTALL_DIR" ]; then
-    echo ""
-    info "Note: Found old git-based installation at $OLD_INSTALL_DIR"
-    echo "  This directory is no longer needed. You can remove it with:"
-    echo "    rm -rf $OLD_INSTALL_DIR"
+# Check if install dir is in PATH.
+case ":${PATH}:" in
+  *":${INSTALL_DIR}:"*) ;;
+  *) echo "Add ${INSTALL_DIR} to your PATH:"; echo "  export PATH=\"${INSTALL_DIR}:\$PATH\"" ;;
+esac
+
+# The Python build installed itself as a uv tool, and ~/.local/bin usually
+# precedes ~/.cargo/bin, so a leftover install would keep winning.
+if command -v uv >/dev/null 2>&1 && uv tool list 2>/dev/null | grep -q '^forestui'; then
+  echo ""
+  echo "Note: an older Python forestui is still installed via uv. Remove it with:"
+  echo "  uv tool uninstall forestui"
 fi
