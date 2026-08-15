@@ -100,10 +100,19 @@ pub enum ModalClick {
     Activate,
     /// Text inputs: focus only.
     Focus,
-    /// A `◂ value ▸` cycle: focus, then advance one step.
-    Cycle,
+    /// A `◂ value ▸` cycle: focus, then step one value in `Direction`. The
+    /// glyphs stand for Left and Right, so a click on `◂` has to go back —
+    /// sending Right for both made the left arrow a second right arrow.
+    Cycle(Direction),
     /// A row of a list: focus the list and select that row.
     Row(usize),
+}
+
+/// Which way a [`ModalClick::Cycle`] steps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Previous,
+    Next,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -398,7 +407,8 @@ impl App {
         }
         match click {
             ModalClick::Activate => self.send_modal_key(KeyCode::Enter),
-            ModalClick::Cycle => self.send_modal_key(KeyCode::Right),
+            ModalClick::Cycle(Direction::Next) => self.send_modal_key(KeyCode::Right),
+            ModalClick::Cycle(Direction::Previous) => self.send_modal_key(KeyCode::Left),
             // Focusing a field must not submit the dialog, and selecting a row
             // is already done above.
             ModalClick::Focus | ModalClick::Row(_) => {}

@@ -148,6 +148,13 @@ impl Modal {
                 let count = m.matches().len();
                 if count > 0 {
                     m.search_index = row.min(count - 1);
+                    // Picking a row commits it, the way Enter does from the
+                    // keyboard. Only `search` is read by `selected_branch` and
+                    // `can_create`, so highlighting alone left Create disabled
+                    // and a mouse-only user with no way to choose a branch.
+                    if let Some((branch, _)) = m.matches().into_iter().nth(m.search_index) {
+                        m.search.set_value(branch);
+                    }
                 }
             }
             Modal::CustomButtons(m) if !m.buttons.is_empty() => {
@@ -1241,6 +1248,37 @@ mod tests {
             modal.handle_key(key(KeyCode::Enter)),
             ModalOutcome::Submit(ModalResult::WorktreeCreated { .. })
         ));
+    }
+
+    /// Clicking a branch row has to *pick* the branch, not just light it up:
+    /// `can_create` reads `search`, so a mouse-only user was left with Create
+    /// permanently disabled and no way to choose.
+    #[test]
+    fn clicking_a_branch_row_selects_that_branch() {
+        let repo = Repository::new("demo".into(), "/tmp/demo".into());
+        let mut modal = Modal::AddWorktree(Box::new(AddWorktreeModal::new(
+            &repo,
+            vec!["main".into(), "feat/login".into()],
+            vec![],
+            PathBuf::from("/forest"),
+            "feat/".into(),
+        )));
+        let expected = if let Modal::AddWorktree(m) = &mut modal {
+            m.name.set_value("wt");
+            m.new_branch = false;
+            assert!(!m.can_create(), "nothing is picked yet");
+            m.matches()[1].0.clone()
+        } else {
+            panic!("add worktree modal expected")
+        };
+
+        modal.set_row(1);
+
+        let Modal::AddWorktree(m) = &modal else {
+            panic!("add worktree modal expected")
+        };
+        assert_eq!(m.selected_branch(), expected);
+        assert!(m.can_create(), "the clicked branch was never committed");
     }
 
     #[test]

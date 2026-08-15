@@ -13,7 +13,7 @@ mod mouse;
 
 pub use detail::{Action, DetailItem, Field};
 pub use keys::BINDINGS;
-pub use mouse::{Hit, HitTarget, ModalClick, ScrollbarGeom};
+pub use mouse::{Direction, Hit, HitTarget, ModalClick, ScrollbarGeom};
 
 use crate::event::{AppEvent, DetailMeta, EventTx, Severity};
 use crate::modal::Modal;
@@ -1426,13 +1426,33 @@ mod tests {
             rect(0, 5, 20, 1),
             HitTarget::ModalControl {
                 index: 0,
-                click: ModalClick::Cycle,
+                click: ModalClick::Cycle(Direction::Next),
             },
         );
         app.handle_mouse(click(3, 5));
         assert_eq!(app.modals.len(), 1, "clicking a cycle closed the dialog");
+        let advanced = match app.modals.last() {
+            Some(Modal::Settings(m)) => {
+                assert_ne!(m.editor_index, before, "cycle did not advance");
+                m.editor_index
+            }
+            _ => panic!("settings modal expected"),
+        };
+
+        // `◂` is the other direction, not a second `▸`.
+        app.push_hit(
+            rect(0, 5, 20, 1),
+            HitTarget::ModalControl {
+                index: 0,
+                click: ModalClick::Cycle(Direction::Previous),
+            },
+        );
+        app.handle_mouse(click(3, 5));
         match app.modals.last() {
-            Some(Modal::Settings(m)) => assert_ne!(m.editor_index, before, "cycle did not advance"),
+            Some(Modal::Settings(m)) => assert_ne!(
+                m.editor_index, advanced,
+                "the left arrow advanced the value instead of stepping back"
+            ),
             _ => panic!("settings modal expected"),
         }
     }

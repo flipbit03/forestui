@@ -6,7 +6,7 @@
 //! drift apart — both sides name the same `FOCUS_*` constants on the modal
 //! struct rather than repeating a number, so there is one place to change.
 
-use crate::app::{App, HitTarget, ModalClick};
+use crate::app::{App, Direction, HitTarget, ModalClick};
 use crate::modal::{
     AddRepositoryModal, AddWorktreeModal, ConfirmModal, CreateFromIssueModal, CustomButtonsModal,
     EDITORS, EditButtonModal, Modal, SPINNER, SettingsModal, THEMES,
@@ -338,13 +338,21 @@ fn cycle(value: &str, focused: bool, index: usize) -> Control {
         theme::Variant::Normal,
         index,
     );
-    (spans, width, index, ModalClick::Cycle)
+    (spans, width, index, ModalClick::Cycle(Direction::Next))
+}
+
+/// One segment of a two-option row, which selects itself rather than toggling
+/// the row. `direction` is the key that lands on this option: the pair reads as
+/// Left for the first and Right for the second, both idempotent.
+fn option(label: &str, active: bool, index: usize, direction: Direction) -> Control {
+    let (spans, width, index, _) = control(label, active, theme::Variant::Normal, index);
+    (spans, width, index, ModalClick::Cycle(direction))
 }
 
 /// A bare arrow beside a control, standing for the key that drives it. Clicking
 /// one does what that key does, so it carries the control's index too. It is one
 /// cell wide on all three rows, so the buttons after it stay aligned.
-fn arrow(glyph: char, focused: bool, index: usize) -> Control {
+fn arrow(glyph: char, direction: Direction, focused: bool, index: usize) -> Control {
     let style = if focused {
         theme::accent()
     } else {
@@ -359,7 +367,7 @@ fn arrow(glyph: char, focused: bool, index: usize) -> Control {
         ],
         1,
         index,
-        ModalClick::Cycle,
+        ModalClick::Cycle(direction),
     )
 }
 
@@ -453,18 +461,20 @@ fn add_worktree(frame: &mut Frame, modal: &AddWorktreeModal, area: Rect, hits: &
 
     column.line(frame, widgets::section("Branch"));
     // Left/Right switch modes here, so the arrows are literal: they light up
-    // only while the toggle holds the focus. The whole row is one control, so
-    // every part of it toggles — which is what Enter on it does too.
+    // only while the toggle holds the focus. Each option *selects* itself
+    // rather than toggling the row — Left is "New Branch" and Right is
+    // "Existing" whichever is current, so clicking the option that is already
+    // active does nothing instead of switching away from it.
     let mode = AddWorktreeModal::FOCUS_MODE;
     let toggle_focused = modal.focus == mode;
     column.controls(
         frame,
         hits,
         vec![
-            arrow('◂', toggle_focused, mode),
-            control("New Branch", modal.new_branch, theme::Variant::Normal, mode),
-            control("Existing", !modal.new_branch, theme::Variant::Normal, mode),
-            arrow('▸', toggle_focused, mode),
+            arrow('◂', Direction::Previous, toggle_focused, mode),
+            option("New Branch", modal.new_branch, mode, Direction::Previous),
+            option("Existing", !modal.new_branch, mode, Direction::Next),
+            arrow('▸', Direction::Next, toggle_focused, mode),
         ],
         false,
     );
@@ -999,6 +1009,19 @@ mod tests {
         (column, row as u16)
     }
 
+    /// What a click on a cell does, resolved the way `App::hit_at` does.
+    fn index_click(hits: &Hits, (column, row): (u16, u16)) -> Option<ModalClick> {
+        hits.iter()
+            .rev()
+            .find(|(rect, _, _)| {
+                column >= rect.x
+                    && column < rect.x + rect.width
+                    && row >= rect.y
+                    && row < rect.y + rect.height
+            })
+            .map(|(_, _, click)| *click)
+    }
+
     /// The focus index recorded for a cell, resolved the way `App::hit_at` does.
     fn index_at(hits: &Hits, (column, row): (u16, u16)) -> Option<usize> {
         hits.iter()
@@ -1158,6 +1181,30 @@ mod tests {
             }
         }
         assert!(checked >= 20, "expected every modal at every height");
+    }
+
+    /// Clicking the mode option that is already active must not switch away
+    /// from it. Both segments used to carry the row's Enter, which toggles.
+    #[test]
+    fn clicking_the_active_mode_option_keeps_it() {
+        let modal = worktree_modal(true);
+        let (screen, hits) = render_with_hits(&modal, 100, 30);
+
+        let new_branch = index_click(&hits, cell_of(&screen, "New Branch"));
+        let existing = index_click(&hits, cell_of(&screen, "Existing"));
+
+        // Left selects "New Branch", Right selects "Existing" — the same key
+        // whichever mode is current, so re-clicking the active one is a no-op.
+        assert_eq!(
+            new_branch,
+            Some(ModalClick::Cycle(Direction::Previous)),
+            "the New Branch pill does not select New Branch"
+        );
+        assert_eq!(
+            existing,
+            Some(ModalClick::Cycle(Direction::Next)),
+            "the Existing pill does not select Existing"
+        );
     }
 
     #[test]

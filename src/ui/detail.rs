@@ -61,6 +61,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     // resolve against the frame the user saw, not a list a background event
     // may have reshaped since (see `App::drawn_items`).
     app.drawn_items = crate::app::detail::drawn(&nodes);
+    // The pane can shrink under the cursor — the issue auto-refresh returning
+    // fewer issues than last time is enough — and an index left past the end
+    // resolves to nothing: the focus ring disappears and Enter does nothing
+    // until the user presses Down. Clamped here because this is the one place
+    // both consumers of the snapshot agree on its length.
+    if app.detail_index >= app.drawn_items.len() {
+        app.detail_index = app.drawn_items.len().saturating_sub(1);
+    }
     if nodes.is_empty() {
         app.scrollbar = None;
         empty_state(frame, area);
@@ -925,6 +933,36 @@ mod tests {
         );
         // Following is a one-shot: it must not fight the wheel on later frames.
         assert!(!app.detail_follow_focus);
+    }
+
+    /// The pane shrinks under the cursor whenever the issue auto-refresh comes
+    /// back with fewer issues than last time. An index left past the end is a
+    /// focus ring that vanishes and an Enter that does nothing.
+    #[tokio::test]
+    async fn a_shrinking_pane_pulls_the_cursor_back_into_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = test_app(&dir);
+        with_repository(&mut app);
+        app.sessions = Some(vec![a_session()]);
+        app.issues = Some(vec![an_issue(), an_issue(), an_issue()]);
+        app.focus = Focus::Detail;
+        app.detail_index = app.detail_items().len() - 1;
+        render_buffer(&mut app, 100, TALL);
+
+        // One issue was closed on GitHub since the last refresh.
+        app.issues = Some(vec![an_issue()]);
+        render_buffer(&mut app, 100, TALL);
+
+        assert!(
+            app.detail_index < app.drawn_items.len(),
+            "index {} is past the end of {} items",
+            app.detail_index,
+            app.drawn_items.len()
+        );
+        assert!(
+            app.drawn_items.get(app.detail_index).is_some(),
+            "the focused slot resolves to nothing, so Enter is dead"
+        );
     }
 
     /// The wheel scrolls the pane whoever has focus, which is the whole point of
