@@ -589,7 +589,9 @@ mod tests {
     use super::*;
     use crate::app::{Action, DetailItem, Field};
     use crate::event;
-    use crate::models::{ClaudeSession, CustomClaudeButton, GitHubIssue, Repository, Settings, Worktree};
+    use crate::models::{
+        ClaudeSession, CustomClaudeButton, GitHubIssue, Repository, Settings, Worktree,
+    };
     use crate::services::settings as settings_service;
     use crate::state::AppState;
     use chrono::Utc;

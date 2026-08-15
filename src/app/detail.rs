@@ -89,14 +89,22 @@ pub enum DetailNode {
     /// Section header, with the unconditional blank row above it that
     /// Textual's `.section-header { margin: 1 0 0 0 }` produced.
     Section(&'static str),
-    Text { text: String, style: Style },
+    Text {
+        text: String,
+        style: Style,
+    },
     Blank,
     /// The horizontal rule between major sections, with its margin row above.
     Rule,
     /// A path in the elevated box that hugs its content.
-    PathBox { path: String, style: Style },
+    PathBox {
+        path: String,
+        style: Style,
+    },
     /// Open a card; nodes until [`DetailNode::CardEnd`] land inside it.
-    CardStart { padded: bool },
+    CardStart {
+        padded: bool,
+    },
     CardEnd,
     /// A row of boxed controls. `lead` is non-clickable text sharing the line.
     Controls {
@@ -104,10 +112,15 @@ pub enum DetailNode {
         controls: Vec<ControlSpec>,
     },
     /// A rename field, rendered from the app's live input for `field`.
-    Field { field: Field, label: &'static str },
+    Field {
+        field: Field,
+        label: &'static str,
+    },
     /// The issues header with its inline refresh control, whose glyph doubles
     /// as the loading spinner.
-    IssuesHeader { glyph: char },
+    IssuesHeader {
+        glyph: char,
+    },
 }
 
 /// The full pane for the current selection. Empty when nothing is selected,
@@ -335,7 +348,7 @@ fn claude(nodes: &mut Vec<DetailNode>, app: &App) {
             theme::Variant::Destructive,
         ),
     ];
-    row.extend(custom_controls(app, |index| Action::ClaudeCustom(index)));
+    row.extend(custom_controls(app, Action::ClaudeCustom));
     controls(nodes, row);
 }
 
