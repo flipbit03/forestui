@@ -5,6 +5,30 @@ use crate::event::Severity;
 use crate::modal::{AddRepositoryModal, Modal, SettingsModal};
 use crate::ui::widgets::TextInput;
 
+/// Every footer binding, in the order Textual's `Footer` rendered them: `q`
+/// is declared first in the Python bindings but carries `priority=True`,
+/// which sorted it after `a`. One table drives both the footer and the `?`
+/// help toast, so the two lists cannot drift; `handle_key` below must handle
+/// every character listed here.
+pub const BINDINGS: [(char, &str); 12] = [
+    ('a', "Add Repo"),
+    ('q', "Quit"),
+    ('w', "Add Worktree"),
+    ('e', "Editor"),
+    ('t', "Terminal"),
+    ('o', "Files"),
+    ('n', "Claude"),
+    ('y', "ClaudeYOLO"),
+    ('h', "Archive"),
+    ('d', "Delete"),
+    ('s', "Settings"),
+    ('?', "Help"),
+];
+
+/// Bindings that work everywhere but never fit Textual's footer. The help
+/// toast lists them; the footer does not, for parity with the Python build.
+pub const EXTRA_BINDINGS: [(char, &str); 2] = [('r', "Refresh"), ('A', "Show Archived")];
+
 impl App {
     // --------------------------------------------------------------------- keys
 
@@ -21,10 +45,12 @@ impl App {
             return;
         }
 
-        // A focused text field owns every printable key.
+        // A focused text field owns every printable key. Resolved against the
+        // drawn snapshot rather than re-walking the pane content on every
+        // keypress — the snapshot is also what Enter and the mouse act on.
         if self.focus == Focus::Detail
-            && let Some(DetailItem::Field(field)) =
-                self.detail_items().get(self.detail_index).cloned()
+            && let Some((DetailItem::Field(field), _)) =
+                self.drawn_items.get(self.detail_index).cloned()
             && self.handle_field_key(field, key)
         {
             return;
@@ -54,7 +80,7 @@ impl App {
                 match self.focus {
                     Focus::Sidebar => self.move_sidebar(1),
                     Focus::Detail => {
-                        let len = self.detail_items().len();
+                        let len = self.drawn_items.len();
                         if len > 0 {
                             self.detail_index = (self.detail_index + 1).min(len - 1);
                         }
@@ -125,18 +151,24 @@ impl App {
                 self.state.show_archived = !self.state.show_archived;
                 self.rebuild_rows();
             }
-            KeyCode::Char('?') => self.notify(
-                "a: Add Repo | w: Add Worktree | e: Editor | t: Terminal | \
-                 n: Claude | h: Archive | d: Delete | s: Settings | q: Quit",
-                Severity::Information,
-            ),
+            KeyCode::Char('?') => {
+                // Derived from the binding tables, so a key can no longer be
+                // reachable yet undiscoverable — 'o', 'y', 'r' and 'A' were.
+                let help = BINDINGS
+                    .iter()
+                    .chain(EXTRA_BINDINGS.iter())
+                    .map(|(key, label)| format!("{key}: {label}"))
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                self.notify(help, Severity::Information);
+            }
             _ => {}
         }
     }
 
     /// Route a key to a focused rename field. Returns true when consumed.
     fn handle_field_key(&mut self, field: Field, key: ratatui::crossterm::event::KeyEvent) -> bool {
-        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+        use ratatui::crossterm::event::KeyCode;
 
         if matches!(
             key.code,
@@ -149,53 +181,20 @@ impl App {
             return true;
         }
 
+        // Escape has to hand focus back as well as undo the edit — a focused
+        // field swallows every printable key, so the global hotkeys are
+        // unreachable from here otherwise.
+        if key.code == KeyCode::Esc {
+            self.reset_rename_fields();
+            self.focus = Focus::Sidebar;
+            return true;
+        }
+
         let input = match field {
             Field::WorktreeName => &mut self.name_input,
             Field::BranchName => &mut self.branch_input,
         };
-        match key.code {
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                input.kill_to_start();
-                true
-            }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                input.insert(c);
-                true
-            }
-            KeyCode::Backspace => {
-                input.backspace();
-                true
-            }
-            KeyCode::Delete => {
-                input.delete();
-                true
-            }
-            KeyCode::Left => {
-                input.move_left();
-                true
-            }
-            KeyCode::Right => {
-                input.move_right();
-                true
-            }
-            KeyCode::Home => {
-                input.move_home();
-                true
-            }
-            KeyCode::End => {
-                input.move_end();
-                true
-            }
-            // A focused field swallows every printable key, so Escape has to
-            // hand focus back as well as undo the edit — otherwise the global
-            // hotkeys are unreachable from here.
-            KeyCode::Esc => {
-                self.reset_rename_fields();
-                self.focus = Focus::Sidebar;
-                true
-            }
-            _ => false,
-        }
+        input.apply_edit_key(key)
     }
 
     fn reset_rename_fields(&mut self) {

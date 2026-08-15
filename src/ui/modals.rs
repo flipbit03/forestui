@@ -458,22 +458,21 @@ fn add_worktree(frame: &mut Frame, modal: &AddWorktreeModal, area: Rect, hits: &
         false,
     );
 
-    if modal.new_branch {
-        column.input(
-            frame,
-            hits,
-            &modal.branch,
-            modal.focus,
-            AddWorktreeModal::FOCUS_BRANCH,
-        );
+    // One input slot either way; only which TextInput fills it depends on
+    // the mode.
+    let branch_input = if modal.new_branch {
+        &modal.branch
     } else {
-        column.input(
-            frame,
-            hits,
-            &modal.search,
-            modal.focus,
-            AddWorktreeModal::FOCUS_BRANCH,
-        );
+        &modal.search
+    };
+    column.input(
+        frame,
+        hits,
+        branch_input,
+        modal.focus,
+        AddWorktreeModal::FOCUS_BRANCH,
+    );
+    if !modal.new_branch {
         let query = modal.search.value();
         column.text(
             frame,

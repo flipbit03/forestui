@@ -47,14 +47,11 @@ fn state() -> &'static Mutex<State> {
     STATE.get_or_init(|| Mutex::new(State::default()))
 }
 
-/// Exit code of a finished process.
-///
-/// A signal-killed process has no exit code, and must not be reported as 0 —
-/// every caller below reads 0 as success. It must equally not be reported as
-/// -1: that value is reserved for "gh is not installed", which
-/// [`get_auth_status`] turns into [`AuthStatus::NotInstalled`].
+/// A signal-killed process must not read as success — and equally not as -1,
+/// which is reserved for "gh is not installed" and would flip the sidebar to
+/// [`AuthStatus::NotInstalled`] for the rest of the process.
 fn exit_code(status: std::process::ExitStatus) -> i32 {
-    status.code().unwrap_or(1)
+    crate::util::exit_code(status, 1)
 }
 
 /// Run a `gh` command. Exit code `-1` means the binary is missing.

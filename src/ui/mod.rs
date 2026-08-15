@@ -75,27 +75,10 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
-    // Order as Textual's `Footer` rendered it: `q` is declared first in the
-    // Python bindings but carries `priority=True`, which sorted it after `a`.
-    const KEYS: [(char, &str); 12] = [
-        ('a', "Add Repo"),
-        ('q', "Quit"),
-        ('w', "Add Worktree"),
-        ('e', "Editor"),
-        ('t', "Terminal"),
-        ('o', "Files"),
-        ('n', "Claude"),
-        ('y', "ClaudeYOLO"),
-        ('h', "Archive"),
-        ('d', "Delete"),
-        ('s', "Settings"),
-        ('?', "Help"),
-    ];
-
     let mut spans = Vec::new();
     // Tracks where each entry lands so it can be registered as a click target.
     let mut x = area.x;
-    for (key, label) in KEYS {
+    for (key, label) in crate::app::BINDINGS {
         let hovered = app.hovered == Some(HitTarget::FooterKey(key));
         let badge = format!(" {key} ");
         // `{label} `, matching Textual exactly: the badge already carries a

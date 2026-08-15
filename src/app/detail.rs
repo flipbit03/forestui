@@ -135,7 +135,9 @@ pub fn content(app: &App) -> Vec<DetailNode> {
     nodes
 }
 
-/// The focusable items a node sequence contains, in order.
+/// The focusable items a node sequence contains, in order. Test-only: the
+/// running app consumes [`drawn`] via the `App::drawn_items` snapshot.
+#[cfg(test)]
 pub fn items(nodes: &[DetailNode]) -> Vec<DetailItem> {
     drawn(nodes).into_iter().map(|(item, _)| item).collect()
 }

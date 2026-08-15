@@ -12,6 +12,7 @@ mod keys;
 mod mouse;
 
 pub use detail::{Action, DetailItem, Field};
+pub use keys::BINDINGS;
 pub use mouse::{Hit, HitTarget, ModalClick, ScrollbarGeom};
 
 use crate::event::{AppEvent, DetailMeta, EventTx, Severity};
@@ -373,10 +374,13 @@ impl App {
 
     // ------------------------------------------------------------------- detail
 
-    /// The list of focusable items currently rendered in the detail pane.
+    /// The list of focusable items the detail pane would render right now.
     ///
     /// Derived from the same [`detail::content`] walk the renderer draws, so
-    /// item N here is control N on screen by construction.
+    /// item N here is control N on screen by construction. The running app
+    /// acts on the [`App::drawn_items`] snapshot instead; this live view
+    /// exists for the tests that assert on pane structure.
+    #[cfg(test)]
     pub fn detail_items(&self) -> Vec<DetailItem> {
         detail::items(&detail::content(self))
     }
@@ -426,13 +430,22 @@ impl App {
                 path_exists: crate::util::path_exists(&meta_path),
                 ..DetailMeta::default()
             };
+            // Three independent subprocesses; run them concurrently so the
+            // header appears after one git round-trip rather than three. The
+            // branch answer goes unused for a worktree, which costs one spawn
+            // and saves a second await chain.
+            let (branch, commit, has_remote) = tokio::join!(
+                git::get_current_branch(&meta_path),
+                git::get_latest_commit(&meta_path),
+                git::has_remote_tracking(&meta_path),
+            );
             if is_repository {
-                meta.branch = git::get_current_branch(&meta_path).await.ok();
+                meta.branch = branch.ok();
             }
-            if let Ok(commit) = git::get_latest_commit(&meta_path).await {
+            if let Ok(commit) = commit {
                 meta.commit_hash = Some(commit.short_hash);
                 meta.commit_time = Some(commit.timestamp);
-                meta.has_remote = git::has_remote_tracking(&meta_path).await.unwrap_or(false);
+                meta.has_remote = has_remote.unwrap_or(false);
             }
             tx.send(AppEvent::Meta(Box::new(meta)));
         });
@@ -619,6 +632,19 @@ impl App {
                 self.reload_detail();
                 self.notify(format!("Imported {count} worktrees"), Severity::Information);
             }
+            AppEvent::WorktreeRenamed {
+                worktree_id,
+                name,
+                path,
+            } => {
+                self.state.update_worktree(worktree_id, |worktree| {
+                    worktree.name = name;
+                    worktree.path = path;
+                });
+                self.rebuild_rows();
+                self.sync_sidebar_index();
+                self.reload_detail();
+            }
             AppEvent::ReloadDetail => self.reload_detail(),
         }
     }
@@ -803,6 +829,7 @@ mod tests {
         let (_dir, mut app) = app_with_fixture();
         app.handle_key(key(KeyCode::Down));
         app.sessions = Some(Vec::new());
+        snapshot_drawn(&mut app);
 
         app.focus = Focus::Detail;
         let index = app

@@ -7,7 +7,7 @@
 
 use super::{Action, App, Field};
 use crate::event::Severity;
-use crate::event::{AppEvent, BranchTarget};
+use crate::event::{AppEvent, BranchTarget, EventTx};
 use crate::modal::ModalOutcome;
 use crate::modal::{
     AddWorktreeModal, ConfirmAction, ConfirmModal, CreateFromIssueModal, Modal, ModalEffect,
@@ -17,6 +17,26 @@ use crate::models::{CustomClaudeButton, Repository, Worktree};
 use crate::services::{claude_session, git, github, settings as settings_service, tmux};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
+
+/// Gather the branch and remote lists and deliver them to `target`.
+///
+/// The one implementation behind both the initial modal open and the
+/// refetch-after-fetch inside it — what a branch load returns must not depend
+/// on which of the two paths asked for it.
+async fn load_branches(tx: EventTx, path: String, repo_id: Uuid, target: BranchTarget) {
+    let branches = git::list_branches(&path, true).await.unwrap_or_default();
+    let remotes = git::list_remotes(&path).await.unwrap_or_default();
+    let current_branch = git::get_current_branch(&path)
+        .await
+        .unwrap_or_else(|_| "main".to_string());
+    tx.send(AppEvent::Branches {
+        repo_id,
+        branches,
+        remotes,
+        current_branch,
+        target,
+    });
+}
 
 impl App {
     // ------------------------------------------------------------------- modals
@@ -52,20 +72,7 @@ impl App {
                         tx.send(AppEvent::FetchFailed(error.to_string()));
                         return;
                     }
-                    let branches = git::list_branches(&repo_path, true)
-                        .await
-                        .unwrap_or_default();
-                    let remotes = git::list_remotes(&repo_path).await.unwrap_or_default();
-                    let current_branch = git::get_current_branch(&repo_path)
-                        .await
-                        .unwrap_or_else(|_| "main".to_string());
-                    tx.send(AppEvent::Branches {
-                        repo_id,
-                        branches,
-                        remotes,
-                        current_branch,
-                        target: BranchTarget::RefetchOpenModal,
-                    });
+                    load_branches(tx, repo_path, repo_id, BranchTarget::RefetchOpenModal).await;
                 });
             }
         }
@@ -98,6 +105,10 @@ impl App {
                     self.notify("Settings saved", Severity::Information);
                 }
                 self.detail_index = 0;
+                // The sidebar derives each row's branch suffix from
+                // `branch_prefix`, so a changed prefix has to rebuild the rows
+                // or they keep showing the old elision until something else does.
+                self.rebuild_rows();
             }
             ModalResult::CustomButtonsSaved(_) | ModalResult::CustomButtonSaved(_) => {}
             ModalResult::Confirmed(action) => self.apply_confirmed(action),
@@ -191,20 +202,7 @@ impl App {
         };
         let path = repo.source_path.clone();
         let tx = self.tx.clone();
-        tokio::spawn(async move {
-            let branches = git::list_branches(&path, true).await.unwrap_or_default();
-            let remotes = git::list_remotes(&path).await.unwrap_or_default();
-            let current_branch = git::get_current_branch(&path)
-                .await
-                .unwrap_or_else(|_| "main".to_string());
-            tx.send(AppEvent::Branches {
-                repo_id,
-                branches,
-                remotes,
-                current_branch,
-                target,
-            });
-        });
+        tokio::spawn(load_branches(tx, path, repo_id, target));
     }
 
     pub(super) fn action_add_worktree(&mut self) {
@@ -459,33 +457,38 @@ impl App {
                     .parent()
                     .map(|p| p.join(&new_name))
                     .unwrap_or_else(|| PathBuf::from(&new_name));
-                if new_path.exists() {
-                    self.notify("Path already exists", Severity::Error);
-                    return;
-                }
-                if let Err(error) = std::fs::rename(&old_path, &new_path) {
-                    self.notify(format!("Rename failed: {error}"), Severity::Error);
-                    return;
-                }
-                let new_path_string = new_path.to_string_lossy().to_string();
-                self.state.update_worktree(worktree_id, |w| {
-                    w.name = new_name.clone();
-                    w.path = new_path_string.clone();
-                });
-                claude_session::migrate_sessions(&old_path, &new_path);
 
+                // Everything that touches the filesystem — the existence
+                // probe, the directory rename, the session-history migration,
+                // the git repair — runs off the loop; a slow disk must not
+                // freeze the UI mid-keystroke. The result comes back as an
+                // event and only the main loop touches state.
                 let tx = self.tx.clone();
-                let target = new_path.clone();
                 tokio::spawn(async move {
-                    if let Err(error) = git::repair_worktree(&repo_path, &target).await {
+                    if tokio::fs::try_exists(&new_path).await.unwrap_or(false) {
+                        tx.error("Path already exists");
+                        return;
+                    }
+                    if let Err(error) = tokio::fs::rename(&old_path, &new_path).await {
+                        tx.error(format!("Rename failed: {error}"));
+                        return;
+                    }
+                    let (migrate_old, migrate_new) = (old_path.clone(), new_path.clone());
+                    let _ = tokio::task::spawn_blocking(move || {
+                        claude_session::migrate_sessions(&migrate_old, &migrate_new);
+                    })
+                    .await;
+                    // The directory has moved either way; a failed repair is
+                    // reported but must not strand state on the old path.
+                    if let Err(error) = git::repair_worktree(&repo_path, &new_path).await {
                         tx.error(format!("Rename failed: {error}"));
                     }
-                    // State was already updated and saved before the spawn; the
-                    // pane just needs to re-read sessions and meta for the new path.
-                    tx.send(AppEvent::ReloadDetail);
+                    tx.send(AppEvent::WorktreeRenamed {
+                        worktree_id,
+                        name: new_name,
+                        path: new_path.to_string_lossy().to_string(),
+                    });
                 });
-                self.rebuild_rows();
-                self.sync_sidebar_index();
             }
             Field::BranchName => {
                 let new_branch = self.branch_input.value().to_string();

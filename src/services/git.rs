@@ -34,13 +34,10 @@ pub struct CommitInfo {
     pub timestamp: DateTime<Utc>,
 }
 
-/// Exit code of a finished process.
-///
-/// A signal-killed process has no exit code. Mapping that to 0 would make every
-/// `code != 0` check below read a killed `git pull` as success, so it becomes a
-/// non-zero sentinel instead.
+/// A signal-killed process must not read as success; -1 fails every
+/// `code != 0` check below.
 fn exit_code(status: std::process::ExitStatus) -> i32 {
-    status.code().unwrap_or(-1)
+    crate::util::exit_code(status, -1)
 }
 
 /// Run a git command, returning `(exit_code, stdout, stderr)`.

@@ -87,6 +87,14 @@ pub enum AppEvent {
         repo_id: Uuid,
         worktrees: Vec<Worktree>,
     },
+    /// A worktree's directory was renamed on disk; fold the new name and path
+    /// into state. Single-writer for the same reason as
+    /// [`AppEvent::WorktreeAdded`].
+    WorktreeRenamed {
+        worktree_id: Uuid,
+        name: String,
+        path: String,
+    },
     /// Reload the detail pane only.
     ReloadDetail,
 }

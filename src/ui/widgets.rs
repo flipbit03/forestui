@@ -2,6 +2,7 @@
 
 use crate::theme;
 use ratatui::Frame;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -110,6 +111,50 @@ impl TextInput {
 
     pub fn move_end(&mut self) {
         self.cursor = self.value.chars().count();
+    }
+
+    /// Apply a text-editing key. Returns whether the key was consumed.
+    ///
+    /// The one implementation for every text field in the app — the modals and
+    /// the detail pane's rename fields both route here, so an editing
+    /// improvement (word delete, paste, a cursor fix) cannot land in one and
+    /// silently miss the other. Callers layer their own Enter/Escape handling.
+    pub fn apply_edit_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.kill_to_start();
+                true
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.insert(c);
+                true
+            }
+            KeyCode::Backspace => {
+                self.backspace();
+                true
+            }
+            KeyCode::Delete => {
+                self.delete();
+                true
+            }
+            KeyCode::Left => {
+                self.move_left();
+                true
+            }
+            KeyCode::Right => {
+                self.move_right();
+                true
+            }
+            KeyCode::Home => {
+                self.move_home();
+                true
+            }
+            KeyCode::End => {
+                self.move_end();
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Delete every character before the cursor (readline's `Ctrl+U`).

@@ -151,6 +151,16 @@ pub fn path_exists(path: &str) -> bool {
     Path::new(&expanduser(path)).exists()
 }
 
+/// Exit code of a finished subprocess, with signal-death mapped to `sentinel`.
+///
+/// `status.code()` is `None` when the process died to a signal; mapping that
+/// to 0 — the easy default — reads a killed `git pull` as success. Callers
+/// choose the sentinel because some reserve values: `gh` uses -1 to mean "the
+/// binary is missing", so its killed processes must map to something else.
+pub fn exit_code(status: std::process::ExitStatus, sentinel: i32) -> i32 {
+    status.code().unwrap_or(sentinel)
+}
+
 /// Write a file via a sibling temp file and an atomic rename.
 ///
 /// `.forestui-config.json` is the only record of every tracked repository and

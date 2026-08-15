@@ -117,10 +117,12 @@ objects and no CSS. Two consequences shape the code:
    removing it brings back the flicker that motion reporting was first disabled
    for.
 
-Controls are drawn with `ui::button()`, which renders a filled pill with rounded
-half-block caps so they read as buttons rather than plain labels. Use
-`ui::button_width()` for the rectangle you record, so the hit region matches
-what was drawn.
+Controls are drawn as three-row bordered boxes from one builder in
+`ui/widgets.rs`: `button_box`/`button_box_width` for modal buttons (Textual's
+`min-width: 10`) and the same code via `boxed_rows`/`boxed_width` with no
+minimum for the detail pane, whose boxes hug their labels. Use the matching
+width function for the rectangle you record, so the hit region matches what
+was drawn.
 
 ### Async and the event loop
 Everything funnels through one `mpsc::UnboundedReceiver<AppEvent>` in

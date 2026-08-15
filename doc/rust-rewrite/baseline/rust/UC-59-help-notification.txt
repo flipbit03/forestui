@@ -35,10 +35,10 @@
                                   │  │ New Session │ │ New Session: YOLO │ │ Opus │
                                   │  └─────────────┘ └───────────────────┘ └──────┘
                                   │
-                                  │  RECENT SESSIONS
-                                  │  No sessions found
-                                  │                                            a: Add Repo | w: Add Worktree | e: Editor | t: Terminal |
-                                  │  ───────────────────────────────────────── n: Claude | h: Archive | d: Delete | s: Settings | q: Quit
+                                  │  RECENT SESSIONS                           a: Add Repo | q: Quit | w: Add Worktree | e: Editor | t:
+                                  │  No sessions found                         Terminal | o: Files | n: Claude | y: ClaudeYOLO | h:
+                                  │                                            Archive | d: Delete | s: Settings | ?: Help | r: Refresh |
+                                  │  ───────────────────────────────────────── A: Show Archived
                                   │
  a Add Repo  q Quit  w Add Worktree  e Editor  t Terminal  o Files  n Claude  y ClaudeYOLO  h Archive  d Delete  s Settings  ? Help
 [forestui-0:forestui-dev-<hhmm>*                                                                              "<host>" <clock>

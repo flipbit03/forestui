@@ -12,7 +12,7 @@ use crate::models::{
 };
 use crate::ui::widgets::TextInput;
 use crate::util;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -196,41 +196,7 @@ fn cycle_focus(focus: &mut usize, len: usize, key: KeyEvent) -> bool {
 
 /// Apply an editing key to a text input. Returns true when the key was consumed.
 fn edit_input(input: &mut TextInput, key: KeyEvent) -> bool {
-    match key.code {
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            input.kill_to_start();
-            true
-        }
-        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-            input.insert(c);
-            true
-        }
-        KeyCode::Backspace => {
-            input.backspace();
-            true
-        }
-        KeyCode::Delete => {
-            input.delete();
-            true
-        }
-        KeyCode::Left => {
-            input.move_left();
-            true
-        }
-        KeyCode::Right => {
-            input.move_right();
-            true
-        }
-        KeyCode::Home => {
-            input.move_home();
-            true
-        }
-        KeyCode::End => {
-            input.move_end();
-            true
-        }
-        _ => false,
-    }
+    input.apply_edit_key(key)
 }
 
 // ---------------------------------------------------------------- Add repository
@@ -1165,7 +1131,7 @@ impl ConfirmModal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::crossterm::event::KeyEventKind;
+    use ratatui::crossterm::event::{KeyEventKind, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent {
