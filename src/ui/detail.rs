@@ -211,32 +211,18 @@ fn control_styles(control: &ControlSpec, focused: bool, hovered: bool) -> (Style
     (border.bg(fill), label)
 }
 
-/// Rendered width of a control's box: its label padded a cell either side, plus
-/// the two border cells. Measured rather than counted, because a label can hold
-/// a glyph that is not one cell wide.
+/// Rendered width of a control's box. Unlike the modal buttons, these have no
+/// minimum width — the box hugs the label, which is how the pane laid out from
+/// the start and what the committed sweep baselines show.
 fn control_width(label: &str) -> u16 {
-    as_u16(Span::raw(format!(" {label} ")).width()).saturating_add(2)
+    crate::ui::widgets::boxed_width(label, 0)
 }
 
-/// The three rows of one control, in the order they are drawn.
+/// The three rows of one control, drawn by the same box builder the modal
+/// buttons use so the two cannot drift apart in shape.
 fn control_box(control: &ControlSpec, focused: bool, hovered: bool) -> [Vec<Span<'static>>; 3] {
     let (border, label) = control_styles(control, focused, hovered);
-    let inner = control_width(&control.label).saturating_sub(2) as usize;
-    let edge = |left: char, right: char| {
-        vec![Span::styled(
-            format!("{left}{}{right}", "─".repeat(inner)),
-            border,
-        )]
-    };
-    [
-        edge('┌', '┐'),
-        vec![
-            Span::styled("│", border),
-            Span::styled(format!(" {} ", control.label), label),
-            Span::styled("│", border),
-        ],
-        edge('└', '┘'),
-    ]
+    crate::ui::widgets::boxed_rows(&control.label, border, label, 0)
 }
 
 /// A card under construction — the bordered, elevated box Textual gave

@@ -144,13 +144,12 @@ impl App {
     /// Topmost target at a cell. Later hits win, so a modal drawn over the panes
     /// takes the click rather than whatever it covers.
     pub fn hit_at(&self, column: u16, row: u16) -> Option<HitTarget> {
+        // `contains` saturates, so a region touching the terminal's far edge
+        // cannot overflow `u16` and panic in a debug build.
         self.hits
             .iter()
             .rev()
-            .find(|hit| {
-                let r = hit.rect;
-                column >= r.x && column < r.x + r.width && row >= r.y && row < r.y + r.height
-            })
+            .find(|hit| contains(hit.rect, column, row))
             .map(|hit| hit.target)
     }
 
