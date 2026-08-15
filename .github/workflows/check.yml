@@ -37,3 +37,8 @@ jobs:
 
       - name: Run checks
         run: make check
+
+      # The release builds with `--features binary-release`; without this the
+      # configuration that ships is the only one never compiled in CI.
+      - name: Run checks for the shipped configuration
+        run: make check-shipped

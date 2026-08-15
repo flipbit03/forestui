@@ -65,12 +65,19 @@ make typecheck    # cargo check --all-targets
 make format-check # cargo fmt --check
 make test         # cargo test
 make check        # all of the above
+make check-shipped # lint + tests under --features binary-release
 make format       # cargo fmt
 make run          # cargo run
 make clean        # cargo clean
 ```
 
 Always run `make check` before committing changes.
+
+`make check-shipped` runs the same lint and tests with `--features binary-release`,
+which is the configuration the release workflow builds. The default build
+compiles strictly less code — the in-place updater is `#[cfg]`-ed out — so the
+two fail differently, and a mistake inside the feature-gated block is invisible
+to `make check`. CI runs both.
 
 ## Code Conventions
 
