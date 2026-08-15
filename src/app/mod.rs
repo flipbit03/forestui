@@ -432,6 +432,15 @@ impl App {
             self.redraw = true;
         }
 
+        // The relative times on screen ("11 seconds ago") have second
+        // granularity, so once a second is exactly as often as they can
+        // change. Repainting every tick — ten times a second — kept the
+        // terminal busy for content that mostly cannot differ; repainting
+        // never leaves them frozen at whatever the last keypress showed.
+        if self.spinner_index.is_multiple_of(10) {
+            self.redraw = true;
+        }
+
         let before = self.notifications.len();
         self.expire_notifications();
         if self.notifications.len() != before {
@@ -1324,10 +1333,19 @@ mod tests {
         // A worktree selection has no spinner on screen.
         app.handle_key(key(KeyCode::Down));
         app.sessions = Some(Vec::new());
-        app.redraw = false;
+        app.spinner_index = 0;
 
-        app.handle_event(AppEvent::Tick);
-        assert!(!app.redraw, "an idle tick repainted the app");
+        // Nine idle ticks paint nothing; the tenth refreshes the on-screen
+        // relative times, which have second granularity.
+        for tick in 1..=10 {
+            app.redraw = false;
+            app.handle_event(AppEvent::Tick);
+            if tick < 10 {
+                assert!(!app.redraw, "idle tick {tick} repainted the app");
+            } else {
+                assert!(app.redraw, "the once-a-second refresh never fired");
+            }
+        }
     }
 
     /// While the issue spinner is on screen the tick is what animates it.
@@ -1341,10 +1359,12 @@ mod tests {
         app.handle_event(AppEvent::Tick);
         assert!(app.redraw, "the spinner froze");
 
-        // Once the issues have landed there is nothing animating.
+        // Once the issues have landed there is nothing animating. Away from
+        // the whole-second boundary, a loaded pane paints nothing.
         app.issues = Some(Vec::new());
         app.sessions = Some(Vec::new());
         app.notifications.clear();
+        app.spinner_index = 1;
         app.redraw = false;
         app.handle_event(AppEvent::Tick);
         assert!(!app.redraw, "a loaded pane repainted on the tick");
