@@ -55,6 +55,19 @@ pub fn is_newer(current: &str, latest: &str) -> bool {
 struct VersionCache {
     checked_at: u64,
     latest_version: String,
+    /// Set when downloading or installing `latest_version` failed after a
+    /// successful lookup. Remembered so the next launch does not re-spend the
+    /// multi-MB download on a failure that will repeat (an unwritable install
+    /// dir fails identically every time); cleared by expiry, a newer release,
+    /// or a successful install.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    install_failed: Option<InstallFailure>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InstallFailure {
+    version: String,
+    reason: String,
 }
 
 fn cache_path() -> PathBuf {
@@ -102,6 +115,7 @@ pub async fn latest_version() -> Option<String> {
             write_cache(&VersionCache {
                 checked_at: now_secs(),
                 latest_version: version.clone(),
+                install_failed: None,
             });
             Some(version)
         }
@@ -113,7 +127,15 @@ pub async fn latest_version() -> Option<String> {
 
 async fn fetch_latest_version() -> Result<String> {
     let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
-    let body: serde_json::Value = reqwest::Client::new()
+    // Without a timeout, a network that accepts the connection but never
+    // answers parks this task forever — and with it the whole check, since a
+    // hung lookup is cached by nobody.
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .context("could not build the HTTP client")?;
+    let body: serde_json::Value = client
         .get(&url)
         .header("User-Agent", USER_AGENT)
         .send()
@@ -156,13 +178,23 @@ pub fn release_asset_url(version: &str) -> Result<String> {
     ))
 }
 
-/// Download `url` and put it at `target`, atomically.
+/// Download `url`, verify it against its published `.sha256`, and put it at
+/// `target`, atomically.
 ///
-/// Staged beside the target and renamed into place, so the swap is atomic and a
-/// half-downloaded file can never end up executable. Replacing the file under a
-/// running process is safe on Unix — the running image is already mapped — which
-/// is why this can happen while the UI is up, with the new build taking effect
-/// on the next launch.
+/// The release workflow publishes a checksum beside every asset and
+/// `install.sh` verifies it; the updater holds itself to the same standard —
+/// stricter, in fact: a missing or malformed checksum aborts the update rather
+/// than trusting whatever arrived over the wire, because the updater lives
+/// inside the binary it would break and the user cannot self-recover from a
+/// corrupt install.
+///
+/// Staged beside the target under a per-process name and renamed into place, so
+/// the swap is atomic, a half-downloaded file can never end up executable, and
+/// two instances updating at once cannot rename each other's half-written
+/// staging file over the real binary. Replacing the file under a running
+/// process is safe on Unix — the running image is already mapped — which is why
+/// this can happen while the UI is up, with the new build taking effect on the
+/// next launch.
 ///
 /// Takes its URL and destination rather than deriving them, so the download and
 /// the swap can be tested against a local server and a temporary file. Deciding
@@ -170,7 +202,13 @@ pub fn release_asset_url(version: &str) -> Result<String> {
 /// `binary-release` gate.
 #[cfg(any(feature = "binary-release", test))]
 pub(crate) async fn install_from(url: &str, target: &std::path::Path) -> Result<()> {
-    let bytes = reqwest::Client::new()
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(90))
+        .build()
+        .context("could not build the HTTP client")?;
+
+    let bytes = client
         .get(url)
         .header("User-Agent", USER_AGENT)
         .send()
@@ -182,62 +220,168 @@ pub(crate) async fn install_from(url: &str, target: &std::path::Path) -> Result<
         .await
         .context("could not read the downloaded release")?;
 
-    let staged = target.with_extension("tmp-update");
-    tokio::fs::write(&staged, &bytes)
+    // Verify before anything touches disk.
+    let checksum_body = client
+        .get(format!("{url}.sha256"))
+        .header("User-Agent", USER_AGENT)
+        .send()
+        .await
+        .context("could not fetch the release checksum")?
+        .error_for_status()
+        .context("the release has no checksum")?
+        .text()
+        .await
+        .context("could not read the release checksum")?;
+    // Coreutils format: `<64 hex>  <filename>`. Only the hash is trusted.
+    let expected = checksum_body
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        anyhow::bail!("the release checksum file is malformed");
+    }
+    use sha2::Digest;
+    let actual = format!("{:x}", sha2::Sha256::digest(&bytes));
+    if actual != expected {
+        anyhow::bail!("the downloaded release does not match its checksum");
+    }
+
+    let staged = staging_path(target);
+    // All the fallible steps live in one helper so every failure path — write,
+    // chmod, rename — cleans the staged file up rather than leaving a stray
+    // binary beside the real one. Same contract as `util::write_atomically`.
+    let result = write_staged_then_rename(&staged, target, &bytes).await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&staged).await;
+    }
+    result
+}
+
+/// Sibling of `target` with a per-process suffix, so concurrent instances
+/// stage privately: the last rename wins whole-file, which is fine — both
+/// downloaded (and verified) the same asset.
+#[cfg(any(feature = "binary-release", test))]
+fn staging_path(target: &std::path::Path) -> PathBuf {
+    let mut name = target.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".tmp-update-{}", std::process::id()));
+    target.with_file_name(name)
+}
+
+#[cfg(any(feature = "binary-release", test))]
+async fn write_staged_then_rename(
+    staged: &std::path::Path,
+    target: &std::path::Path,
+    bytes: &[u8],
+) -> Result<()> {
+    tokio::fs::write(staged, bytes)
         .await
         .context("could not write the downloaded release")?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))
+        tokio::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o755))
             .await
             .context("could not mark the downloaded release executable")?;
     }
 
-    // A rename across filesystems fails, so clean the staged file up rather than
-    // leaving a stray binary beside the real one.
-    if let Err(error) = tokio::fs::rename(&staged, target).await {
-        let _ = tokio::fs::remove_file(&staged).await;
-        return Err(error).context("could not replace the running binary");
-    }
+    tokio::fs::rename(staged, target)
+        .await
+        .context("could not replace the running binary")?;
     Ok(())
 }
 
-/// Bring the installed binary up to date, returning the version involved.
+/// What the startup update check concluded.
 ///
-/// `Ok(None)` means there was nothing to do: already current, a source build, or
-/// no answer from GitHub.
-pub async fn update_if_stale() -> Result<Option<String>> {
+/// The enum is the cfg-independent contract: which variants a build actually
+/// constructs depends on the `binary-release` gate (`Installed`/`InstallFailed`
+/// with it, `Available` without), so each side sees the others as dead.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateStatus {
+    /// Nothing to say: already current, a source build, or no answer from
+    /// GitHub. Being offline is the common case, not the user's problem.
+    Silent,
+    /// The new build is already in place; takes effect on the next launch.
+    Installed(String),
+    /// A newer version exists. Installed by cargo, so replacing the binary in
+    /// place would be undone by the next `cargo install`, and recompiling the
+    /// crate underneath a running TUI is not something to do unasked.
+    Available(String),
+    /// A newer version exists but could not be installed. Unlike being
+    /// offline, this is actionable (an unwritable install dir, a corrupted
+    /// mirror) and would otherwise repeat invisibly on every launch.
+    InstallFailed { version: String, reason: String },
+}
+
+/// Bring the installed binary up to date.
+pub async fn update_if_stale() -> UpdateStatus {
     if is_dev_build() {
-        return Ok(None);
+        return UpdateStatus::Silent;
     }
     let Some(latest) = latest_version().await else {
-        return Ok(None);
+        return UpdateStatus::Silent;
     };
     if !is_newer(current_version(), &latest) {
-        return Ok(None);
+        return UpdateStatus::Silent;
     }
 
     #[cfg(feature = "binary-release")]
     {
-        let current = std::env::current_exe().context("could not locate the running executable")?;
-        install_from(&release_asset_url(&latest)?, &current).await?;
-        Ok(Some(latest))
+        // A fresh cache remembering a failed install of this same version
+        // means the download would fail the same way — surface the standing
+        // failure without re-spending the bandwidth. Retried when the cache
+        // expires or a newer release appears.
+        if let Some(cache) = read_cache()
+            && now_secs().saturating_sub(cache.checked_at) < CACHE_TTL_SECS
+            && let Some(failure) = cache.install_failed
+            && failure.version == latest
+        {
+            return UpdateStatus::InstallFailed {
+                version: latest,
+                reason: failure.reason,
+            };
+        }
+
+        let result = async {
+            let current =
+                std::env::current_exe().context("could not locate the running executable")?;
+            install_from(&release_asset_url(&latest)?, &current).await
+        }
+        .await;
+
+        match result {
+            Ok(()) => {
+                // Clear a failure memo left by an older release's failed install.
+                if let Some(mut cache) = read_cache()
+                    && cache.install_failed.is_some()
+                {
+                    cache.install_failed = None;
+                    write_cache(&cache);
+                }
+                UpdateStatus::Installed(latest)
+            }
+            Err(error) => {
+                let reason = format!("{error:#}");
+                if let Some(mut cache) = read_cache() {
+                    cache.install_failed = Some(InstallFailure {
+                        version: latest.clone(),
+                        reason: reason.clone(),
+                    });
+                    write_cache(&cache);
+                }
+                UpdateStatus::InstallFailed {
+                    version: latest,
+                    reason,
+                }
+            }
+        }
     }
-    // Installed by cargo: replacing the binary in place would be undone by the
-    // next `cargo install`, and recompiling the crate underneath a running TUI
-    // is not something to do unasked. Report it instead.
     #[cfg(not(feature = "binary-release"))]
     {
-        Ok(Some(latest))
+        UpdateStatus::Available(latest)
     }
-}
-
-/// Whether an update installs itself or is merely announced, for the wording of
-/// the notification.
-pub const fn installs_in_place() -> bool {
-    cfg!(feature = "binary-release")
 }
 
 #[cfg(test)]
@@ -293,28 +437,82 @@ mod tests {
         assert_eq!(is_dev_build(), current_version() == "0.0.0");
     }
 
+    /// Serve the asset and its sibling `.sha256` from a throwaway local
+    /// server. `checksum` is the full text of the checksum file; `None` serves
+    /// a 404 for it, the shape of a release published without one.
+    fn serve_release(
+        payload: &'static [u8],
+        checksum: Option<String>,
+    ) -> (u16, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let handle = std::thread::spawn(move || {
+            // One connection for the asset, one for the checksum.
+            for _ in 0..2 {
+                let Ok((mut socket, _)) = listener.accept() else {
+                    return;
+                };
+                let mut buf = [0u8; 1024];
+                let n = socket.read(&mut buf).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let wants_checksum = request
+                    .split_whitespace()
+                    .nth(1)
+                    .is_some_and(|path| path.ends_with(".sha256"));
+                let response = if wants_checksum {
+                    match &checksum {
+                        Some(text) => format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            text.len(),
+                            text
+                        )
+                        .into_bytes(),
+                        None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+                    }
+                } else {
+                    let mut head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        payload.len()
+                    )
+                    .into_bytes();
+                    head.extend_from_slice(payload);
+                    head
+                };
+                socket.write_all(&response).expect("respond");
+            }
+        });
+        (port, handle)
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::Digest;
+        format!("{:x}", sha2::Sha256::digest(bytes))
+    }
+
+    /// The directory must hold exactly the target — no staging leftovers under
+    /// any name.
+    fn assert_no_leftovers(dir: &std::path::Path) {
+        let entries: Vec<_> = std::fs::read_dir(dir)
+            .expect("read dir")
+            .map(|e| e.expect("entry").file_name())
+            .collect();
+        assert_eq!(
+            entries,
+            vec![std::ffi::OsString::from("forestui")],
+            "leftover staging files"
+        );
+    }
+
     /// The download-and-swap is the one step that can destroy a working install,
     /// so it is exercised for real: a local server, a temporary file standing in
     /// for the running binary, and assertions on the bytes, the permissions and
     /// the absence of leftovers.
     #[tokio::test]
     async fn install_from_replaces_the_target_atomically() {
-        use std::io::{Read, Write};
         let payload = b"#!/bin/sh\necho new version\n";
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = listener.local_addr().expect("addr").port();
-        let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().expect("accept");
-            let mut buf = [0u8; 1024];
-            let _ = socket.read(&mut buf);
-            let head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                payload.len()
-            );
-            socket.write_all(head.as_bytes()).expect("head");
-            socket.write_all(payload).expect("body");
-        });
+        let checksum = format!("{}  forestui_linux_x86_64\n", sha256_hex(payload));
+        let (port, server) = serve_release(payload, Some(checksum));
 
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("forestui");
@@ -326,10 +524,7 @@ mod tests {
         server.join().expect("server");
 
         assert_eq!(std::fs::read(&target).expect("read back"), payload);
-        assert!(
-            !target.with_extension("tmp-update").exists(),
-            "the staging file was left behind"
-        );
+        assert_no_leftovers(dir.path());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -339,6 +534,84 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o111, 0o111, "the replacement is not executable");
         }
+    }
+
+    /// A download that does not match its published checksum must leave the
+    /// running install byte-identical and no staging file behind.
+    #[tokio::test]
+    async fn a_corrupted_download_leaves_the_target_untouched() {
+        let payload = b"corrupted-in-transit";
+        let checksum = format!(
+            "{}  forestui_linux_x86_64\n",
+            sha256_hex(b"what was published")
+        );
+        let (port, server) = serve_release(payload, Some(checksum));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("forestui");
+        std::fs::write(&target, b"old version").expect("seed the target");
+
+        let error = install_from(&format!("http://127.0.0.1:{port}/asset"), &target)
+            .await
+            .expect_err("a checksum mismatch must fail");
+        server.join().expect("server");
+
+        assert!(error.to_string().contains("checksum"), "got: {error:#}");
+        assert_eq!(std::fs::read(&target).expect("read back"), b"old version");
+        assert_no_leftovers(dir.path());
+    }
+
+    /// No checksum, no update: trusting whatever arrived over the wire is the
+    /// failure mode the verification exists to prevent.
+    #[tokio::test]
+    async fn a_missing_checksum_aborts_the_update() {
+        let payload = b"plausible payload";
+        let (port, server) = serve_release(payload, None);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("forestui");
+        std::fs::write(&target, b"old version").expect("seed the target");
+
+        assert!(
+            install_from(&format!("http://127.0.0.1:{port}/asset"), &target)
+                .await
+                .is_err()
+        );
+        server.join().expect("server");
+        assert_eq!(std::fs::read(&target).expect("read back"), b"old version");
+        assert_no_leftovers(dir.path());
+    }
+
+    /// Concurrent instances must stage privately — a shared staging path lets
+    /// one process rename another's half-written file into place.
+    #[test]
+    fn staging_is_per_process() {
+        let staged = staging_path(std::path::Path::new("/opt/bin/forestui"));
+        assert_eq!(staged.parent(), Some(std::path::Path::new("/opt/bin")));
+        let name = staged.file_name().unwrap().to_string_lossy().to_string();
+        assert_eq!(name, format!("forestui.tmp-update-{}", std::process::id()));
+    }
+
+    /// Every variant renders into the notification the app shows; constructing
+    /// them all here also keeps the cfg-gated arms from tripping dead-code.
+    #[test]
+    fn update_status_covers_every_outcome() {
+        let statuses = [
+            UpdateStatus::Silent,
+            UpdateStatus::Installed("2.0.0".into()),
+            UpdateStatus::Available("2.0.0".into()),
+            UpdateStatus::InstallFailed {
+                version: "2.0.0".into(),
+                reason: "permission denied".into(),
+            },
+        ];
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|s| **s == UpdateStatus::Silent)
+                .count(),
+            1
+        );
     }
 
     /// A failed download must leave the existing binary alone — a missed update
@@ -361,13 +634,13 @@ mod tests {
                 .is_err()
         );
         assert_eq!(std::fs::read(&target).expect("read back"), b"old version");
-        assert!(!target.with_extension("tmp-update").exists());
+        assert_no_leftovers(dir.path());
     }
 
     #[tokio::test]
     async fn a_dev_build_does_no_work() {
         if is_dev_build() {
-            assert!(update_if_stale().await.expect("no error").is_none());
+            assert_eq!(update_if_stale().await, UpdateStatus::Silent);
         }
     }
 }

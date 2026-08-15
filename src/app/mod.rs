@@ -282,19 +282,30 @@ impl App {
     ///
     /// Deliberately fire-and-forget on a background task: the UI is already up
     /// by the time this runs, so a slow or unreachable GitHub costs nothing but
-    /// a notification that never arrives. Failures are silent for the same
-    /// reason — being offline is the common case, and it is not the user's
-    /// problem to solve mid-session.
+    /// a notification that never arrives. Being offline stays silent — it is
+    /// the common case and not the user's problem to solve mid-session — but a
+    /// *persistent* install failure (an unwritable install dir) is theirs to
+    /// fix and surfaces once per launch.
     fn check_for_update(&self) {
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(version)) = crate::version_check::update_if_stale().await {
-                let message = if crate::version_check::installs_in_place() {
-                    format!("forestui v{version} installed — restart to use it")
-                } else {
-                    format!("forestui v{version} is available — `cargo install forestui`")
-                };
-                tx.notify(message, Severity::Information);
+            use crate::version_check::UpdateStatus;
+            match crate::version_check::update_if_stale().await {
+                UpdateStatus::Silent => {}
+                UpdateStatus::Installed(version) => tx.notify(
+                    format!("forestui v{version} installed — restart to use it"),
+                    Severity::Information,
+                ),
+                UpdateStatus::Available(version) => tx.notify(
+                    format!("forestui v{version} is available — `cargo install forestui`"),
+                    Severity::Information,
+                ),
+                UpdateStatus::InstallFailed { version, reason } => tx.notify(
+                    format!(
+                        "forestui v{version} is available but could not be installed: {reason}"
+                    ),
+                    Severity::Error,
+                ),
             }
         });
     }
