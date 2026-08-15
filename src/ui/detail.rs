@@ -59,8 +59,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         empty_state(frame, area);
         return;
     };
-    let offset = pane.scroll_offset(inner.height);
+    let offset = pane.resolve_offset(app, inner.height);
+    let total = as_u16(pane.lines.len());
     frame.render_widget(Paragraph::new(pane.lines).scroll((offset, 0)), inner);
+    draw_scrollbar(frame, inner, offset, total);
 
     // The scroll offset decides which line ends up on which screen row, so this
     // is the earliest the clickable regions can be worked out.
@@ -94,7 +96,12 @@ fn build(app: &App, width: u16) -> Option<Pane> {
         Focus::Detail => Some(app.detail_index),
         Focus::Sidebar => None,
     };
-    let mut pane = Pane::new(focused, width);
+    // A hover only means something for the pane's own controls.
+    let hovered = match app.hovered {
+        Some(HitTarget::DetailItem(index)) => Some(index),
+        _ => None,
+    };
+    let mut pane = Pane::new(focused, hovered, width);
 
     if app.state.selection.is_worktree() {
         worktree(&mut pane, app);
@@ -144,14 +151,18 @@ impl Control {
     /// state Textual gave it — accent under the cursor, the destructive shade on
     /// a dangerous action — and the fill runs under the border cells too, which
     /// is what `border: solid` did there.
-    fn styles(&self, focused: bool) -> (Style, Style) {
-        let fill = theme::action_bg(self.variant);
-        let border = theme::action_border(focused, self.variant);
+    fn styles(&self, focused: bool, hovered: bool) -> (Style, Style) {
+        // A control that cannot run must not light up under the pointer either:
+        // an affordance that promises a click it will not honour is worse than
+        // none. Textual disabled buttons the same way.
+        let hovered = hovered && self.enabled;
+        let fill = theme::action_bg(self.variant, hovered);
+        let border = theme::action_border(focused, self.variant, hovered);
         // A control that cannot run keeps its box, so neither the layout nor the
         // hit region shifts; only the label goes grey — except under the cursor,
         // which has to stay legible.
         let label = if self.enabled || focused {
-            theme::action(focused, self.variant)
+            theme::action(focused, self.variant, hovered)
         } else {
             theme::muted().bg(fill)
         };
@@ -167,8 +178,8 @@ fn control_width(label: &str) -> u16 {
 }
 
 /// The three rows of one control, in the order they are drawn.
-fn control_box(control: &Control, focused: bool) -> [Vec<Span<'static>>; 3] {
-    let (border, label) = control.styles(focused);
+fn control_box(control: &Control, focused: bool, hovered: bool) -> [Vec<Span<'static>>; 3] {
+    let (border, label) = control.styles(focused, hovered);
     let inner = control_width(&control.label).saturating_sub(2) as usize;
     let edge = |left: char, right: char| {
         vec![Span::styled(
@@ -205,6 +216,8 @@ struct Pane {
     items: Vec<Item>,
     /// Index of the focused item, or `None` while the sidebar owns focus.
     focused: Option<usize>,
+    /// Index of the item the pointer is over, if any.
+    hovered: Option<usize>,
     /// Width of the content area, so rules and cards can be filled out to it.
     width: u16,
     /// The card currently open, if any. See [`Pane::card_start`].
@@ -212,11 +225,12 @@ struct Pane {
 }
 
 impl Pane {
-    fn new(focused: Option<usize>, width: u16) -> Self {
+    fn new(focused: Option<usize>, hovered: Option<usize>, width: u16) -> Self {
         Self {
             lines: Vec::new(),
             items: Vec::new(),
             focused,
+            hovered,
             width,
             card: None,
         }
@@ -308,15 +322,16 @@ impl Pane {
     /// line that is about to be pushed, and return whether it is the focused one.
     /// Callers must push those lines before adding any other, or the recorded
     /// cells drift from the content.
-    fn claim(&mut self, x: u16, width: u16, height: u16) -> bool {
+    fn claim(&mut self, x: u16, width: u16, height: u16) -> (bool, bool) {
         let focused = self.focused == Some(self.items.len());
+        let hovered = self.hovered == Some(self.items.len());
         self.items.push(Item {
             line: as_u16(self.lines.len()),
             x,
             width,
             height,
         });
-        focused
+        (focused, hovered)
     }
 
     /// Lay out a row of controls after `lead`, which is whatever non-clickable
@@ -369,8 +384,8 @@ impl Pane {
                 x = x.saturating_add(1);
             }
             let width = control_width(&control.label);
-            let focused = self.claim(x, width, CONTROL_HEIGHT);
-            for (row, mut spans) in rows.iter_mut().zip(control_box(control, focused)) {
+            let (focused, hovered) = self.claim(x, width, CONTROL_HEIGHT);
+            for (row, mut spans) in rows.iter_mut().zip(control_box(control, focused, hovered)) {
                 row.append(&mut spans);
             }
             x = x.saturating_add(width);
@@ -381,20 +396,73 @@ impl Pane {
         }
     }
 
-    /// Offset that keeps the focused control on screen. `draw` builds the pane
-    /// fresh each frame, so this is derived rather than stored on the app.
-    fn scroll_offset(&self, height: u16) -> u16 {
-        let Some(item) = self.focused.and_then(|index| self.items.get(index)) else {
-            return 0;
-        };
+    /// The pane's scroll position for this frame.
+    ///
+    /// The offset lives on the app so the wheel can move it independently of the
+    /// focus ring. Only content height — which is not known until the pane has
+    /// been built — can clamp it, so the clamp happens here and is written back.
+    fn resolve_offset(&self, app: &mut App, height: u16) -> u16 {
         let max = as_u16(self.lines.len()).saturating_sub(height);
-        // Aim to clear the whole control plus two lines of context below it,
-        // where there is room.
-        item.line
-            .saturating_add(item.height)
-            .saturating_add(2)
-            .saturating_sub(height)
-            .min(max)
+        let mut offset = app.detail_scroll.min(max);
+
+        // Keyboard navigation drags the viewport along so the cursor stays
+        // visible. The wheel does not set this flag, which is what lets the user
+        // scroll away from the focused control and read.
+        if app.detail_follow_focus
+            && let Some(item) = self.focused.and_then(|index| self.items.get(index))
+        {
+            let top = item.line;
+            // Aim to clear the whole control plus two lines of context below it.
+            let bottom = item.line.saturating_add(item.height).saturating_add(2);
+            if top < offset {
+                offset = top;
+            } else if bottom > offset.saturating_add(height) {
+                offset = bottom.saturating_sub(height);
+            }
+            offset = offset.min(max);
+        }
+
+        app.detail_follow_focus = false;
+        app.detail_scroll = offset;
+        offset
+    }
+}
+
+/// A one-column scrollbar on the right edge, drawn only when the content is
+/// taller than the pane. Textual showed one; without it nothing on screen says
+/// the pane continues below the fold.
+fn draw_scrollbar(frame: &mut Frame, inner: Rect, offset: u16, total: u16) {
+    let height = inner.height;
+    if height == 0 || inner.width == 0 || total <= height {
+        return;
+    }
+    let max_offset = total.saturating_sub(height);
+    // At least one cell, so the thumb never vanishes on very long content.
+    let thumb = ((u32::from(height) * u32::from(height)) / u32::from(total)).max(1) as u16;
+    let travel = height.saturating_sub(thumb);
+    let top = if max_offset == 0 {
+        0
+    } else {
+        ((u32::from(offset) * u32::from(travel)) / u32::from(max_offset)) as u16
+    };
+
+    let x = inner.x + inner.width.saturating_sub(1);
+    for row in 0..height {
+        let inside = row >= top && row < top.saturating_add(thumb);
+        let style = if inside {
+            Style::default().fg(theme::TEXT_SECONDARY)
+        } else {
+            Style::default().fg(theme::BORDER)
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled("│", style))),
+            Rect {
+                x,
+                y: inner.y + row,
+                width: 1,
+                height: 1,
+            },
+        );
     }
 }
 
@@ -672,13 +740,13 @@ fn issues(pane: &mut Pane, app: &App) {
     }
     // `.refresh-btn { min-width: 3; width: 3 }` — the glyph is narrower than the
     // control, and it is the control that takes the click.
-    let focused = pane.claim(as_u16(HEADER.chars().count() + 1), 3, 1);
+    let (focused, hovered) = pane.claim(as_u16(HEADER.chars().count() + 1), 3, 1);
     pane.row(vec![
         Span::styled(HEADER, theme::section_header()),
         Span::raw(" "),
         Span::styled(
             label,
-            if focused {
+            if focused || hovered {
                 theme::accent()
             } else {
                 theme::secondary()
@@ -734,7 +802,7 @@ fn field(pane: &mut Pane, label: &str, input: &TextInput) {
     // Measured without consulting focus: the caret only ever occupies the one
     // trailing cell already counted here, so the click target is stable.
     let width = as_u16(FIELD_LABEL_WIDTH + 2 + input.value().chars().count());
-    let focused = pane.claim(0, width, 1);
+    let (focused, _hovered) = pane.claim(0, width, 1);
     let mut spans = vec![Span::styled(
         format!("{label:<FIELD_LABEL_WIDTH$} "),
         theme::secondary(),
@@ -1108,18 +1176,50 @@ mod tests {
         app.focus = Focus::Detail;
         app.detail_index = app.detail_items().len() - 1;
 
+        app.detail_follow_focus = true;
         let pane = build(&app, 100).expect("repository pane");
-        let offset = pane.scroll_offset(20);
         let row = pane.items[app.detail_index].line;
+        let offset = pane.resolve_offset(&mut app, 20);
         assert!(
             row >= offset && row < offset + 20,
             "row {row}, offset {offset}"
         );
+        // Following is a one-shot: it must not fight the wheel on later frames.
+        assert!(!app.detail_follow_focus);
+    }
 
-        // The sidebar keeps the pane at the top.
+    /// The wheel scrolls the pane whoever has focus, which is the whole point of
+    /// keeping the offset on the app rather than deriving it from the cursor.
+    #[tokio::test]
+    async fn the_pane_scrolls_while_the_sidebar_has_focus() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = test_app(&dir);
+        with_repository(&mut app);
+        app.sessions = Some(vec![a_session(), a_session(), a_session()]);
+        app.issues = Some(vec![an_issue(), an_issue()]);
         app.focus = Focus::Sidebar;
+
+        app.detail_scroll = 6;
+        app.detail_follow_focus = false;
         let pane = build(&app, 100).expect("repository pane");
-        assert_eq!(pane.scroll_offset(20), 0);
+        assert_eq!(pane.resolve_offset(&mut app, 20), 6);
+    }
+
+    /// Scrolling past the end would leave the pane showing blank rows.
+    #[tokio::test]
+    async fn the_offset_is_clamped_to_the_content() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = test_app(&dir);
+        with_repository(&mut app);
+        app.focus = Focus::Sidebar;
+        app.detail_scroll = u16::MAX;
+        app.detail_follow_focus = false;
+
+        let pane = build(&app, 100).expect("repository pane");
+        let total = as_u16(pane.lines.len());
+        let offset = pane.resolve_offset(&mut app, 20);
+        assert_eq!(offset, total.saturating_sub(20));
+        assert_eq!(app.detail_scroll, offset, "the clamp is written back");
     }
 
     /// Clicking a control has to reach the item drawn under the pointer, which

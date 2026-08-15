@@ -10,6 +10,8 @@ pub const ACCENT_DARK: Color = Color::Rgb(0x2D, 0x6A, 0x4F);
 pub const BG: Color = Color::Rgb(0x1C, 0x1C, 0x1E);
 pub const BG_ELEVATED: Color = Color::Rgb(0x2C, 0x2C, 0x2E);
 pub const BG_SELECTED: Color = Color::Rgb(0x48, 0x48, 0x4A);
+/// Textual's `$bg-hover`, the fill every `:hover` rule in the stylesheet used.
+pub const BG_HOVER: Color = Color::Rgb(0x3A, 0x3A, 0x3C);
 pub const BORDER: Color = Color::Rgb(0x3D, 0x3D, 0x3F);
 pub const TEXT_PRIMARY: Color = Color::Rgb(0xF5, 0xF5, 0xF5);
 pub const TEXT_SECONDARY: Color = Color::Rgb(0xA8, 0xA8, 0xA8);
@@ -109,22 +111,33 @@ const DESTRUCTIVE_BORDER: Color = Color::Rgb(0x5A, 0x30, 0x30);
 /// not touch the fill here either: tinting a focused plain button with the
 /// accent would make it indistinguishable from a resting `-primary` one, which
 /// is the difference between "the cursor is here" and "this is the safe action".
-pub fn action_bg(variant: Variant) -> Color {
-    match variant {
-        Variant::Normal => BG_ELEVATED,
-        Variant::Primary => ACCENT_DARK,
-        Variant::Destructive => DESTRUCTIVE_BG,
+/// `Button.-destructive:hover { background: #4d2828 }`.
+const DESTRUCTIVE_BG_HOVER: Color = Color::Rgb(0x4D, 0x28, 0x28);
+
+pub fn action_bg(variant: Variant, hovered: bool) -> Color {
+    match (variant, hovered) {
+        // `Button:hover { background: $bg-hover }`
+        (Variant::Normal, true) => BG_HOVER,
+        (Variant::Normal, false) => BG_ELEVATED,
+        // `Button.-primary:hover { background: $accent }`
+        (Variant::Primary, true) => ACCENT,
+        (Variant::Primary, false) => ACCENT_DARK,
+        // `Button.-destructive:hover { background: #4d2828 }`
+        (Variant::Destructive, true) => DESTRUCTIVE_BG_HOVER,
+        (Variant::Destructive, false) => DESTRUCTIVE_BG,
     }
 }
 
 /// Style for an actionable item ("button") in the detail pane.
-pub fn action(focused: bool, variant: Variant) -> Style {
+pub fn action(focused: bool, variant: Variant, hovered: bool) -> Style {
     let style = Style::default()
-        .bg(action_bg(variant))
-        .fg(if variant.is_destructive() {
-            DESTRUCTIVE
-        } else {
-            TEXT_PRIMARY
+        .bg(action_bg(variant, hovered))
+        .fg(match (variant, hovered) {
+            // On `$accent` the light label would be near-invisible; Textual's
+            // `-primary` text colour flips with the fill.
+            (Variant::Primary, true) => BG,
+            (v, _) if v.is_destructive() => DESTRUCTIVE,
+            _ => TEXT_PRIMARY,
         });
     if focused {
         style.add_modifier(Modifier::BOLD)
@@ -135,9 +148,19 @@ pub fn action(focused: bool, variant: Variant) -> Style {
 
 /// Border of a control's box. `Button:focus { border: solid $accent }` wins over
 /// the variant's own colour, which is the only thing that marks the cursor.
-pub fn action_border(focused: bool, variant: Variant) -> Style {
+/// `Button:hover` also sets an accent border, so a hovered control reads as
+/// reachable even when the keyboard cursor is elsewhere.
+pub fn action_border(focused: bool, variant: Variant, hovered: bool) -> Style {
     if focused {
         return Style::default().fg(ACCENT);
+    }
+    if hovered {
+        // `Button.-destructive:hover { border: solid $destructive }`
+        return Style::default().fg(if variant.is_destructive() {
+            DESTRUCTIVE
+        } else {
+            ACCENT
+        });
     }
     match variant {
         Variant::Normal => border(),

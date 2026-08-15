@@ -5,7 +5,7 @@ pub mod modals;
 pub mod sidebar;
 pub mod widgets;
 
-use crate::app::App;
+use crate::app::{App, HitTarget};
 use crate::event::Severity;
 use crate::theme;
 use ratatui::Frame;
@@ -36,9 +36,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Layout::horizontal([Constraint::Length(sidebar_width), Constraint::Min(0)])
             .areas(body_area);
 
+    // Remembered so the wheel can be routed to the pane under the pointer.
+    app.sidebar_rect = sidebar_area;
+    app.detail_rect = detail_area;
+
     sidebar::draw(frame, app, sidebar_area);
     detail::draw(frame, app, detail_area);
-    draw_footer(frame, footer_area);
+    draw_footer(frame, app, footer_area);
     draw_notifications(frame, app, body_area);
 
     if !app.modals.is_empty() {
@@ -69,31 +73,63 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn draw_footer(frame: &mut Frame, area: Rect) {
-    const KEYS: [(&str, &str); 12] = [
-        ("q", "Quit"),
-        ("a", "Add Repo"),
-        ("w", "Add Worktree"),
-        ("e", "Editor"),
-        ("t", "Terminal"),
-        ("o", "Files"),
-        ("n", "Claude"),
-        ("y", "ClaudeYOLO"),
-        ("h", "Archive"),
-        ("d", "Delete"),
-        ("s", "Settings"),
-        ("?", "Help"),
+fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
+    const KEYS: [(char, &str); 12] = [
+        ('q', "Quit"),
+        ('a', "Add Repo"),
+        ('w', "Add Worktree"),
+        ('e', "Editor"),
+        ('t', "Terminal"),
+        ('o', "Files"),
+        ('n', "Claude"),
+        ('y', "ClaudeYOLO"),
+        ('h', "Archive"),
+        ('d', "Delete"),
+        ('s', "Settings"),
+        ('?', "Help"),
     ];
 
     let mut spans = Vec::new();
+    // Tracks where each entry lands so it can be registered as a click target.
+    let mut x = area.x;
     for (key, label) in KEYS {
+        let hovered = app.hovered == Some(HitTarget::FooterKey(key));
+        let badge = format!(" {key} ");
+        // One trailing space, not two: at twelve entries the extra column per
+        // entry was enough to push "? Help" off an 150-column terminal, which
+        // the Textual footer fitted.
+        let text = format!(" {label} ");
+        let width = (badge.chars().count() + text.chars().count()) as u16;
+
         spans.push(Span::styled(
-            format!(" {key} "),
+            badge,
             Style::default()
                 .bg(theme::ACCENT_DARK)
                 .fg(theme::TEXT_PRIMARY),
         ));
-        spans.push(Span::styled(format!(" {label}  "), theme::secondary()));
+        spans.push(Span::styled(
+            text,
+            if hovered {
+                Style::default().bg(theme::BG_HOVER).fg(theme::TEXT_PRIMARY)
+            } else {
+                theme::secondary()
+            },
+        ));
+
+        // Only register what actually fits on screen.
+        if x < area.x + area.width {
+            let visible = width.min(area.x + area.width - x);
+            app.push_hit(
+                Rect {
+                    x,
+                    y: area.y,
+                    width: visible,
+                    height: area.height,
+                },
+                HitTarget::FooterKey(key),
+            );
+        }
+        x = x.saturating_add(width);
     }
     frame.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::BG_ELEVATED)),

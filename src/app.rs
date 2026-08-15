@@ -20,6 +20,28 @@ pub const NOTIFICATION_TTL: Duration = Duration::from_secs(5);
 pub const ISSUE_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 pub const SESSION_LIMIT: usize = 5;
 pub const ISSUE_LIMIT: usize = 10;
+/// Lines the detail pane moves per wheel notch, matching Textual's
+/// `scroll_sensitivity_y` of 3.
+const SCROLL_STEP: isize = 3;
+/// Rows `PageUp` / `PageDown` move.
+const PAGE_STEP: isize = 10;
+
+/// A bare pointer move, which may well leave the frame identical.
+fn is_pointer_motion(event: &AppEvent) -> bool {
+    use ratatui::crossterm::event::{Event, MouseEventKind};
+    matches!(
+        event,
+        AppEvent::Term(Event::Mouse(mouse)) if mouse.kind == MouseEventKind::Moved
+    )
+}
+
+/// Is this cell inside that rectangle?
+fn contains(rect: ratatui::layout::Rect, column: u16, row: u16) -> bool {
+    column >= rect.x
+        && column < rect.x.saturating_add(rect.width)
+        && row >= rect.y
+        && row < rect.y.saturating_add(rect.height)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -33,6 +55,10 @@ pub enum SidebarRow {
     Repository {
         id: Uuid,
         name: String,
+        /// Whether the row has anything to fold away, so a leaf repository does
+        /// not grow a twisty that would do nothing.
+        has_worktrees: bool,
+        collapsed: bool,
     },
     Worktree {
         repo_id: Uuid,
@@ -129,7 +155,13 @@ pub enum ModalClick {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HitTarget {
     SidebarRow(usize),
+    /// The `▾`/`▸` twisty on a repository row, which folds it away without
+    /// changing the selection.
+    SidebarToggle(usize),
     DetailItem(usize),
+    /// A key in the footer bar. Clicking one is the same as pressing it, so the
+    /// character is carried rather than a resolved action.
+    FooterKey(char),
     /// Focus index within the modal on top of the stack, and what a click does.
     ModalControl {
         index: usize,
@@ -168,6 +200,25 @@ pub struct App {
 
     /// Clickable regions recorded by the renderers for the current frame.
     pub hits: Vec<Hit>,
+    /// What the pointer is currently over, so controls can light up under it.
+    pub hovered: Option<HitTarget>,
+    /// Set by anything that changes what the next frame looks like. Pointer
+    /// motion that does not change `hovered` leaves it alone, which is what
+    /// keeps a moving mouse from repainting the app on every report.
+    pub redraw: bool,
+
+    /// Where the two panes were drawn, so the wheel can be routed to whichever
+    /// one the pointer is over rather than to whichever one has focus.
+    pub sidebar_rect: ratatui::layout::Rect,
+    pub detail_rect: ratatui::layout::Rect,
+
+    /// First visible line of the detail pane.
+    pub detail_scroll: u16,
+    /// Set when the cursor moves by keyboard, so the next frame scrolls the
+    /// focused control back into view. The wheel deliberately does not set it.
+    pub detail_follow_focus: bool,
+    /// Repositories folded shut in the sidebar.
+    pub collapsed: std::collections::HashSet<Uuid>,
 
     pub name_input: TextInput,
     pub branch_input: TextInput,
@@ -208,6 +259,13 @@ impl App {
             last_issue_refresh: Instant::now(),
             should_quit: false,
             hits: Vec::new(),
+            hovered: None,
+            redraw: true,
+            sidebar_rect: ratatui::layout::Rect::default(),
+            detail_rect: ratatui::layout::Rect::default(),
+            detail_scroll: 0,
+            detail_follow_focus: true,
+            collapsed: std::collections::HashSet::new(),
             name_input: TextInput::new(""),
             branch_input: TextInput::new(""),
             rename_target: None,
@@ -253,11 +311,16 @@ impl App {
     pub fn rebuild_rows(&mut self) {
         let mut rows = Vec::new();
         for repo in self.state.repositories() {
+            let active = repo.active_worktrees();
             rows.push(SidebarRow::Repository {
                 id: repo.id,
                 name: repo.name.clone(),
+                has_worktrees: !active.is_empty(),
+                collapsed: self.collapsed.contains(&repo.id),
             });
-            let active = repo.active_worktrees();
+            if self.collapsed.contains(&repo.id) {
+                continue;
+            }
             let last_index = active.len().saturating_sub(1);
             for (index, worktree) in active.iter().enumerate() {
                 rows.push(SidebarRow::Worktree {
@@ -396,6 +459,10 @@ impl App {
     /// Reload everything the detail pane shows for the current selection.
     pub fn reload_detail(&mut self) {
         self.detail_index = 0;
+        // A new selection starts at the top; keeping the old offset would open
+        // the pane part-way down a different repository's content.
+        self.detail_scroll = 0;
+        self.detail_follow_focus = true;
         self.sessions = None;
         self.issues = None;
 
@@ -493,6 +560,13 @@ impl App {
     // ------------------------------------------------------------------- events
 
     pub fn handle_event(&mut self, event: AppEvent) {
+        // Everything except a bare pointer move changes the frame. Motion is
+        // asked about rather than cleared afterwards so that a batch of
+        // [Tick, Moved] still repaints: a no-op move must never cancel a
+        // repaint some other event in the same drain already earned.
+        if !is_pointer_motion(&event) {
+            self.redraw = true;
+        }
         match event {
             AppEvent::Term(term_event) => self.handle_term_event(term_event),
             AppEvent::Tick => {
@@ -629,11 +703,21 @@ impl App {
 
         match mouse.kind {
             MouseEventKind::ScrollDown => {
-                self.scroll_focused(1);
+                self.scroll_at(mouse.column, mouse.row, 1);
                 return;
             }
             MouseEventKind::ScrollUp => {
-                self.scroll_focused(-1);
+                self.scroll_at(mouse.column, mouse.row, -1);
+                return;
+            }
+            // Hover. The pointer crossing cells inside one control changes
+            // nothing on screen, so only a change of target costs a repaint.
+            MouseEventKind::Moved => {
+                let target = self.hit_at(mouse.column, mouse.row);
+                if target != self.hovered {
+                    self.hovered = target;
+                    self.redraw = true;
+                }
                 return;
             }
             MouseEventKind::Down(MouseButton::Left) => {}
@@ -659,30 +743,81 @@ impl App {
                 self.sidebar_index = index;
                 self.select_current_row();
             }
+            HitTarget::SidebarToggle(index) => self.toggle_collapsed(index),
             HitTarget::DetailItem(index) => {
                 self.focus = Focus::Detail;
                 self.detail_index = index;
+                self.detail_follow_focus = true;
                 if let Some(DetailItem::Action(action)) = self.detail_items().get(index).cloned() {
                     self.run_action(action);
                 }
+            }
+            HitTarget::FooterKey(key) => {
+                self.handle_key(ratatui::crossterm::event::KeyEvent::new(
+                    ratatui::crossterm::event::KeyCode::Char(key),
+                    ratatui::crossterm::event::KeyModifiers::NONE,
+                ));
             }
             HitTarget::ModalControl { .. } => {}
         }
     }
 
-    /// Move the focus ring of whichever pane has focus, for the scroll wheel.
-    fn scroll_focused(&mut self, delta: isize) {
-        match self.focus {
-            Focus::Sidebar => self.move_sidebar(delta),
-            Focus::Detail => {
-                let len = self.detail_items().len();
-                if len == 0 {
-                    return;
-                }
-                let next = (self.detail_index as isize + delta).clamp(0, len as isize - 1);
-                self.detail_index = next as usize;
-            }
+    /// Fold a repository row shut, or open it again.
+    ///
+    /// Folding is a view operation and leaves the selection alone — unless the
+    /// selected worktree is the thing being hidden. Keeping it would leave the
+    /// detail pane describing a row that is no longer on screen, with the
+    /// sidebar cursor pointing at whatever slid into its place, so the selection
+    /// falls back to the repository that swallowed it.
+    pub fn toggle_collapsed(&mut self, index: usize) {
+        let Some(SidebarRow::Repository { id, .. }) = self.rows.get(index) else {
+            return;
+        };
+        let id = *id;
+        let collapsing = self.collapsed.insert(id);
+        if !collapsing {
+            self.collapsed.remove(&id);
         }
+
+        let hides_selection = collapsing
+            && self.state.selection.repository_id == Some(id)
+            && self.state.selection.worktree_id.is_some();
+        if hides_selection {
+            self.state.select_repository(id);
+            self.rebuild_rows();
+            self.sync_sidebar_index();
+            self.reload_detail();
+            return;
+        }
+
+        self.rebuild_rows();
+        self.sync_sidebar_index();
+    }
+
+    /// Route the wheel to the pane the pointer is over, not the focused one.
+    ///
+    /// The pointer is the thing the user is aiming with; Textual scrolled the
+    /// widget under it, and scrolling a pane the mouse is nowhere near is the
+    /// behaviour this replaces.
+    fn scroll_at(&mut self, column: u16, row: u16, delta: isize) {
+        if contains(self.sidebar_rect, column, row) {
+            self.scroll_sidebar(delta);
+        } else if contains(self.detail_rect, column, row) {
+            self.scroll_detail(delta);
+        }
+    }
+
+    /// Scroll the detail pane's viewport. Deliberately independent of the focus
+    /// ring: reading something is not the same as aiming at it.
+    fn scroll_detail(&mut self, delta: isize) {
+        let next = (self.detail_scroll as isize + delta * SCROLL_STEP).max(0);
+        // The upper bound depends on content height, which only the renderer
+        // knows; it clamps there and writes the value back.
+        self.detail_scroll = next as u16;
+    }
+
+    fn scroll_sidebar(&mut self, delta: isize) {
+        self.move_sidebar(delta);
     }
 
     /// Apply a click to a modal control: always focus it, then do whatever that
@@ -745,12 +880,17 @@ impl App {
                     Focus::Sidebar => Focus::Detail,
                     Focus::Detail => Focus::Sidebar,
                 };
+                // Entering the pane should show where the cursor landed.
+                self.detail_follow_focus = true;
                 return;
             }
             KeyCode::Up => {
                 match self.focus {
                     Focus::Sidebar => self.move_sidebar(-1),
-                    Focus::Detail => self.detail_index = self.detail_index.saturating_sub(1),
+                    Focus::Detail => {
+                        self.detail_index = self.detail_index.saturating_sub(1);
+                        self.detail_follow_focus = true;
+                    }
                 }
                 return;
             }
@@ -762,7 +902,24 @@ impl App {
                         if len > 0 {
                             self.detail_index = (self.detail_index + 1).min(len - 1);
                         }
+                        self.detail_follow_focus = true;
                     }
+                }
+                return;
+            }
+            // Textual bound these to the viewport rather than the focus ring, so
+            // in the detail pane they page without moving the cursor.
+            KeyCode::PageUp => {
+                match self.focus {
+                    Focus::Sidebar => self.move_sidebar(-PAGE_STEP),
+                    Focus::Detail => self.scroll_detail(-PAGE_STEP),
+                }
+                return;
+            }
+            KeyCode::PageDown => {
+                match self.focus {
+                    Focus::Sidebar => self.move_sidebar(PAGE_STEP),
+                    Focus::Detail => self.scroll_detail(PAGE_STEP),
                 }
                 return;
             }
@@ -2035,21 +2192,136 @@ mod tests {
         assert_eq!(app.sidebar_index, 1);
     }
 
+    /// The wheel follows the pointer, not the keyboard focus. Scrolling the
+    /// sidebar because the mouse happened to be over the detail pane was the
+    /// reported bug.
     #[tokio::test]
-    async fn scroll_wheel_moves_the_focused_pane() {
+    async fn scroll_wheel_follows_the_pointer_not_the_focus() {
         use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
         let (_dir, mut app) = app_with_fixture();
-        let wheel = |kind| MouseEvent {
+        app.sidebar_rect = rect(0, 0, 35, 40);
+        app.detail_rect = rect(35, 0, 115, 40);
+        let wheel = |kind, column| MouseEvent {
             kind,
-            column: 0,
-            row: 0,
+            column,
+            row: 10,
             modifiers: KeyModifiers::NONE,
         };
 
-        app.handle_mouse(wheel(MouseEventKind::ScrollDown));
+        // Over the sidebar: the sidebar moves.
+        app.handle_mouse(wheel(MouseEventKind::ScrollDown, 5));
         assert_eq!(app.sidebar_index, 1);
-        app.handle_mouse(wheel(MouseEventKind::ScrollUp));
+        app.handle_mouse(wheel(MouseEventKind::ScrollUp, 5));
         assert_eq!(app.sidebar_index, 0);
+
+        // Over the detail pane, while the sidebar still has focus: the detail
+        // pane scrolls and the selection is left alone.
+        assert_eq!(app.focus, Focus::Sidebar);
+        app.handle_mouse(wheel(MouseEventKind::ScrollDown, 90));
+        assert_eq!(app.sidebar_index, 0, "the wheel moved the wrong pane");
+        assert_eq!(app.detail_scroll, SCROLL_STEP as u16);
+
+        // And it never scrolls above the top.
+        app.handle_mouse(wheel(MouseEventKind::ScrollUp, 90));
+        app.handle_mouse(wheel(MouseEventKind::ScrollUp, 90));
+        assert_eq!(app.detail_scroll, 0);
+    }
+
+    /// Hover is what makes a control look clickable; it also must not repaint
+    /// the app for every pointer report, which is why motion is tracked at all.
+    #[tokio::test]
+    async fn hover_tracks_the_pointer_and_only_repaints_on_a_change() {
+        use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+        let (_dir, mut app) = app_with_fixture();
+        app.push_hit(rect(0, 0, 10, 1), HitTarget::SidebarRow(0));
+        let moved = |column, row| MouseEvent {
+            kind: MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        app.redraw = false;
+        app.handle_mouse(moved(2, 0));
+        assert_eq!(app.hovered, Some(HitTarget::SidebarRow(0)));
+        assert!(app.redraw, "entering a control has to repaint it");
+
+        // Moving within the same control changes nothing on screen.
+        app.redraw = false;
+        app.handle_mouse(moved(4, 0));
+        assert!(!app.redraw, "a no-op move repainted the app");
+
+        app.redraw = false;
+        app.handle_mouse(moved(50, 30));
+        assert_eq!(app.hovered, None);
+        assert!(app.redraw, "leaving a control has to repaint it");
+    }
+
+    /// A no-op pointer move must not cancel a repaint another event in the same
+    /// drain already earned.
+    #[tokio::test]
+    async fn a_no_op_move_does_not_swallow_another_events_repaint() {
+        use ratatui::crossterm::event::{Event, KeyModifiers, MouseEvent, MouseEventKind};
+        let (_dir, mut app) = app_with_fixture();
+        app.redraw = false;
+
+        app.handle_event(AppEvent::Tick);
+        app.handle_event(AppEvent::Term(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 200,
+            row: 200,
+            modifiers: KeyModifiers::NONE,
+        })));
+
+        assert!(app.redraw, "the tick's repaint was swallowed by the move");
+    }
+
+    /// Folding a repository hides its worktrees without moving the selection.
+    #[tokio::test]
+    async fn collapsing_a_repository_hides_its_worktrees() {
+        let (_dir, mut app) = app_with_fixture();
+        let before = app.rows.len();
+        assert!(
+            app.rows
+                .iter()
+                .any(|row| matches!(row, SidebarRow::Worktree { .. })),
+            "fixture has no worktree to fold away"
+        );
+        let selected = app.state.selection;
+
+        app.toggle_collapsed(0);
+        assert!(
+            !app.rows
+                .iter()
+                .any(|row| matches!(row, SidebarRow::Worktree { .. }))
+        );
+        assert_eq!(
+            app.state.selection, selected,
+            "folding changed the selection"
+        );
+
+        app.toggle_collapsed(0);
+        assert_eq!(app.rows.len(), before);
+    }
+
+    /// Clicking a footer entry is the same as pressing its key.
+    #[tokio::test]
+    async fn clicking_the_footer_runs_the_binding() {
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let (_dir, mut app) = app_with_fixture();
+        app.push_hit(rect(0, 39, 10, 1), HitTarget::FooterKey('a'));
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row: 39,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert!(
+            matches!(app.modals.last(), Some(Modal::AddRepository(_))),
+            "clicking `a` in the footer did not open Add Repository"
+        );
     }
 
     #[tokio::test]

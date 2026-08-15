@@ -48,8 +48,13 @@ async fn run() -> anyhow::Result<()> {
     app.on_start();
 
     let outcome = loop {
-        if let Err(error) = terminal.draw(|frame| ui::draw(frame, &mut app)) {
-            break Err(anyhow::Error::from(error));
+        // Skip the repaint when the last batch of events changed nothing on
+        // screen — pointer motion inside one control is the common case.
+        if app.redraw {
+            app.redraw = false;
+            if let Err(error) = terminal.draw(|frame| ui::draw(frame, &mut app)) {
+                break Err(anyhow::Error::from(error));
+            }
         }
         let Some(event) = rx.recv().await else {
             break Ok(());
@@ -68,21 +73,24 @@ async fn run() -> anyhow::Result<()> {
     outcome
 }
 
-/// Turn on mouse reporting for button presses and the wheel.
+/// Turn on mouse reporting for button presses, the wheel, and pointer motion.
 ///
-/// Deliberately not crossterm's `EnableMouseCapture`: that also enables
-/// any-motion tracking (`?1003h`), so the terminal reports every pointer
-/// movement. Each report wakes the loop and repaints, which showed up as the
-/// whole app flickering while the mouse merely moved across it. `?1000h` is
-/// press/release only, and `?1006h` asks for SGR coordinates so columns past
-/// 223 still resolve.
+/// `?1003h` (any-motion) is what makes hover possible at all: without it the
+/// terminal never reports a bare move, so no control can light up under the
+/// pointer. It was previously left off because every motion report woke the
+/// loop and repainted, which read as the app flickering under a moving mouse.
+/// That is fixed at the source instead — `App::handle_mouse` only marks the
+/// frame dirty when the *hovered target changes*, so crossing a control costs
+/// one repaint and sliding around inside it costs none.
+///
+/// `?1006h` asks for SGR coordinates so columns past 223 still resolve.
 fn enable_mouse() {
-    print!("\x1b[?1000h\x1b[?1006h");
+    print!("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
     let _ = std::io::stdout().flush();
 }
 
 fn disable_mouse() {
-    print!("\x1b[?1006l\x1b[?1000l");
+    print!("\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l");
     let _ = std::io::stdout().flush();
 }
 

@@ -47,8 +47,17 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     // Only the top of the stack is drawn: Settings → Custom Buttons → Edit
     // Button nests, and a half-covered parent behind the child is just noise.
     // Only the top is clickable either, for the same reason.
+    let hovered = match app.hovered {
+        Some(HitTarget::ModalControl { index, .. }) => Some(index),
+        _ => None,
+    };
     let hits = match app.modals.last() {
-        Some(modal) => render_modal(frame, modal, area),
+        Some(modal) => HOVERED.with(|cell| {
+            cell.set(hovered);
+            let hits = render_modal(frame, modal, area);
+            cell.set(None);
+            hits
+        }),
         None => return,
     };
     for (rect, index, click) in hits {
@@ -260,6 +269,16 @@ fn disabled(label: &str, index: usize) -> Control {
     boxed(label, false, theme::Variant::Normal, false, index)
 }
 
+thread_local! {
+    /// Focus index the pointer is over, for the duration of one `draw`.
+    ///
+    /// Every control already resolves its own `focused` from its index, and
+    /// hover is the same shape. Carrying it here rather than through all
+    /// nineteen call sites keeps them readable; it is set and cleared inside a
+    /// single synchronous `draw`, so nothing observes it between frames.
+    static HOVERED: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
 /// The shared body of [`control`] and [`disabled`]: the box, styled the way
 /// `ui/detail.rs` styles its controls, so both panes read as one app.
 fn boxed(
@@ -269,13 +288,16 @@ fn boxed(
     enabled: bool,
     index: usize,
 ) -> Control {
-    let fill = theme::action_bg(variant);
-    let border = theme::action_border(focused, variant);
+    // A disabled control must not light up under the pointer: an affordance
+    // promising a click it will not honour is worse than none.
+    let hovered = enabled && HOVERED.with(|cell| cell.get()) == Some(index);
+    let fill = theme::action_bg(variant, hovered);
+    let border = theme::action_border(focused, variant, hovered);
     // A control that cannot run keeps its box, so neither the layout nor the
     // hit region shifts; only the label goes grey — except under the cursor,
     // which has to stay legible.
     let text = if enabled || focused {
-        theme::action(focused, variant)
+        theme::action(focused, variant, hovered)
     } else {
         theme::muted().bg(fill)
     };

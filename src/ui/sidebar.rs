@@ -37,7 +37,16 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let items: Vec<ListItem> = app.rows.iter().map(row_to_item).collect();
+    let hovered = match app.hovered {
+        Some(HitTarget::SidebarRow(index)) | Some(HitTarget::SidebarToggle(index)) => Some(index),
+        _ => None,
+    };
+    let items: Vec<ListItem> = app
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| row_to_item(row, hovered == Some(index)))
+        .collect();
     let mut state = ListState::default();
     state.select(Some(app.sidebar_index));
 
@@ -69,8 +78,31 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             },
             HitTarget::SidebarRow(index),
         );
+        // The twisty is pushed after the row so it wins the click: folding a
+        // repository away must not also select it. Two cells wide, matching
+        // the glyph and the space after it.
+        if matches!(
+            app.rows.get(index),
+            Some(SidebarRow::Repository {
+                has_worktrees: true,
+                ..
+            })
+        ) {
+            app.push_hit(
+                Rect {
+                    x: inner.x,
+                    y: inner.y + screen_row,
+                    width: TWISTY_WIDTH.min(inner.width),
+                    height: 1,
+                },
+                HitTarget::SidebarToggle(index),
+            );
+        }
     }
 }
+
+/// Cells the `▾`/`▸` twisty and its trailing space occupy.
+const TWISTY_WIDTH: u16 = 2;
 
 fn draw_gh_status(frame: &mut Frame, app: &App, area: Rect) {
     let style = match app.gh_status.as_str() {
@@ -99,10 +131,27 @@ fn draw_gh_status(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn row_to_item(row: &SidebarRow) -> ListItem<'static> {
-    match row {
-        SidebarRow::Repository { name, .. } => {
-            ListItem::new(Line::from(Span::styled(format!(" {name}"), theme::title())))
+fn row_to_item(row: &SidebarRow, hovered: bool) -> ListItem<'static> {
+    // `ListItem`'s own style paints the whole row, so hover reads as a band
+    // across the sidebar exactly as Textual's `ListItem:hover` did.
+    let item = match row {
+        SidebarRow::Repository {
+            name,
+            has_worktrees,
+            collapsed,
+            ..
+        } => {
+            // A repository with nothing under it gets a blank of the same width,
+            // so every name still starts in the same column.
+            let twisty = match (has_worktrees, collapsed) {
+                (false, _) => "  ",
+                (true, false) => "▾ ",
+                (true, true) => "▸ ",
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(twisty, theme::muted()),
+                Span::styled(name.clone(), theme::title()),
+            ]))
         }
         SidebarRow::Worktree {
             name,
@@ -126,6 +175,11 @@ fn row_to_item(row: &SidebarRow) -> ListItem<'static> {
             format!("   {name} ({repo_name})"),
             theme::muted(),
         ))),
+    };
+    if hovered {
+        item.style(Style::default().bg(theme::BG_HOVER))
+    } else {
+        item
     }
 }
 
@@ -143,7 +197,7 @@ mod tests {
             branch: "feat/wt-two".into(),
             is_last: true,
         };
-        let item = row_to_item(&row);
+        let item = row_to_item(&row, false);
         let rendered: String = format!("{item:?}");
         // The Textual build lost this to console-markup parsing; assert it survives.
         assert!(rendered.contains("feat/wt-two"));
