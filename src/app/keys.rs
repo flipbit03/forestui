@@ -83,8 +83,12 @@ impl App {
                 match self.focus {
                     Focus::Sidebar => self.select_current_row(),
                     Focus::Detail => {
-                        if let Some(DetailItem::Action(action)) =
-                            self.detail_items().get(self.detail_index).cloned()
+                        // The drawn snapshot, for the same reason as the mouse
+                        // path: act on what the user saw, and never fire a
+                        // control the frame showed as disabled.
+                        if let Some((DetailItem::Action(action), enabled)) =
+                            self.drawn_items.get(self.detail_index).cloned()
+                            && enabled
                         {
                             self.run_action(action);
                         }

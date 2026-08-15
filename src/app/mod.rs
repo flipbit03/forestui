@@ -156,6 +156,15 @@ pub struct App {
     /// clears it.
     pub self_update: bool,
 
+    /// The detail items as the last frame drew them, each with whether it was
+    /// enabled. Activation — a click or Enter — resolves against this snapshot
+    /// rather than re-deriving the list, because a background event drained in
+    /// the same batch (issues finishing, sessions landing) can grow or shrink
+    /// the live list before the click is handled, silently remapping the index
+    /// the user aimed at onto a different control. The snapshot is what was on
+    /// screen, which is what the user acted on.
+    pub drawn_items: Vec<(DetailItem, bool)>,
+
     pub name_input: TextInput,
     pub branch_input: TextInput,
     /// Worktree the rename inputs belong to, so a selection change resets them.
@@ -205,6 +214,7 @@ impl App {
             scroll_drag: None,
             collapsed: std::collections::HashSet::new(),
             self_update: true,
+            drawn_items: Vec::new(),
             name_input: TextInput::new(""),
             branch_input: TextInput::new(""),
             rename_target: None,
@@ -380,6 +390,10 @@ impl App {
         self.detail_follow_focus = true;
         self.sessions = None;
         self.issues = None;
+        // Nothing of the new selection is on screen yet, and activating a
+        // control from the previous pane against the new selection would act
+        // on the wrong thing entirely.
+        self.drawn_items.clear();
 
         let Some(path) = self.state.selected_path() else {
             self.meta = DetailMeta::default();
@@ -578,21 +592,32 @@ impl App {
                     return;
                 }
                 let worktree_id = worktree.id;
+                let name = worktree.name.clone();
                 self.state.add_worktree(repo_id, *worktree);
+                // Selecting a row a collapsed repository hides would leave the
+                // cursor pointing at nothing, so the fold opens to reveal what
+                // the user just created.
+                self.collapsed.remove(&repo_id);
                 self.state.select_worktree(repo_id, worktree_id);
                 self.rebuild_rows();
                 self.sync_sidebar_index();
                 self.reload_detail();
+                // Announced here rather than from the task, so a result that
+                // was dropped above never produces a success toast for a
+                // worktree that is not in the config.
+                self.notify(format!("Created worktree '{name}'"), Severity::Information);
             }
             AppEvent::WorktreesImported { repo_id, worktrees } => {
                 if self.state.find_repository(repo_id).is_none() {
                     return;
                 }
+                let count = worktrees.len();
                 self.state.add_worktrees(repo_id, worktrees);
                 self.state.select_repository(repo_id);
                 self.rebuild_rows();
                 self.sync_sidebar_index();
                 self.reload_detail();
+                self.notify(format!("Imported {count} worktrees"), Severity::Information);
             }
             AppEvent::ReloadDetail => self.reload_detail(),
         }
@@ -863,6 +888,10 @@ mod tests {
     async fn a_created_worktree_is_folded_into_state_and_selected() {
         let (_dir, mut app) = app_with_fixture();
         let repo_id = app.state.repositories()[0].id;
+        // Collapsed on purpose: selecting a hidden row would leave the cursor
+        // pointing at nothing, so the fold has to open to reveal the result.
+        app.toggle_collapsed(0);
+        assert!(app.collapsed.contains(&repo_id));
         let worktree = Worktree::new("fresh".into(), "feat/fresh".into(), "/tmp/fresh".into());
         let worktree_id = worktree.id;
 
@@ -873,11 +902,17 @@ mod tests {
 
         assert!(app.state.find_worktree(worktree_id).is_some());
         assert_eq!(app.state.selection.worktree_id, Some(worktree_id));
+        assert!(!app.collapsed.contains(&repo_id), "the fold stayed shut");
         assert!(
             app.rows
                 .iter()
                 .any(|row| matches!(row, SidebarRow::Worktree { id, .. } if *id == worktree_id)),
             "the sidebar was not rebuilt"
+        );
+        assert_eq!(
+            app.notifications.last().map(|n| n.text.as_str()),
+            Some("Created worktree 'fresh'"),
+            "the toast is announced by the fold, not the task"
         );
     }
 
@@ -936,6 +971,12 @@ mod tests {
             sessions: vec![],
         });
         assert!(app.sessions.is_some());
+    }
+
+    /// What the renderer does each frame: snapshot the drawn items that
+    /// activation resolves against.
+    fn snapshot_drawn(app: &mut App) {
+        app.drawn_items = detail::drawn(&detail::content(app));
     }
 
     fn click(column: u16, row: u16) -> ratatui::crossterm::event::MouseEvent {
@@ -999,6 +1040,7 @@ mod tests {
         let (_dir, mut app) = app_with_fixture();
         app.sessions = Some(Vec::new());
         app.issues = Some(Vec::new());
+        snapshot_drawn(&mut app);
 
         let index = app
             .detail_items()
@@ -1014,6 +1056,86 @@ mod tests {
         // rather than silently opening a window somewhere else.
         assert_eq!(app.notifications.len(), 1);
         assert!(app.notifications[0].text.contains("no longer exists"));
+    }
+
+    /// A control the frame drew as disabled must not fire — from the mouse or
+    /// from Enter. The greyed-out `↓ Git Pull (No remote)` used to run `git
+    /// pull` anyway and answer with an error toast.
+    #[tokio::test]
+    async fn a_disabled_control_does_not_activate() {
+        let (_dir, mut app) = app_with_fixture();
+        app.sessions = Some(Vec::new());
+        app.issues = Some(Vec::new());
+        // The fixture has no remote, so the sync control renders disabled.
+        assert!(!app.meta.has_remote);
+        snapshot_drawn(&mut app);
+
+        let index = app
+            .detail_items()
+            .iter()
+            .position(|item| *item == DetailItem::Action(Action::Sync))
+            .expect("sync control present");
+        assert!(!app.drawn_items[index].1, "sync should be drawn disabled");
+
+        app.push_hit(rect(40, 5, 12, 1), HitTarget::DetailItem(index));
+        app.handle_mouse(click(45, 5));
+        assert!(app.notifications.is_empty(), "the click ran the action");
+
+        app.focus = Focus::Detail;
+        app.detail_index = index;
+        app.handle_key(key(KeyCode::Enter));
+        assert!(app.notifications.is_empty(), "Enter ran the action");
+    }
+
+    /// A background event drained in the same batch as a click must not remap
+    /// the clicked index onto a different control: activation resolves against
+    /// the snapshot of the frame the user saw.
+    #[tokio::test]
+    async fn a_click_resolves_against_the_drawn_frame_not_the_live_list() {
+        let (_dir, mut app) = app_with_fixture();
+        app.sessions = Some(Vec::new());
+        app.issues = Some(Vec::new());
+        snapshot_drawn(&mut app);
+
+        // On the drawn frame (zero issues), this index is Remove Repository.
+        let index = app
+            .detail_items()
+            .iter()
+            .position(|item| *item == DetailItem::Action(Action::RemoveRepository))
+            .expect("remove control present");
+        app.push_hit(rect(40, 5, 20, 1), HitTarget::DetailItem(index));
+
+        // Issues finish loading before the click is handled; the live list
+        // grows and `index` would now point at CreateFromIssue(0).
+        let path = app
+            .state
+            .selected_repository()
+            .expect("repository selected")
+            .source_path
+            .clone();
+        app.handle_event(AppEvent::Issues {
+            path,
+            issues: vec![
+                serde_json::from_str(
+                    r#"{"number":1,"title":"t","createdAt":"2026-01-01T00:00:00Z",
+                        "updatedAt":"2026-01-01T00:00:00Z","labels":[]}"#,
+                )
+                .expect("issue fixture"),
+            ],
+        });
+        assert_eq!(
+            app.detail_items().get(index),
+            Some(&DetailItem::Action(Action::CreateFromIssue(0))),
+            "precondition: the live list did remap the index"
+        );
+
+        app.handle_mouse(click(45, 5));
+        // Remove Repository opens the confirm modal; CreateFromIssue would
+        // instead have started a branch load with no modal.
+        assert!(
+            matches!(app.modals.last(), Some(Modal::Confirm(_))),
+            "the click fired the remapped control instead of the drawn one"
+        );
     }
 
     #[tokio::test]

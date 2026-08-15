@@ -137,15 +137,26 @@ pub fn content(app: &App) -> Vec<DetailNode> {
 
 /// The focusable items a node sequence contains, in order.
 pub fn items(nodes: &[DetailNode]) -> Vec<DetailItem> {
+    drawn(nodes).into_iter().map(|(item, _)| item).collect()
+}
+
+/// [`items`] paired with whether each control can actually run. This is what
+/// the renderer snapshots onto `App::drawn_items`: activation resolves against
+/// the frame the user saw, and a disabled control must not fire at all.
+pub fn drawn(nodes: &[DetailNode]) -> Vec<(DetailItem, bool)> {
     let mut items = Vec::new();
     for node in nodes {
         match node {
             DetailNode::Controls { controls, .. } => {
-                items.extend(controls.iter().map(|control| control.item.clone()));
+                items.extend(
+                    controls
+                        .iter()
+                        .map(|control| (control.item.clone(), control.enabled)),
+                );
             }
-            DetailNode::Field { field, .. } => items.push(DetailItem::Field(*field)),
+            DetailNode::Field { field, .. } => items.push((DetailItem::Field(*field), true)),
             DetailNode::IssuesHeader { .. } => {
-                items.push(DetailItem::Action(Action::RefreshIssues));
+                items.push((DetailItem::Action(Action::RefreshIssues), true));
             }
             _ => {}
         }

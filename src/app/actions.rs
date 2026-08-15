@@ -561,10 +561,10 @@ impl App {
                 worktrees.push(Worktree::new(name, branch, info.path.clone()));
             }
 
-            tx.info(format!("Imported {} worktrees", worktrees.len()));
-            // The main loop folds these into state and saves; writing the
-            // config file from here would race a save the user's next action
-            // makes in the meantime.
+            // The main loop folds these into state, saves, and announces the
+            // result; writing the config file from here would race a save the
+            // user's next action makes, and announcing from here would toast a
+            // success even when the fold drops a late result.
             tx.send(AppEvent::WorktreesImported { repo_id, worktrees });
         });
     }
@@ -628,7 +628,6 @@ impl App {
             worktree.base_branch = base;
             worktree.created_from_ref = base_ref;
 
-            tx.info(format!("Created worktree '{name}'"));
             tx.send(AppEvent::WorktreeAdded {
                 repo_id,
                 worktree: Box::new(worktree),

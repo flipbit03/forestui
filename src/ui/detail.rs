@@ -56,11 +56,17 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         height: area.height.saturating_sub(PANE_PAD_Y),
     };
 
-    let Some(pane) = build(app, inner.width) else {
+    let nodes = crate::app::detail::content(app);
+    // Snapshot what this frame shows, enabled bits included: clicks and Enter
+    // resolve against the frame the user saw, not a list a background event
+    // may have reshaped since (see `App::drawn_items`).
+    app.drawn_items = crate::app::detail::drawn(&nodes);
+    if nodes.is_empty() {
         app.scrollbar = None;
         empty_state(frame, area);
         return;
-    };
+    }
+    let pane = render_nodes(app, nodes, inner.width);
     let offset = pane.resolve_offset(app, inner.height);
     let total = as_u16(pane.lines.len());
     frame.render_widget(Paragraph::new(pane.lines).scroll((offset, 0)), inner);
@@ -109,11 +115,19 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Render the pane for the current selection, or `None` for the empty state.
+/// Only tests call this; [`draw`] walks the content itself so it can snapshot
+/// the drawn items first.
+#[cfg(test)]
 fn build(app: &App, width: u16) -> Option<Pane> {
     let nodes = crate::app::detail::content(app);
     if nodes.is_empty() {
         return None;
     }
+    Some(render_nodes(app, nodes, width))
+}
+
+/// Interpret a node list into a laid-out pane.
+fn render_nodes(app: &App, nodes: Vec<DetailNode>, width: u16) -> Pane {
     let focused = match app.focus {
         Focus::Detail => Some(app.detail_index),
         Focus::Sidebar => None,
@@ -127,7 +141,7 @@ fn build(app: &App, width: u16) -> Option<Pane> {
     for node in nodes {
         render_node(&mut pane, app, node);
     }
-    Some(pane)
+    pane
 }
 
 /// Interpret one content node. This is the whole pane vocabulary; anything the
