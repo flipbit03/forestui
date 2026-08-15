@@ -34,6 +34,15 @@ pub struct CommitInfo {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Exit code of a finished process.
+///
+/// A signal-killed process has no exit code. Mapping that to 0 would make every
+/// `code != 0` check below read a killed `git pull` as success, so it becomes a
+/// non-zero sentinel instead.
+fn exit_code(status: std::process::ExitStatus) -> i32 {
+    status.code().unwrap_or(-1)
+}
+
 /// Run a git command, returning `(exit_code, stdout, stderr)`.
 ///
 /// Returns [`GitError`] when the process cannot be spawned at all — most
@@ -52,7 +61,7 @@ async fn run_git(args: &[&str], cwd: Option<&Path>) -> GitResult<(i32, String, S
         ))
     })?;
     Ok((
-        output.status.code().unwrap_or(0),
+        exit_code(output.status),
         String::from_utf8_lossy(&output.stdout).trim().to_string(),
         String::from_utf8_lossy(&output.stderr).trim().to_string(),
     ))
@@ -96,11 +105,10 @@ async fn safe_list_remotes(path: &str) -> Vec<String> {
 /// List branches. Remote branches keep their `<remote>/` prefix.
 pub async fn list_branches(path: &str, include_remote: bool) -> GitResult<Vec<String>> {
     let dir = expand(path);
-    let remotes = if include_remote {
-        safe_list_remotes(path).await
-    } else {
-        Vec::new()
-    };
+    // Always needed: `git branch -a` lists remote branches either way, so without
+    // the remote names they cannot be classified — and would leak into the result
+    // when the caller asked for local branches only.
+    let remotes = safe_list_remotes(path).await;
 
     let (code, stdout, stderr) =
         run_git(&["branch", "-a", "--format=%(refname:short)"], Some(&dir)).await?;
@@ -119,13 +127,10 @@ pub async fn list_branches(path: &str, include_remote: bool) -> GitResult<Vec<St
             continue;
         }
         let is_remote = remotes.iter().any(|r| line.starts_with(&format!("{r}/")));
-        if is_remote {
-            if include_remote {
-                branches.push(line.to_string());
-            }
-        } else {
-            branches.push(line.to_string());
+        if is_remote && !include_remote {
+            continue;
         }
+        branches.push(line.to_string());
     }
     branches.sort();
     Ok(branches)
@@ -394,6 +399,31 @@ mod tests {
         );
     }
 
+    /// A shell that SIGKILLs itself is the cheapest real signal-killed status.
+    fn killed_by_signal() -> std::process::ExitStatus {
+        let status = std::process::Command::new("sh")
+            .args(["-c", "kill -9 $$"])
+            .status()
+            .unwrap();
+        assert!(status.code().is_none(), "expected a signal-killed process");
+        status
+    }
+
+    /// A killed `git pull` must not report success.
+    #[test]
+    fn signal_killed_process_is_not_success() {
+        assert_ne!(exit_code(killed_by_signal()), 0);
+    }
+
+    #[test]
+    fn normal_exit_codes_pass_through() {
+        let ok = std::process::Command::new("sh")
+            .args(["-c", "exit 3"])
+            .status()
+            .unwrap();
+        assert_eq!(exit_code(ok), 3);
+    }
+
     #[test]
     fn porcelain_parsing() {
         let out = "worktree /repo\nHEAD abc123\nbranch refs/heads/main\n\
@@ -460,5 +490,57 @@ mod tests {
             .await
             .unwrap();
         assert!(!wt.exists());
+    }
+
+    /// Run git in `dir`, panicking with the argv on failure. Tests only.
+    fn git_in(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn init_repo(path: &Path) {
+        std::fs::create_dir_all(path).unwrap();
+        git_in(path, &["init", "-b", "main"]);
+        git_in(path, &["config", "user.email", "t@example.com"]);
+        git_in(path, &["config", "user.name", "t"]);
+        git_in(path, &["commit", "--allow-empty", "-m", "init"]);
+    }
+
+    /// `include_remote = false` must not leak `origin/…` refs, which
+    /// `git branch -a` returns regardless of what the caller asked for.
+    #[tokio::test]
+    async fn list_branches_excludes_remotes_when_not_requested() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let upstream = dir.path().join("upstream");
+        init_repo(&upstream);
+        git_in(&upstream, &["branch", "feat/remote-only"]);
+
+        let clone = dir.path().join("clone");
+        init_repo(&clone);
+        git_in(
+            &clone,
+            &["remote", "add", "origin", &upstream.to_string_lossy()],
+        );
+        git_in(&clone, &["fetch", "--no-tags", "origin"]);
+        let clone_str = clone.to_string_lossy().to_string();
+
+        let local = list_branches(&clone_str, false).await.unwrap();
+        assert_eq!(local, vec!["main".to_string()]);
+
+        let all = list_branches(&clone_str, true).await.unwrap();
+        assert!(all.contains(&"main".to_string()));
+        assert!(all.contains(&"origin/main".to_string()));
+        assert!(all.contains(&"origin/feat/remote-only".to_string()));
+        // The bare remote name is not a branch.
+        assert!(!all.contains(&"origin".to_string()));
     }
 }

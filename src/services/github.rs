@@ -47,6 +47,16 @@ fn state() -> &'static Mutex<State> {
     STATE.get_or_init(|| Mutex::new(State::default()))
 }
 
+/// Exit code of a finished process.
+///
+/// A signal-killed process has no exit code, and must not be reported as 0 —
+/// every caller below reads 0 as success. It must equally not be reported as
+/// -1: that value is reserved for "gh is not installed", which
+/// [`get_auth_status`] turns into [`AuthStatus::NotInstalled`].
+fn exit_code(status: std::process::ExitStatus) -> i32 {
+    status.code().unwrap_or(1)
+}
+
 /// Run a `gh` command. Exit code `-1` means the binary is missing.
 async fn run_gh(args: &[&str], cwd: Option<&Path>) -> (i32, String, String) {
     let mut cmd = Command::new("gh");
@@ -56,7 +66,7 @@ async fn run_gh(args: &[&str], cwd: Option<&Path>) -> (i32, String, String) {
     }
     match cmd.output().await {
         Ok(output) => (
-            output.status.code().unwrap_or(0),
+            exit_code(output.status),
             String::from_utf8_lossy(&output.stdout).trim().to_string(),
             String::from_utf8_lossy(&output.stderr).trim().to_string(),
         ),
@@ -215,6 +225,20 @@ mod tests {
         assert_eq!(AuthStatus::Authenticated.display(None), "ok");
         assert_eq!(AuthStatus::NotAuthenticated.display(None), "unauth'd");
         assert_eq!(AuthStatus::NotInstalled.display(None), "missing");
+    }
+
+    /// A killed `gh` must fail, but must not masquerade as a missing binary:
+    /// -1 would flip the sidebar to "missing" for the rest of the process.
+    #[test]
+    fn signal_killed_process_is_a_plain_failure() {
+        let status = std::process::Command::new("sh")
+            .args(["-c", "kill -9 $$"])
+            .status()
+            .unwrap();
+        assert!(status.code().is_none(), "expected a signal-killed process");
+        let code = exit_code(status);
+        assert_ne!(code, 0);
+        assert_ne!(code, -1);
     }
 
     #[test]
