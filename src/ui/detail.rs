@@ -8,7 +8,7 @@
 //! the recorded cells are what a click resolves against. Any new control here
 //! needs a matching entry there, in the same position.
 
-use crate::app::{App, Focus, HitTarget};
+use crate::app::{App, Focus, HitTarget, ScrollbarGeom};
 use crate::models::{ClaudeSession, GitHubIssue};
 use crate::theme;
 use crate::ui::widgets::{TextInput, centered_rect};
@@ -37,6 +37,10 @@ const RIGHT_MARGIN: u16 = 2;
 /// its top border, its label, and its bottom border.
 const CONTROL_HEIGHT: u16 = 3;
 
+/// Columns the scrollbar occupies on the right of the pane, matching the two
+/// Textual's scrollbar used.
+const SCROLLBAR_WIDTH: u16 = 2;
+
 /// `#detail-pane { padding: 1 2 }` — the pane's own inset from the divider.
 const PANE_PAD_X: u16 = 2;
 const PANE_PAD_Y: u16 = 1;
@@ -56,13 +60,30 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let Some(pane) = build(app, inner.width) else {
+        app.scrollbar = None;
         empty_state(frame, area);
         return;
     };
     let offset = pane.resolve_offset(app, inner.height);
     let total = as_u16(pane.lines.len());
     frame.render_widget(Paragraph::new(pane.lines).scroll((offset, 0)), inner);
-    draw_scrollbar(frame, inner, offset, total);
+
+    // Published for the drag handler, which needs the same geometry the bar was
+    // drawn with rather than its own copy of the arithmetic.
+    app.scrollbar = if inner.width > SCROLLBAR_WIDTH {
+        ScrollbarGeom::new(
+            Rect {
+                x: inner.x + inner.width - SCROLLBAR_WIDTH,
+                y: inner.y,
+                width: SCROLLBAR_WIDTH,
+                height: inner.height,
+            },
+            total,
+        )
+    } else {
+        None
+    };
+    draw_scrollbar(frame, app.scrollbar, offset);
 
     // The scroll offset decides which line ends up on which screen row, so this
     // is the earliest the clickable regions can be worked out.
@@ -436,25 +457,13 @@ impl Pane {
 /// blank cells, rather than a glyph per row. A column of `│` would read as a
 /// pane border, and it would also put a character on every row of the captured
 /// text frames, burying real changes in the sweep diffs.
-fn draw_scrollbar(frame: &mut Frame, inner: Rect, offset: u16, total: u16) {
-    const WIDTH: u16 = 2;
-    let height = inner.height;
-    if height == 0 || inner.width <= WIDTH || total <= height {
+fn draw_scrollbar(frame: &mut Frame, geom: Option<ScrollbarGeom>, offset: u16) {
+    let Some(geom) = geom else {
         return;
-    }
-    let max_offset = total.saturating_sub(height);
-    // At least one cell, so the thumb never vanishes on very long content.
-    let thumb = ((u32::from(height) * u32::from(height)) / u32::from(total)).max(1) as u16;
-    let travel = height.saturating_sub(thumb);
-    let top = if max_offset == 0 {
-        0
-    } else {
-        ((u32::from(offset) * u32::from(travel)) / u32::from(max_offset)) as u16
     };
-
-    let x = inner.x + inner.width - WIDTH;
-    for row in 0..height {
-        let inside = row >= top && row < top.saturating_add(thumb);
+    let top = geom.thumb_top(offset);
+    for row in 0..geom.track.height {
+        let inside = row >= top && row < top.saturating_add(geom.thumb);
         let colour = if inside {
             theme::ACCENT_DARK
         } else {
@@ -463,10 +472,9 @@ fn draw_scrollbar(frame: &mut Frame, inner: Rect, offset: u16, total: u16) {
         frame.render_widget(
             Block::default().style(Style::default().bg(colour)),
             Rect {
-                x,
-                y: inner.y + row,
-                width: WIDTH,
+                y: geom.track.y + row,
                 height: 1,
+                ..geom.track
             },
         );
     }

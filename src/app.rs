@@ -26,13 +26,71 @@ const SCROLL_STEP: isize = 3;
 /// Rows `PageUp` / `PageDown` move.
 const PAGE_STEP: isize = 10;
 
-/// A bare pointer move, which may well leave the frame identical.
+/// Pointer motion, held button or not. Either may well leave the frame
+/// identical, so both are left to the handler to mark dirty when it acts.
 fn is_pointer_motion(event: &AppEvent) -> bool {
     use ratatui::crossterm::event::{Event, MouseEventKind};
     matches!(
         event,
-        AppEvent::Term(Event::Mouse(mouse)) if mouse.kind == MouseEventKind::Moved
+        AppEvent::Term(Event::Mouse(mouse))
+            if matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Drag(_))
     )
+}
+
+/// Where the detail pane's scrollbar was drawn, and the arithmetic that maps
+/// between a thumb position and a scroll offset.
+///
+/// Kept in one place because the renderer and the drag handler have to agree
+/// exactly: a thumb that renders one row off from where the drag thinks it is
+/// feels like the bar slipping out from under the pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollbarGeom {
+    /// The full track, including the part the thumb is not covering.
+    pub track: ratatui::layout::Rect,
+    pub thumb: u16,
+    /// Rows the top of the thumb can travel.
+    pub travel: u16,
+    pub max_offset: u16,
+}
+
+impl ScrollbarGeom {
+    /// `None` when the content fits, which is also when no bar is drawn.
+    pub fn new(track: ratatui::layout::Rect, total: u16) -> Option<Self> {
+        let height = track.height;
+        if height == 0 || total <= height {
+            return None;
+        }
+        // At least one cell, so the thumb never vanishes on very long content.
+        let thumb = ((u32::from(height) * u32::from(height)) / u32::from(total)).max(1) as u16;
+        Some(Self {
+            track,
+            thumb,
+            travel: height.saturating_sub(thumb),
+            max_offset: total - height,
+        })
+    }
+
+    /// Rounds to nearest rather than truncating. There are usually far more
+    /// scroll positions than track rows, so truncating leaves the thumb a row
+    /// behind the offset a drag just produced — the bar visibly lags the pointer
+    /// and never quite reaches the bottom. Rounding makes this the exact inverse
+    /// of [`Self::offset_at`] for every row of the track.
+    pub fn thumb_top(&self, offset: u16) -> u16 {
+        if self.max_offset == 0 {
+            return 0;
+        }
+        let max = u32::from(self.max_offset);
+        let scaled = u32::from(offset.min(self.max_offset)) * u32::from(self.travel);
+        (((scaled + max / 2) / max) as u16).min(self.travel)
+    }
+
+    pub fn offset_at(&self, thumb_top: u16) -> u16 {
+        if self.travel == 0 {
+            return 0;
+        }
+        ((u32::from(thumb_top.min(self.travel)) * u32::from(self.max_offset))
+            / u32::from(self.travel)) as u16
+    }
 }
 
 /// Is this cell inside that rectangle?
@@ -215,8 +273,14 @@ pub struct App {
     /// First visible line of the detail pane.
     pub detail_scroll: u16,
     /// Set when the cursor moves by keyboard, so the next frame scrolls the
-    /// focused control back into view. The wheel deliberately does not set it.
+    /// focused control back into view. The wheel and the scrollbar deliberately
+    /// do not set it.
     pub detail_follow_focus: bool,
+    /// The scrollbar as the last frame drew it, or `None` when the content fits.
+    pub scrollbar: Option<ScrollbarGeom>,
+    /// Rows between the top of the thumb and where the pointer grabbed it, held
+    /// for the duration of a drag so the thumb does not jump under the cursor.
+    pub scroll_drag: Option<u16>,
     /// Repositories folded shut in the sidebar.
     pub collapsed: std::collections::HashSet<Uuid>,
 
@@ -265,6 +329,8 @@ impl App {
             detail_rect: ratatui::layout::Rect::default(),
             detail_scroll: 0,
             detail_follow_focus: true,
+            scrollbar: None,
+            scroll_drag: None,
             collapsed: std::collections::HashSet::new(),
             name_input: TextInput::new(""),
             branch_input: TextInput::new(""),
@@ -720,7 +786,27 @@ impl App {
                 }
                 return;
             }
-            MouseEventKind::Down(MouseButton::Left) => {}
+            // Dragging the scrollbar. The pointer routinely leaves the track
+            // mid-drag, so this is not gated on where it currently is — only on
+            // a drag having started there.
+            MouseEventKind::Drag(MouseButton::Left) => {
+                self.drag_scrollbar(mouse.row);
+                return;
+            }
+            // The release carries a position too, and it is often past the last
+            // drag report — a quick flick ends with the button coming up several
+            // rows beyond where the last motion landed. Applying it before
+            // letting go means the thumb finishes where the pointer did.
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.drag_scrollbar(mouse.row);
+                self.scroll_drag = None;
+                return;
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if self.grab_scrollbar(mouse.column, mouse.row) {
+                    return;
+                }
+            }
             _ => return,
         }
 
@@ -804,6 +890,56 @@ impl App {
             self.scroll_sidebar(delta);
         } else if contains(self.detail_rect, column, row) {
             self.scroll_detail(delta);
+        }
+    }
+
+    /// Start a scrollbar drag, if the press landed on the bar.
+    ///
+    /// Pressing the thumb picks it up where it was grabbed. Pressing the bare
+    /// track pages the thumb to the pointer first and then behaves as if it had
+    /// been grabbed by its middle, so the press and any drag that follows are
+    /// one continuous gesture rather than a jump and then a second one.
+    ///
+    /// Focus is left alone on purpose: scrolling something is not the same as
+    /// aiming at it, and stealing focus here would move the keyboard cursor into
+    /// the pane every time the user only wanted to read further down.
+    fn grab_scrollbar(&mut self, column: u16, row: u16) -> bool {
+        let Some(geom) = self.scrollbar else {
+            return false;
+        };
+        if !contains(geom.track, column, row) {
+            return false;
+        }
+
+        let local = row - geom.track.y;
+        let top = geom.thumb_top(self.detail_scroll);
+        let grab = if local >= top && local < top.saturating_add(geom.thumb) {
+            local - top
+        } else {
+            let middle = geom.thumb / 2;
+            self.detail_scroll = geom.offset_at(local.saturating_sub(middle));
+            middle.min(local)
+        };
+
+        self.scroll_drag = Some(grab);
+        true
+    }
+
+    /// Continue a scrollbar drag. Silent unless a drag is actually in progress,
+    /// so a drag begun anywhere else cannot move the pane.
+    fn drag_scrollbar(&mut self, row: u16) {
+        let (Some(geom), Some(grab)) = (self.scrollbar, self.scroll_drag) else {
+            return;
+        };
+        // Above the track this saturates to the top; below it, clamping to the
+        // last row and letting `offset_at` cap the result pins it to the bottom.
+        let local = row
+            .saturating_sub(geom.track.y)
+            .min(geom.track.height.saturating_sub(1));
+        let next = geom.offset_at(local.saturating_sub(grab));
+        if next != self.detail_scroll {
+            self.detail_scroll = next;
+            self.redraw = true;
         }
     }
 
@@ -2225,6 +2361,110 @@ mod tests {
         app.handle_mouse(wheel(MouseEventKind::ScrollUp, 90));
         app.handle_mouse(wheel(MouseEventKind::ScrollUp, 90));
         assert_eq!(app.detail_scroll, 0);
+    }
+
+    /// Dragging the scrollbar thumb scrolls the pane, and picking the thumb up
+    /// part-way down must not snap it to the pointer.
+    #[tokio::test]
+    async fn dragging_the_scrollbar_thumb_scrolls_the_pane() {
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let (_dir, mut app) = app_with_fixture();
+        // A 20-row track over 120 lines of content: thumb 3 rows, travel 17,
+        // max offset 100.
+        let geom = ScrollbarGeom::new(rect(148, 2, 2, 20), 120).expect("content overflows");
+        assert_eq!((geom.thumb, geom.travel, geom.max_offset), (3, 17, 100));
+        app.scrollbar = Some(geom);
+        app.detail_scroll = 0;
+
+        let at = |kind, row| MouseEvent {
+            kind,
+            column: 148,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // Grab the thumb one row below its top; the offset must not move yet.
+        app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left), 3));
+        assert_eq!(app.scroll_drag, Some(1));
+        assert_eq!(app.detail_scroll, 0, "grabbing the thumb moved the pane");
+
+        // Drag down ten rows: the thumb top follows the grab point, not the
+        // pointer, so it lands at row 10 of the track.
+        app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), 13));
+        assert_eq!(app.detail_scroll, geom.offset_at(10));
+
+        // Past the bottom of the track it pins to the end rather than running on.
+        app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), 200));
+        assert_eq!(app.detail_scroll, geom.max_offset);
+
+        // Above the top it pins to the start.
+        app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), 0));
+        assert_eq!(app.detail_scroll, 0);
+
+        // The release applies its own position before ending the gesture, so a
+        // flick that ends past the last drag report is not thrown away.
+        app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left), 9));
+        assert_eq!(app.detail_scroll, geom.offset_at(9 - 2 - 1));
+        assert_eq!(app.scroll_drag, None);
+        app.detail_scroll = 0;
+        app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), 18));
+        assert_eq!(app.detail_scroll, 0, "the pane scrolled after the release");
+    }
+
+    /// Pressing the bare track pages to the pointer instead of doing nothing.
+    #[tokio::test]
+    async fn pressing_the_scrollbar_track_pages_to_the_pointer() {
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let (_dir, mut app) = app_with_fixture();
+        let geom = ScrollbarGeom::new(rect(148, 2, 2, 20), 120).expect("content overflows");
+        app.scrollbar = Some(geom);
+        app.detail_scroll = 0;
+        let focus_before = app.focus;
+
+        // Row 14 of the track, well below the resting thumb.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 148,
+            row: 16,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.detail_scroll, geom.offset_at(14 - geom.thumb / 2));
+        assert!(app.scroll_drag.is_some(), "the press did not begin a drag");
+        assert_eq!(app.focus, focus_before, "the scrollbar stole focus");
+    }
+
+    /// A drag that began somewhere else must not move the pane.
+    #[tokio::test]
+    async fn a_drag_outside_the_scrollbar_does_not_scroll() {
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let (_dir, mut app) = app_with_fixture();
+        app.scrollbar = Some(ScrollbarGeom::new(rect(148, 2, 2, 20), 120).expect("overflows"));
+        app.detail_scroll = 7;
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 40,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.detail_scroll, 7);
+    }
+
+    /// The thumb the renderer draws and the offset a drag computes have to be
+    /// inverses, or the bar drifts under the pointer over a long drag.
+    #[tokio::test]
+    async fn thumb_position_and_offset_round_trip() {
+        let geom = ScrollbarGeom::new(rect(0, 0, 2, 20), 120).expect("content overflows");
+        for top in 0..=geom.travel {
+            let offset = geom.offset_at(top);
+            assert_eq!(
+                geom.thumb_top(offset),
+                top,
+                "thumb top {top} did not survive"
+            );
+        }
     }
 
     /// Hover is what makes a control look clickable; it also must not repaint
