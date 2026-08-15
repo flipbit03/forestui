@@ -1,10 +1,10 @@
- ⭘                                                            forestui v<version>
+                                                              forestui v<version>
                                   │
      gh cli: ok (sweep-user)      │
 ──────────────────────────────────│  MAIN REPOSITORY
- alpha                            │  Repository: alpha
+▾ alpha                           │  Repository: alpha
 └─ wt-a [feat/wt-a]               │  Branch:     main
- beta                             │  Commit:     <sha> (<rel>)
+  beta                            │  Commit:     <sha> (<rel>)
                                   │
                                   │  ┌─────────────────────────┐ ┌──────────────┐
                                   │  │ ⟳  Git Pull (No remote) │ │ Add Worktree │
@@ -13,9 +13,9 @@
                                   │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
                                   │  LOCATION
-                                  │  ┌───────────────────────────────────────────────────────────────────────────┐
+                                  │  ┌───────────────────────────────┐
                                   │  │ <ROOT>/src/alpha │
-                                  │  └───────────────────────────────────────────────────────────────────────────┘
+                                  │  └───────────────────────────────┘
                                   │
                                   │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
@@ -40,5 +40,5 @@
                                   │  │ session 3: refactor the detail pane so the cards line up                                        │
                                   │  │ > and then check it against the python bui...                                                   │
                                   │  │                                                                                                 │
- q  Quit   a  Add Repo   w  Add Worktree   e  Editor   t  Terminal   o  Files   n  Claude   y  ClaudeYOLO   h  Archive   d  Delete   s  Sett
-[forestui-0:forestui-dev-<hhmm>*                                                                                  "<host>" <clock>
+ q  Quit  a  Add Repo  w  Add Worktree  e  Editor  t  Terminal  o  Files  n  Claude  y  ClaudeYOLO  h  Archive  d  Delete  s  Settings  ?  H
+[forestui-0:forestui-dev-<hhmm>*                                                                              "<host>" <clock>

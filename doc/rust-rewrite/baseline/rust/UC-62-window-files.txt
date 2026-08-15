@@ -41,4 +41,4 @@ mc stub
 
 
 
-[forestui-0:forestui-dev-<hhmm>- 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a*                        "<host>" <clock>
+[forestui-0:forestui-dev-<hhmm>- 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a*                    "<host>" <clock>

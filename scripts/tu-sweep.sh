@@ -255,10 +255,15 @@ assert UC-96 no-empty-sections "yes" \
 tu resize --name "$SESS" 140x44 >/dev/null 2>&1
 sleep 1.5
 
-# UC-90: mouse reporting must be on, but must NOT be any-motion tracking.
-# `EnableMouseCapture` turns on ?1003h, so the terminal reports every pointer
-# movement; each report woke the loop and repainted, which showed up as the
-# whole app flickering. Button/scroll reporting only.
+# UC-90: mouse reporting must be on, in any-motion mode, on both builds.
+#
+# This assertion used to demand the opposite of the Rust build — motion
+# reporting was treated as a defect there, because every report woke the loop
+# and repainted and that read as flicker. But `?1003h` is the only way a
+# terminal reports a bare pointer move, so refusing it makes hover impossible
+# rather than merely unstyled, and the stylesheet this port follows has 25
+# `:hover` rules. The repaint is now gated on the hovered target *changing*, so
+# motion is cheap and both builds legitimately want it on.
 mouse_mode="$(tu mouse state --name "$SESS" 2>/dev/null | python3 -c "
 import json,sys
 try:
@@ -268,12 +273,8 @@ except Exception:
     print('unknown')")"
 capture UC-90 mouse-reporting-mode
 assert UC-90 mouse-enabled "on" "${mouse_mode%%:*}"
-# Rust-only: Textual legitimately uses any-motion tracking because it supports
-# hover. The Rust build redraws per event, so motion reporting is a defect there.
-if [ "$LABEL" = "rust" ]; then
-  assert UC-90 not-any-motion "yes" \
-    "$([ "${mouse_mode##*:}" = "AnyMotion" ] && echo no || echo yes)"
-fi
+assert UC-90 any-motion-for-hover "yes" \
+  "$([ "${mouse_mode##*:}" = "AnyMotion" ] && echo yes || echo no)"
 
 # The Textual tree needs one extra Down: the first press only highlights the
 # root before selection follows the cursor.

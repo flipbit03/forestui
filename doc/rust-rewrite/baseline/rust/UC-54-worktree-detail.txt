@@ -1,10 +1,10 @@
- ⭘                                                            forestui v<version>
+                                                              forestui v<version>
                                   │
      gh cli: ok (sweep-user)      │
 ──────────────────────────────────│  WORKTREE
- alpha                            │  Repository: alpha
+▾ alpha                           │  Repository: alpha
 └─ wt-a [feat/wt-a]               │  Worktree:   wt-a
- beta                             │  Branch:     feat/wt-a
+  beta                            │  Branch:     feat/wt-a
                                   │  Based on:   main (<sha>)
                                   │  Commit:     <sha> (<rel>)
                                   │
@@ -15,9 +15,9 @@
                                   │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
                                   │  LOCATION
-                                  │  ┌───────────────────────────────────────────────────────────────────────────────────┐
+                                  │  ┌───────────────────────────────────────┐
                                   │  │ <ROOT>/forest/alpha/wt-a │
-                                  │  └───────────────────────────────────────────────────────────────────────────────────┘
+                                  │  └───────────────────────────────────────┘
                                   │
                                   │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
@@ -40,5 +40,5 @@
                                   │
                                   │  ───────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
- q  Quit   a  Add Repo   w  Add Worktree   e  Editor   t  Terminal   o  Files   n  Claude   y  ClaudeYOLO   h  Archive   d  Delete   s  Sett
-[forestui-0:forestui-dev-<hhmm>*                                                                                  "<host>" <clock>
+ q  Quit  a  Add Repo  w  Add Worktree  e  Editor  t  Terminal  o  Files  n  Claude  y  ClaudeYOLO  h  Archive  d  Delete  s  Settings  ?  H
+[forestui-0:forestui-dev-<hhmm>*                                                                              "<host>" <clock>

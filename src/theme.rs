@@ -12,6 +12,9 @@ pub const BG_ELEVATED: Color = Color::Rgb(0x2C, 0x2C, 0x2E);
 pub const BG_SELECTED: Color = Color::Rgb(0x48, 0x48, 0x4A);
 /// Textual's `$bg-hover`, the fill every `:hover` rule in the stylesheet used.
 pub const BG_HOVER: Color = Color::Rgb(0x3A, 0x3A, 0x3C);
+/// Unfilled part of a scrollbar. Textual's default scrollbar track is darker
+/// than the pane behind it, which is what makes the thumb readable.
+pub const SCROLLBAR_TROUGH: Color = Color::Rgb(0x00, 0x00, 0x00);
 pub const BORDER: Color = Color::Rgb(0x3D, 0x3D, 0x3F);
 pub const TEXT_PRIMARY: Color = Color::Rgb(0xF5, 0xF5, 0xF5);
 pub const TEXT_SECONDARY: Color = Color::Rgb(0xA8, 0xA8, 0xA8);
@@ -105,15 +108,17 @@ const DESTRUCTIVE_BG: Color = Color::Rgb(0x3D, 0x20, 0x20);
 /// `Button.-destructive { border: solid #5a3030 }`.
 const DESTRUCTIVE_BORDER: Color = Color::Rgb(0x5A, 0x30, 0x30);
 
-/// Background of a control ("button"). It depends only on the variant.
-///
-/// Textual's `Button:focus` changed the *border* and nothing else, so focus must
-/// not touch the fill here either: tinting a focused plain button with the
-/// accent would make it indistinguishable from a resting `-primary` one, which
-/// is the difference between "the cursor is here" and "this is the safe action".
 /// `Button.-destructive:hover { background: #4d2828 }`.
 const DESTRUCTIVE_BG_HOVER: Color = Color::Rgb(0x4D, 0x28, 0x28);
 
+/// Background of a control ("button"), from its variant and whether the pointer
+/// is over it.
+///
+/// Textual's `Button:focus` changed the *border* and nothing else, so focus must
+/// not touch the fill here: tinting a focused plain button with the accent would
+/// make it indistinguishable from a resting `-primary` one, which is the
+/// difference between "the cursor is here" and "this is the safe action". Hover
+/// does change the fill, because that is what `Button:hover` did.
 pub fn action_bg(variant: Variant, hovered: bool) -> Color {
     match (variant, hovered) {
         // `Button:hover { background: $bg-hover }`

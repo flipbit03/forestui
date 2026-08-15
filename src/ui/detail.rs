@@ -16,7 +16,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Paragraph};
 
 /// Frames of the issue-refresh spinner, carried over from the Textual build.
 const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
@@ -428,12 +428,18 @@ impl Pane {
     }
 }
 
-/// A one-column scrollbar on the right edge, drawn only when the content is
-/// taller than the pane. Textual showed one; without it nothing on screen says
-/// the pane continues below the fold.
+/// The scrollbar on the right edge, drawn only when the content is taller than
+/// the pane. Without one nothing on screen says the pane continues below the
+/// fold.
+///
+/// Painted the way Textual painted it — two columns of background colour on
+/// blank cells, rather than a glyph per row. A column of `│` would read as a
+/// pane border, and it would also put a character on every row of the captured
+/// text frames, burying real changes in the sweep diffs.
 fn draw_scrollbar(frame: &mut Frame, inner: Rect, offset: u16, total: u16) {
+    const WIDTH: u16 = 2;
     let height = inner.height;
-    if height == 0 || inner.width == 0 || total <= height {
+    if height == 0 || inner.width <= WIDTH || total <= height {
         return;
     }
     let max_offset = total.saturating_sub(height);
@@ -446,20 +452,20 @@ fn draw_scrollbar(frame: &mut Frame, inner: Rect, offset: u16, total: u16) {
         ((u32::from(offset) * u32::from(travel)) / u32::from(max_offset)) as u16
     };
 
-    let x = inner.x + inner.width.saturating_sub(1);
+    let x = inner.x + inner.width - WIDTH;
     for row in 0..height {
         let inside = row >= top && row < top.saturating_add(thumb);
-        let style = if inside {
-            Style::default().fg(theme::TEXT_SECONDARY)
+        let colour = if inside {
+            theme::ACCENT_DARK
         } else {
-            Style::default().fg(theme::BORDER)
+            theme::SCROLLBAR_TROUGH
         };
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled("│", style))),
+            Block::default().style(Style::default().bg(colour)),
             Rect {
                 x,
                 y: inner.y + row,
-                width: 1,
+                width: WIDTH,
                 height: 1,
             },
         );

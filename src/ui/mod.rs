@@ -56,14 +56,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
-    // Textual's stock `Header`: its icon sits hard left, the title is centred
-    // across the whole bar.
-    const ICON: &str = " ⭘";
+    // Textual's stock `Header` also drew a `⭘` hard left. There it was a live
+    // control that opened the app menu; nothing here is behind it, and a button
+    // that cannot be pressed is worse than no button. Deliberately dropped, so
+    // this bar is one of the few places the Rust build does not match the
+    // Textual frame — the committed `baseline/python` frames still show it.
+    // The title keeps its position: it is centred on the whole bar either way.
     let title = app.title();
-    let indent = ((area.width as usize).saturating_sub(title.chars().count()) / 2)
-        .saturating_sub(ICON.chars().count());
+    let indent = (area.width as usize).saturating_sub(title.chars().count()) / 2;
     let line = Line::from(vec![
-        Span::styled(ICON, theme::title()),
         Span::raw(" ".repeat(indent)),
         Span::styled(title, theme::title()),
     ]);
