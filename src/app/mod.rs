@@ -125,6 +125,12 @@ pub struct App {
     pub spinner_index: usize,
     pub last_issue_refresh: Instant,
     pub should_quit: bool,
+    /// Paths with an issue fetch / session scan already running. Selection
+    /// changes arrive far faster than the subprocess chains behind these
+    /// panels; without the guard, bouncing across the sidebar stacks
+    /// concurrent duplicate fetches for identical results.
+    issues_in_flight: std::collections::HashSet<String>,
+    sessions_in_flight: std::collections::HashSet<String>,
     /// Worktrees with a removal running in the background. Guards duplicate
     /// removals, disables the Delete control, and holds quit until the results
     /// are folded (an orphaned git child would remove the tree on disk after
@@ -213,6 +219,8 @@ impl App {
             spinner_index: 0,
             last_issue_refresh: Instant::now(),
             should_quit: false,
+            issues_in_flight: std::collections::HashSet::new(),
+            sessions_in_flight: std::collections::HashSet::new(),
             removals_in_flight: std::collections::HashSet::new(),
             quit_pending: false,
             hits: Vec::new(),
@@ -476,22 +484,41 @@ impl App {
             tx.send(AppEvent::Meta(Box::new(meta)));
         });
 
-        let tx = self.tx.clone();
-        let session_path = path.clone();
-        tokio::spawn(async move {
-            let sessions = tokio::task::spawn_blocking(move || {
-                claude_session::get_sessions_for_path(&session_path, SESSION_LIMIT)
-            })
-            .await
-            .unwrap_or_default();
-            tx.send(AppEvent::Sessions {
-                path: path.clone(),
-                sessions,
+        // Cache-first: what was shown for this selection before renders again
+        // synchronously, and the fresh scan lands behind it. The alternative —
+        // dropping to "Loading…" on every switch with a warm cache in hand —
+        // is the flash issue #29 is about.
+        self.sessions = claude_session::peek_sessions(&path, SESSION_LIMIT);
+        // One scan per path at a time: bouncing across the sidebar must not
+        // stack duplicate directory walks for content the cache already shows.
+        if self.sessions_in_flight.insert(path.clone()) {
+            let tx = self.tx.clone();
+            let session_path = path.clone();
+            let event_path = path.clone();
+            tokio::spawn(async move {
+                let sessions = tokio::task::spawn_blocking(move || {
+                    claude_session::get_sessions_for_path(&session_path, SESSION_LIMIT)
+                })
+                .await
+                .ok();
+                tx.send(AppEvent::Sessions {
+                    path: event_path,
+                    sessions,
+                });
             });
-        });
+        }
 
         if is_repository {
-            self.fetch_issues();
+            match github::peek_issues(&path) {
+                // Fresh enough to stand on its own; the 300s tick refreshes.
+                Some((issues, true)) => self.issues = Some(issues),
+                // Stale content beats a spinner: render it and refresh behind.
+                Some((issues, false)) => {
+                    self.issues = Some(issues);
+                    self.fetch_issues();
+                }
+                None => self.fetch_issues(),
+            }
         }
     }
 
@@ -500,6 +527,11 @@ impl App {
             return;
         };
         let path = repo.source_path.clone();
+        // One fetch per path at a time — each one is a chain of gh
+        // subprocesses and possibly a network call for an identical result.
+        if !self.issues_in_flight.insert(path.clone()) {
+            return;
+        }
         let tx = self.tx.clone();
         tokio::spawn(async move {
             let issues = github::list_issues(&path, ISSUE_LIMIT).await;
@@ -583,8 +615,17 @@ impl App {
 
         if self.last_issue_refresh.elapsed() >= ISSUE_REFRESH_INTERVAL {
             self.last_issue_refresh = Instant::now();
-            github::invalidate_cache(None);
-            if self.state.selection.is_repository() {
+            // Only while a repository pane is actually showing its issues —
+            // refreshing under a worktree pane would churn subprocesses (and
+            // destroy a warm cache) for content that is not on screen.
+            if self.state.selection.is_repository()
+                && let Some(repo) = self.state.selected_repository()
+            {
+                // Invalidate only the repository being refreshed. Nuking the
+                // whole cache here made the next selection change on every
+                // other repository a guaranteed cold miss — spinner included.
+                let path = repo.source_path.clone();
+                github::invalidate_cache(&path);
                 // No repaint yet: nothing changes on screen until the result
                 // arrives, and that event pays for its own.
                 self.fetch_issues();
@@ -617,16 +658,24 @@ impl App {
                 self.gh_status = status.display(username.as_deref());
             }
             AppEvent::Sessions { path, sessions } => {
-                if path == self.meta.path {
+                // Release the guard even for a result the checks below drop.
+                self.sessions_in_flight.remove(&path);
+                // A failed scan (None) keeps whatever the cache painted; an
+                // empty *successful* scan is real content and lands normally.
+                if let Some(sessions) = sessions
+                    && path == self.meta.path
+                {
                     self.sessions = Some(sessions);
                 }
             }
             AppEvent::Issues { path, issues } => {
-                if Some(path.as_str())
-                    == self
-                        .state
-                        .selected_repository()
-                        .map(|r| r.source_path.as_str())
+                self.issues_in_flight.remove(&path);
+                if self.state.selection.is_repository()
+                    && Some(path.as_str())
+                        == self
+                            .state
+                            .selected_repository()
+                            .map(|r| r.source_path.as_str())
                 {
                     self.issues = Some(issues);
                 }
@@ -1119,6 +1168,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_warm_cache_renders_issues_without_a_loading_flash() {
+        let (_dir, mut app) = app_with_fixture();
+        let path = app
+            .state
+            .selected_repository()
+            .expect("repo selected")
+            .source_path
+            .clone();
+        let issue: crate::models::GitHubIssue = serde_json::from_str(
+            r#"{"number":9,"title":"Cached","state":"OPEN","url":"https://x/9",
+                "createdAt":"2026-08-01T10:00:00Z","updatedAt":"2026-08-01T10:00:00Z",
+                "author":{"login":"me"},"assignees":[],"labels":[]}"#,
+        )
+        .expect("issue json");
+        crate::services::github::seed_cache_for_test(&path, vec![issue], chrono::Utc::now());
+
+        // Leave the repository and come back: the second visit must render
+        // from cache synchronously, not drop to the Loading state (#29).
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Up));
+        let issues = app
+            .issues
+            .as_ref()
+            .expect("no Loading flash on a warm cache");
+        assert_eq!(issues[0].number, 9);
+    }
+
+    #[tokio::test]
     async fn delete_is_ignored_while_a_removal_is_in_flight() {
         let (_dir, mut app) = app_with_fixture();
         app.handle_key(key(KeyCode::Down));
@@ -1389,15 +1466,31 @@ mod tests {
 
         app.handle_event(AppEvent::Sessions {
             path: "/stale".into(),
-            sessions: vec![],
+            sessions: Some(vec![]),
         });
         assert!(app.sessions.is_none(), "a late result must not land");
 
         app.handle_event(AppEvent::Sessions {
             path: "/current".into(),
-            sessions: vec![],
+            sessions: Some(vec![]),
         });
         assert!(app.sessions.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_failed_session_scan_keeps_what_the_cache_painted() {
+        let (_dir, mut app) = app_with_fixture();
+        app.meta.path = "/current".into();
+        app.sessions = Some(vec![]);
+
+        app.handle_event(AppEvent::Sessions {
+            path: "/current".into(),
+            sessions: None,
+        });
+        assert!(
+            app.sessions.is_some(),
+            "a panicked scan must not overwrite painted content"
+        );
     }
 
     /// What the renderer does each frame: snapshot the drawn items that

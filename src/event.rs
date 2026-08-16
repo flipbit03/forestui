@@ -49,10 +49,13 @@ pub enum AppEvent {
     Tick,
     /// `gh auth status` finished.
     GhStatus(AuthStatus, Option<String>),
-    /// Claude sessions for a path finished loading.
+    /// Claude sessions for a path finished loading. `None` means the scan
+    /// failed (a panicked blocking task) — the fold must release its in-flight
+    /// guard but keep whatever content is already on screen rather than
+    /// overwriting it with an authoritative-looking empty list.
     Sessions {
         path: String,
-        sessions: Vec<ClaudeSession>,
+        sessions: Option<Vec<ClaudeSession>>,
     },
     /// GitHub issues for a repository finished loading.
     Issues {
