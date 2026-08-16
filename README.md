@@ -160,9 +160,9 @@ stored globally in `~/.config/forestui/settings.json`.
 
 ### Themes
 
-Settings → Theme opens a picker over 31 named palettes — Dracula, Nord,
+Settings → Theme opens a picker over 32 named palettes — Dracula, Nord,
 Gruvbox, Solarized, the Catppuccin and Rosé Pine and Tokyo Night families,
-GitHub, and more — with the app behind the dialog live-previewing the
+GitHub, SynthWave '84, and more — with the app behind the dialog live-previewing the
 highlighted theme. Enter applies, Esc reverts, Save persists. The default,
 Forest Dark, is the palette forestui has always had. The chosen theme is
 stored in `theme_name`; the legacy `theme` field (the old inert

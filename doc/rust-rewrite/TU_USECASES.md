@@ -839,7 +839,7 @@ No custom buttons configured
 Editor dropdown options, in order: `VS Code, Cursor, Neovim (tmux), Vim (tmux),
 Helix (tmux), Emacs TUI (tmux), PyCharm, Sublime Text, Nano (tmux), Micro (tmux)`.
 The theme row is a button, not a cycle (Rust drift, issue #28): Enter opens a
-scrollable picker over every named theme in `theme::THEMES` (31 palettes,
+scrollable picker over every named theme in `theme::THEMES` (32 palettes,
 default `Forest Dark`), with the app behind the dialog live-previewing the
 highlighted candidate; Enter applies, Esc reverts, and Cancel on the Settings
 dialog abandons an applied-but-unsaved theme. The Textual build offered

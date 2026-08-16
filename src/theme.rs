@@ -67,7 +67,7 @@ const fn mix(a: u32, b: u32, pct_a: u32) -> u32 {
 /// Build a theme from the colours a published scheme actually names; the
 /// blended tones every scheme leaves implicit (hover, the destructive button
 /// fills, the accent row fill, the scrollbar trough) are derived by mixing, so
-/// 31 palettes stay maintainable and internally consistent.
+/// the palette table stays maintainable and internally consistent.
 #[allow(clippy::too_many_arguments)]
 const fn build(
     name: &'static str,
@@ -168,6 +168,12 @@ pub const THEMES: &[Theme] = &[
     build("Horizon",           "horizon",             0x1C1E26, 0x232530, 0x2E303E, 0x2E303E, 0xCBCED0, 0x9DA0A2, 0x6C6F93, 0x25B0BC, 0xE95678, 0xFAB795, 0x29D398),
     build("Palenight",         "palenight",           0x292D3E, 0x32374D, 0x444267, 0x444267, 0xEEFFFF, 0xA6ACCD, 0x676E95, 0xC792EA, 0xF07178, 0xFFCB6B, 0xC3E88D),
     build("Night Owl",         "night-owl",           0x011627, 0x0B2942, 0x1D3B53, 0x5F7E97, 0xD6DEEB, 0xA2B5CB, 0x637777, 0x82AAFF, 0xEF5350, 0xECC48D, 0xADDB67),
+    // SynthWave '84 is mapped from robb0wen/synthwave-vscode's theme JSON:
+    // editor.background, input.background (widgets sit on a *darker* surface
+    // there), selection/ruler colours composited over the background where the
+    // original uses alpha, the Comment lavender as muted, and the signature
+    // pink/red/yellow/green token colours.
+    build("SynthWave '84",     "synthwave-84",        0x262335, 0x2A2139, 0x413E4E, 0x633670, 0xFFFFFF, 0xB6B1B1, 0x848BBD, 0xFF7EDB, 0xFE4450, 0xFEDE5D, 0x72F1B8),
 ];
 
 /// Look a theme up by its settings slug.
