@@ -144,7 +144,7 @@ modules are stubs totalling 18 lines.
 | `d` delete | Identical (message text differs — see 4.4) | `src/app.rs:631` |
 | `s` settings | Identical | `src/app.rs:632` |
 | `r` refresh sidebar + detail | Identical | `src/app.rs:635-638` ↔ `app.py:841-844` |
-| `?` help toast | Fixed | Was a verbatim copy of Python's nine-key string, which omitted `o`, `y`, `r`, `A` and `?` itself. Now derived from `BINDINGS` + `EXTRA_BINDINGS`, so a reachable key cannot be undiscoverable (`src/app/keys.rs`) |
+| `?` help toast | Removed | Existed through the first Rust builds (derived from the binding tables); removed with issue #30. The footer now renders every binding — `r` and `A` included — so the toast had nothing left to say. Discoverability is enforced by the single `BINDINGS` table plus a test that the footer fits 140 columns (`src/app/keys.rs`) |
 | `A` toggle archived section | Fixed | New key; Python's `_show_archived` was initialised `False` and never set (`state.py:26`, UC-50). `src/app.rs:639-642` |
 | `Tab` switch sidebar ↔ detail | Changed | New concept; Textual had per-widget focus. `src/app.rs:579-585` |
 | `Up`/`Down` | Changed | Now context-dependent: sidebar cursor, detail cursor, or in-field cursor. `src/app.rs:586-604` |
@@ -153,8 +153,8 @@ modules are stubs totalling 18 lines.
 | Hotkeys while a rename field has focus | Changed | Printable keys go to the field, so `q`/`a`/`d` no longer fire. Python's `q` was `priority=True` (`app.py:72`) and fired even inside an `Input`. `src/app.rs:571-576` |
 | Mouse click to select a row or press a button | Supported | Was dropped in the first cut — no capture enabled, no `MouseEvent` arm. `main.rs::enable_mouse` now turns on `?1000h/?1002h/?1003h/?1006h`, and `src/app/mouse.rs` hit-tests clicks, hover, the wheel and the scrollbar against the regions each renderer records (UC-83–88, UC-90) |
 | Textual command palette (`ctrl+p`), built-in help panel | Dropped | Framework features with no ratatui equivalent |
-| `A` and `Tab` absent from the footer | Changed | The footer draws the 12 entries of `BINDINGS`; `A` and `r` live in `EXTRA_BINDINGS`, which the `?` toast lists and the footer does not, matching Textual's footer width |
-| Footer key order | Identical | Both render `a q w e t o n y h d s ?`. Textual sorted `q` after `a` despite declaring it first, because it carried `priority=True`; the Rust `BINDINGS` table hardcodes that resolved order (`src/app/keys.rs`) |
+| `A` and `r` in the footer | Changed | With issue #30 both moved into `BINDINGS` (and `EXTRA_BINDINGS` was deleted): the footer is the complete key surface, clipping whole entries from the right on narrow terminals rather than hiding keys in a second table |
+| Footer key order | Changed | Rust renders `a q w e t o n y h d s r A`; Textual ended `… s ?`. The shared prefix keeps Textual's resolved order (`q` sorted after `a` by `priority=True`); the tail diverges because `?` is gone and `r`/`A` joined (`src/app/keys.rs`) |
 
 ### 4.2 Startup, CLI, tmux entry
 

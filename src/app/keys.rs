@@ -18,12 +18,12 @@ pub const BINDINGS: [(char, &str); 13] = [
     ('t', "Terminal"),
     ('o', "Files"),
     ('n', "Claude"),
-    ('y', "ClaudeYOLO"),
+    ('y', "YOLO"),
     ('h', "Archive"),
     ('d', "Delete"),
     ('s', "Settings"),
     ('r', "Refresh"),
-    ('A', "Show Archived"),
+    ('A', "Archived"),
 ];
 
 impl App {
@@ -202,5 +202,27 @@ impl App {
             self.name_input = TextInput::new(worktree.name.clone());
             self.branch_input = TextInput::new(worktree.branch.clone());
         }
+    }
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::BINDINGS;
+
+    /// The footer is the app's only key-discovery surface, so it has to fit
+    /// the widths people actually run. One entry costs `" k "` (3) plus
+    /// `"{label} "`; the final trailing space may fall off the edge. The sweep
+    /// captures at 140 columns — an entry that does not fit there is invisible
+    /// in every baseline and undiscoverable on most real terminals.
+    #[test]
+    fn the_footer_fits_a_140_column_terminal() {
+        let width: usize = BINDINGS
+            .iter()
+            .map(|(_, label)| 3 + label.chars().count() + 1)
+            .sum();
+        assert!(
+            width - 1 <= 140,
+            "the footer needs {width} columns; shorten a label"
+        );
     }
 }

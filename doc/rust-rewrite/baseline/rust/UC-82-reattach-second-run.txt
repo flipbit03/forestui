@@ -40,5 +40,5 @@
                                   │
                                   │  MY OPEN GITHUB ISSUES ↻
                                   │
- a Add Repo  q Quit  w Add Worktree  e Editor  t Terminal  o Files  n Claude  y ClaudeYOLO  h Archive  d Delete  s Settings  r Refresh  A Sh
+ a Add Repo  q Quit  w Add Worktree  e Editor  t Terminal  o Files  n Claude  y YOLO  h Archive  d Delete  s Settings  r Refresh  A Archived
 [forestui-0:forestui-dev-<hhmm>* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:alpha:wt->"<host>" <clock>

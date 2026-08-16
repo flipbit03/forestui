@@ -107,14 +107,15 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
             },
         ));
 
-        // Only register what actually fits on screen.
-        if x < area.x + area.width {
-            let visible = width.min(area.x + area.width - x);
+        // Only a fully visible entry is clickable. A clipped one would be an
+        // invisible control: at some widths its only remaining cell is a bare
+        // accent space that would still fire a state-mutating binding.
+        if x + width <= area.x + area.width {
             app.push_hit(
                 Rect {
                     x,
                     y: area.y,
-                    width: visible,
+                    width,
                     height: area.height,
                 },
                 HitTarget::FooterKey(key),
@@ -235,18 +236,51 @@ mod tests {
         );
     }
 
+    /// End-to-end wrap coverage: with the sweep's help-toast case retired,
+    /// this is what guards `draw_notifications`' own arithmetic — a long git
+    /// or update error must occupy several drawn rows, never clamp to one.
+    #[tokio::test]
+    async fn a_long_notification_draws_over_multiple_lines() {
+        use crate::app::test_support::app_with_fixture;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (_dir, mut app) = app_with_fixture();
+        app.notify(
+            "Could not delete 'wt-a': fatal: 'wt-a' contains modified or \
+             untracked files, use --force to delete it anyway",
+            Severity::Error,
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).expect("test terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let rows_with_text = (0..buffer.area.height)
+            .filter(|&row| {
+                let line: String = (0..buffer.area.width)
+                    .map(|col| buffer[(col, row)].symbol().chars().next().unwrap_or(' '))
+                    .collect();
+                line.contains("wt-a") || line.contains("--force") || line.contains("untracked")
+            })
+            .count();
+        assert!(
+            rows_with_text > 1,
+            "the notification text occupies {rows_with_text} row(s); it must wrap"
+        );
+    }
+
     #[test]
     fn wrap_words_breaks_on_word_boundaries() {
-        let wrapped = wrap_words("a: Add Repo | w: Add Worktree | e: Editor", 20);
+        let message = "Could not delete 'wt-a': fatal: 'wt-a' contains modified or untracked files";
+        let wrapped = wrap_words(message, 20);
         assert!(wrapped.iter().all(|l| l.chars().count() <= 20));
-        assert!(wrapped.len() > 1, "the help text has to wrap, not truncate");
+        assert!(wrapped.len() > 1, "a long error has to wrap, not truncate");
         // Nothing may be lost: the words all survive, in order.
         let joined = wrapped.join(" ");
         assert_eq!(
             joined.split_whitespace().collect::<Vec<_>>(),
-            "a: Add Repo | w: Add Worktree | e: Editor"
-                .split_whitespace()
-                .collect::<Vec<_>>()
+            message.split_whitespace().collect::<Vec<_>>()
         );
     }
 

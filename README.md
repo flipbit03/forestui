@@ -116,7 +116,6 @@ pane, `↑`/`↓` move and `Enter` activates.
 | `d` | Delete |
 | `s` | Settings |
 | `r` | Refresh |
-| `?` | Show help |
 | `q` | Quit |
 
 In modals: `Tab` / `Shift+Tab` move between fields, `Enter` activates, `Esc`

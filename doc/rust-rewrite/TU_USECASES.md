@@ -567,9 +567,11 @@ All hotkeys are **global bindings** on the app (`app.py:BINDINGS`), not tree
 bindings, so they fire regardless of which pane has focus. Full set from source:
 `q` quit (priority), `a` add repo, `w` add worktree, `e` editor, `t` terminal,
 `o` files, `n` claude, `y` claude YOLO, `h` toggle archive, `d` delete,
-`s` settings, `r` refresh, `A` show archived. (`?` help existed through the
-first Rust builds and was removed: the footer lists every binding now, so a
-separate help surface had nothing left to say — see UC-26/59/93, retired.)
+`s` settings, `r` refresh (hidden from footer), `?` help. (Rust-side drift
+since: `?` was removed with issue #30 — the footer lists every binding, so a
+separate help surface had nothing left to say, see UC-26/59/93, retired — and
+`A` show-archived is a Rust-only key that Python never wired up, see UC-50 and
+MIGRATION.md. Area E cases that press `A` or `?` cannot expect Python parity.)
 
 ### UC-20 — `t` opens a shell window named `term:<repo>:<worktree>`
 **Area:** Hotkeys | **Priority:** P0 | 🟢 EXECUTED
@@ -1617,20 +1619,22 @@ composite shows a difference not listed above, treat it as a regression.
 | Sidebar | 08–11 | 2 |
 | Repository detail | 12–15 | 2 |
 | Worktree detail | 16–19 | 1 |
-| Hotkeys | 20–28 | 5 |
+| Hotkeys | 20–28 (26 retired) | 5 |
 | Modals | 29–38 | 5 |
 | tmux / grouped sessions | 39–41 | 2 |
 | Errors & edge cases | 42–47 | 2 |
 | Config persistence | 48–52 | 3 |
-| Automated parity sweep | 53–70 | 12 |
+| Automated parity sweep | 53–70 (59 retired) | 12 |
 | Hand-driven, unscripted | 71–77 | 4 |
 | Flows & mouse | 78–89 | 8 |
-| Visual parity | 90–94 | 1 |
+| Visual parity | 90–94 (93 retired) | 1 |
 
-**96 use cases · 52 P0 · 78 executed live · 17 written from source only.**
+**96 numbered use cases, 3 retired with the `?` binding (UC-26, 59, 93) —
+93 active · 52 P0 · 78 executed live · 17 written from source only.**
 
 UC-01–52 were written against the Python build on 2026-08-14 (35 executed).
-UC-53–70 are the automated sweep and have been executed against **both** builds;
+UC-53–70 are the automated sweep and have been executed against **both** builds
+(UC-59 has since retired and is no longer captured);
 UC-71–76 were hand-driven against the Rust build; UC-77 is blocked on `gh` auth.
 
 Written from source, never driven live: UC-02, 03, 05, 15, 18, 19, 25, 35, 37, 38,
