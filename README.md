@@ -158,6 +158,17 @@ forestui ~/personal  # Uses ~/personal/.forestui-config.json
 User preferences (editor, theme, branch prefix, custom Claude buttons) are
 stored globally in `~/.config/forestui/settings.json`.
 
+### Themes
+
+Settings → Theme opens a picker over 31 named palettes — Dracula, Nord,
+Gruvbox, Solarized, the Catppuccin and Rosé Pine and Tokyo Night families,
+GitHub, and more — with the app behind the dialog live-previewing the
+highlighted theme. Enter applies, Esc reverts, Save persists. The default,
+Forest Dark, is the palette forestui has always had. The chosen theme is
+stored in `theme_name`; the legacy `theme` field (the old inert
+System/Dark/Light choice) is preserved untouched so the settings file keeps
+working in the Python build too.
+
 ## Configuration
 
 Settings are stored in `~/.config/forestui/settings.json`:
@@ -168,6 +179,7 @@ Settings are stored in `~/.config/forestui/settings.json`:
   "default_terminal": "",
   "branch_prefix": "feat/",
   "theme": "system",
+  "theme_name": "forest-dark",
   "custom_buttons": [
     {
       "label": "Opus",

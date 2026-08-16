@@ -9,7 +9,7 @@
 use crate::app::{App, Direction, HitTarget, ModalClick};
 use crate::modal::{
     AddRepositoryModal, AddWorktreeModal, ConfirmModal, CreateFromIssueModal, CustomButtonsModal,
-    EDITORS, EditButtonModal, Modal, SPINNER, SettingsModal, THEMES,
+    EDITORS, EditButtonModal, Modal, SPINNER, SettingsModal, ThemePickerModal,
 };
 use crate::theme;
 use crate::ui::widgets::{self, BUTTON_HEIGHT, TextInput};
@@ -76,6 +76,7 @@ pub fn render_modal(frame: &mut Frame, modal: &Modal, area: Rect) -> Hits {
         Modal::Settings(m) => settings(frame, m, area, &mut hits),
         Modal::CustomButtons(m) => custom_buttons(frame, m, area, &mut hits),
         Modal::EditButton(m) => edit_button(frame, m, area, &mut hits),
+        Modal::ThemePicker(m) => theme_picker(frame, m, area, &mut hits),
         Modal::Confirm(m) => confirm(frame, m, area, &mut hits),
     }
     hits
@@ -734,14 +735,15 @@ fn settings(frame: &mut Frame, modal: &SettingsModal, area: Rect, hits: &mut Hit
         SettingsModal::FOCUS_PREFIX,
     );
 
-    let theme_name = THEMES.get(modal.theme_index).map_or("", |(name, _)| *name);
+    let theme_name = crate::theme::by_slug(modal.theme_slug).map_or("", |t| t.name);
     column.line(frame, widgets::section("THEME"));
     column.controls(
         frame,
         hits,
-        vec![cycle(
-            theme_name,
+        vec![control(
+            &format!("{theme_name}…"),
             modal.focus == SettingsModal::FOCUS_THEME,
+            theme::Variant::Normal,
             SettingsModal::FOCUS_THEME,
         )],
         false,
@@ -930,6 +932,69 @@ fn edit_button(frame: &mut Frame, modal: &EditButtonModal, area: Rect, hits: &mu
     );
 }
 
+// -------------------------------------------------------------- Theme picker
+
+/// Theme rows kept on screen at once; the list scrolls around the highlight.
+const THEME_ROWS: usize = 14;
+
+fn theme_picker(frame: &mut Frame, modal: &ThemePickerModal, area: Rect, hits: &mut Hits) {
+    let themes = crate::theme::THEMES;
+    // Deliberately narrow: the app behind the dialog is the preview, so the
+    // dialog covers as little of it as a readable list allows.
+    let rect = widgets::centered_rect(44, CHROME + THEME_ROWS.min(themes.len()) as u16 + 2, area);
+    let mut column = dialog(frame, rect, "Theme", theme::title());
+
+    // The window is sized from the rows that actually fit — `centered_rect`
+    // clamps the dialog on a short terminal, and a window computed from the
+    // ideal height would scroll the highlighted row right out of the box.
+    let rows = (column.remaining().saturating_sub(2) as usize)
+        .min(THEME_ROWS)
+        .min(themes.len())
+        .max(1);
+
+    // Keep the highlight centred while the window stays inside the list.
+    let first = modal
+        .index
+        .saturating_sub(rows / 2)
+        .min(themes.len().saturating_sub(rows));
+
+    for (row, candidate) in themes.iter().enumerate().skip(first).take(rows) {
+        let Some(line_rect) = column.take(1) else {
+            break;
+        };
+        let selected = row == modal.index;
+        let row_style = if selected {
+            theme::cursor()
+        } else {
+            theme::secondary()
+        };
+        // The swatch shows each candidate's accent without applying it, so the
+        // list itself hints at what a row would look like before it is chosen.
+        let swatch_style = row_style.fg(candidate.accent);
+        let name = format!(
+            "{:<width$}",
+            candidate.name,
+            width = (line_rect.width as usize).saturating_sub(5)
+        );
+        let line = Line::from(vec![
+            Span::styled(if selected { " ▸ " } else { "   " }.to_string(), row_style),
+            Span::styled("●", swatch_style),
+            Span::styled(" ", row_style),
+            Span::styled(name, row_style),
+        ]);
+        frame.render_widget(Paragraph::new(line), line_rect);
+        // A click selects the row — which previews it — and commits, the way
+        // Enter does from the keyboard.
+        hits.push((line_rect, row, ModalClick::Activate));
+    }
+    column.gap();
+    column.text(
+        frame,
+        "↑/↓ preview · Enter apply · Esc revert",
+        theme::muted(),
+    );
+}
+
 // ------------------------------------------------------------------ Confirm
 
 fn confirm(frame: &mut Frame, modal: &ConfirmModal, area: Rect, hits: &mut Hits) {
@@ -1098,6 +1163,10 @@ mod tests {
             (
                 Modal::EditButton(Box::new(EditButtonModal::new(None, &[], None))),
                 "Add Button",
+            ),
+            (
+                Modal::ThemePicker(crate::modal::ThemePickerModal::new()),
+                "Theme",
             ),
             (
                 Modal::Confirm(ConfirmModal::new(
@@ -1286,7 +1355,7 @@ mod tests {
         for (needle, index) in [
             ("│ ◂ Vim (tmux) ▸ │", SettingsModal::FOCUS_EDITOR),
             ("feat/", SettingsModal::FOCUS_PREFIX),
-            ("│ ◂ System ▸ │", SettingsModal::FOCUS_THEME),
+            ("│ Forest Dark… │", SettingsModal::FOCUS_THEME),
             ("│ Manage Custom Buttons... │", SettingsModal::FOCUS_MANAGE),
             // Short labels are padded out to Textual's `min-width: 10`.
             ("│  Save  │", SettingsModal::FOCUS_SAVE),

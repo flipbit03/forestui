@@ -200,6 +200,9 @@ impl App {
 
     /// Build an app around explicit state instead of reading disk.
     pub fn with_state(tx: EventTx, state: AppState, settings: Settings) -> Self {
+        // The renderers read the active theme from the global; activate the
+        // saved one before the first frame so launch never flashes the default.
+        crate::theme::set_active(&settings.theme);
         let version = crate::cli::VERSION.to_string();
         let mut app = Self {
             state,

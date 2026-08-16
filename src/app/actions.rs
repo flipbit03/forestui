@@ -99,6 +99,12 @@ impl App {
             } => self.create_worktree(repo_id, name, branch, true, base_branch, pull_first),
             ModalResult::SettingsSaved(settings) => {
                 self.settings = *settings;
+                // On every path that reaches Save the picker has already made
+                // active == theme_name (commit applies, Esc reverts), so this
+                // is not correction but ownership: the fold applies the state
+                // it was handed, rather than trusting a dialog to have left
+                // the global in the right place.
+                crate::theme::set_active(&self.settings.theme_name);
                 if let Err(error) = settings_service::save_settings(&self.settings) {
                     self.notify(format!("Could not save settings: {error}"), Severity::Error);
                 } else {
@@ -110,7 +116,12 @@ impl App {
                 // or they keep showing the old elision until something else does.
                 self.rebuild_rows();
             }
-            ModalResult::CustomButtonsSaved(_) | ModalResult::CustomButtonSaved(_) => {}
+            // The picker already applied the theme live and `receive_child`
+            // carried the slug into the Settings dialog; persisting waits for
+            // Save.
+            ModalResult::CustomButtonsSaved(_)
+            | ModalResult::CustomButtonSaved(_)
+            | ModalResult::ThemeChosen(_) => {}
             ModalResult::Confirmed(action) => self.apply_confirmed(action),
         }
     }

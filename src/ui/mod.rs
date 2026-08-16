@@ -20,7 +20,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     // Clickable regions are rebuilt every frame; nothing persists between them.
     app.clear_hits();
-    frame.render_widget(Block::default().style(Style::default().bg(theme::BG)), area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme::active().bg)),
+        area,
+    );
 
     let [header_area, body_area, footer_area] = Layout::vertical([
         Constraint::Length(1),
@@ -43,14 +46,27 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     sidebar::draw(frame, app, sidebar_area);
     detail::draw(frame, app, detail_area);
     draw_footer(frame, app, footer_area);
-    draw_notifications(frame, app, body_area);
+    // Toasts are hidden while any modal is open — under most modals the
+    // backdrop wipes them anyway; the picker skips the backdrop, so it has to
+    // skip the toasts explicitly or they float over the preview.
+    if app.modals.is_empty() {
+        draw_notifications(frame, app, body_area);
+    }
 
     if !app.modals.is_empty() {
         // Textual's `ModalScreen` painted over the app rather than tinting it —
         // nothing behind a dialog is visible. A translucent backdrop leaves the
-        // pane competing with the dialog for the eye.
-        frame.render_widget(Clear, area);
-        frame.render_widget(Block::default().style(Style::default().bg(theme::BG)), area);
+        // pane competing with the dialog for the eye. The theme picker is the
+        // one exception: the panes behind it ARE its preview — moving the
+        // highlight repaints the whole app in the candidate theme, so covering
+        // the app would leave nothing to preview against.
+        if !matches!(app.modals.last(), Some(crate::modal::Modal::ThemePicker(_))) {
+            frame.render_widget(Clear, area);
+            frame.render_widget(
+                Block::default().style(Style::default().bg(theme::active().bg)),
+                area,
+            );
+        }
         modals::draw(frame, app, area);
     }
 }
@@ -69,7 +85,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(title, theme::title()),
     ]);
     frame.render_widget(
-        Paragraph::new(line).style(Style::default().bg(theme::BG_ELEVATED)),
+        Paragraph::new(line).style(Style::default().bg(theme::active().bg_elevated)),
         area,
     );
 }
@@ -95,13 +111,15 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
         spans.push(Span::styled(
             badge,
             Style::default()
-                .bg(theme::ACCENT_DARK)
-                .fg(theme::TEXT_PRIMARY),
+                .bg(theme::active().accent_dark)
+                .fg(theme::active().text_primary),
         ));
         spans.push(Span::styled(
             text,
             if hovered {
-                Style::default().bg(theme::BG_HOVER).fg(theme::TEXT_PRIMARY)
+                Style::default()
+                    .bg(theme::active().bg_hover)
+                    .fg(theme::active().text_primary)
             } else {
                 theme::secondary()
             },
@@ -124,7 +142,7 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
         x = x.saturating_add(width);
     }
     frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::BG_ELEVATED)),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::active().bg_elevated)),
         area,
     );
 }
@@ -142,13 +160,14 @@ fn draw_notifications(frame: &mut Frame, app: &mut App, area: Rect) {
     // the user needed to read.
     let inner_width = width as usize - 2;
     let mut lines: Vec<Line> = Vec::new();
+    let palette = theme::active();
     for notification in &app.notifications {
         let style = match notification.severity {
             Severity::Information => Style::default()
-                .bg(theme::ACCENT_DARK)
-                .fg(theme::TEXT_PRIMARY),
-            Severity::Warning => Style::default().bg(theme::WARNING).fg(theme::BG),
-            Severity::Error => Style::default().bg(theme::DESTRUCTIVE).fg(theme::BG),
+                .bg(palette.accent_dark)
+                .fg(palette.text_primary),
+            Severity::Warning => Style::default().bg(palette.warning).fg(palette.bg),
+            Severity::Error => Style::default().bg(palette.destructive).fg(palette.bg),
         };
         for chunk in wrap_words(&notification.text, inner_width) {
             lines.push(Line::from(Span::styled(

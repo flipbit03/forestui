@@ -224,6 +224,10 @@ fn default_theme() -> String {
     "system".into()
 }
 
+fn default_theme_name() -> String {
+    "forest-dark".into()
+}
+
 /// Application settings, persisted to `~/.config/forestui/settings.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -233,8 +237,16 @@ pub struct Settings {
     pub default_terminal: String,
     #[serde(default = "default_branch_prefix")]
     pub branch_prefix: String,
+    /// The Python build's inert System/Dark/Light choice, preserved verbatim:
+    /// its Settings dialog crashes on any other value, and the settings file
+    /// is shared across builds. The Rust build never reads it.
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// Slug of the named theme the Rust build applies (`theme::THEMES`).
+    /// Additive and defaulted, so files from either build load in both;
+    /// unknown slugs resolve to the default at activation.
+    #[serde(default = "default_theme_name")]
+    pub theme_name: String,
     #[serde(default)]
     pub custom_buttons: Vec<CustomClaudeButton>,
 }
@@ -246,6 +258,7 @@ impl Default for Settings {
             default_terminal: String::new(),
             branch_prefix: default_branch_prefix(),
             theme: default_theme(),
+            theme_name: default_theme_name(),
             custom_buttons: Vec::new(),
         }
     }

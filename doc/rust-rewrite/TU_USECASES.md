@@ -830,7 +830,7 @@ user-visible and easy to get subtly wrong.
  Settings
 DEFAULT EDITOR      [ Vim (tmux)  ▼ ]
 BRANCH PREFIX       [ feat/ ]
-THEME               [ System  ▼ ]
+THEME               [ Forest Dark… ]
 CUSTOM CLAUDE BUTTONS
 No custom buttons configured
 [ Manage Custom Buttons... ]
@@ -838,7 +838,12 @@ No custom buttons configured
 ```
 Editor dropdown options, in order: `VS Code, Cursor, Neovim (tmux), Vim (tmux),
 Helix (tmux), Emacs TUI (tmux), PyCharm, Sublime Text, Nano (tmux), Micro (tmux)`.
-Theme options: `System, Dark, Light`.
+The theme row is a button, not a cycle (Rust drift, issue #28): Enter opens a
+scrollable picker over every named theme in `theme::THEMES` (31 palettes,
+default `Forest Dark`), with the app behind the dialog live-previewing the
+highlighted candidate; Enter applies, Esc reverts, and Cancel on the Settings
+dialog abandons an applied-but-unsaved theme. The Textual build offered
+`System, Dark, Light` here and stored the value without ever reading it.
 
 **Expected on save:** toast `Settings saved`, and the file contains **exactly**:
 ```json
@@ -1299,7 +1304,8 @@ branch placeholder `feat/my-feature`.
 ### UC-57 — `s` opens Settings
 **Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
 **Expected:** `DEFAULT EDITOR` = `Vim (tmux)`, `BRANCH PREFIX` = `feat/`,
-`THEME` = `System`, `1 custom button configured`.
+`THEME` = `Forest Dark…` (a button opening the theme picker; the frozen python
+baseline still shows the old inert `System` cycle), `1 custom button configured`.
 **Fails if:** the count does not reflect `custom_buttons` in the settings file.
 
 ### UC-58 — `d` opens the delete confirmation
