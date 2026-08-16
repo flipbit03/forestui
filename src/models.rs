@@ -239,9 +239,12 @@ pub struct Settings {
     pub branch_prefix: String,
     /// The Python build's inert System/Dark/Light choice, preserved verbatim:
     /// its Settings dialog crashes on any other value, and the settings file
-    /// is shared across builds. The Rust build never reads it.
-    #[serde(default = "default_theme")]
-    pub theme: String,
+    /// is shared across builds. The Rust build never applies it — the Rust
+    /// name says so, while the on-disk key stays `"theme"` (the compat rule
+    /// governs the file format, not the identifier); reading the wrong field
+    /// for the palette is what made themes reset on every launch once.
+    #[serde(rename = "theme", default = "default_theme")]
+    pub legacy_theme: String,
     /// Slug of the named theme the Rust build applies (`theme::THEMES`).
     /// Additive and defaulted, so files from either build load in both;
     /// unknown slugs resolve to the default at activation.
@@ -257,7 +260,7 @@ impl Default for Settings {
             default_editor: default_editor(),
             default_terminal: String::new(),
             branch_prefix: default_branch_prefix(),
-            theme: default_theme(),
+            legacy_theme: default_theme(),
             theme_name: default_theme_name(),
             custom_buttons: Vec::new(),
         }

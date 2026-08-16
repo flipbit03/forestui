@@ -873,7 +873,7 @@ pub(crate) mod test_support {
 
     /// An app backed by a throwaway forest directory, with one repository that
     /// has two active worktrees and one archived worktree.
-    pub fn app_with_fixture() -> (tempfile::TempDir, App) {
+    fn fixture(settings: Settings) -> (tempfile::TempDir, App) {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut state = AppState::load_from(dir.path().join(".forestui-config.json"));
 
@@ -913,9 +913,22 @@ pub(crate) mod test_support {
             worktree_id: None,
         };
 
-        let (tx, _rx) = crate::event::start();
-        let app = App::with_state(tx, state, Settings::default());
+        // A bare channel: `event::start` would add a detached stdin-polling
+        // thread per test. Dropping the receiver is fine — sends are
+        // best-effort and no test reads events back.
+        let (tx, _rx) = crate::event::test_channel();
+        let app = App::with_state(tx, state, settings);
         (dir, app)
+    }
+
+    /// [`app_with_fixture`] with explicit settings, for tests that need a
+    /// non-default configuration (a saved theme, a branch prefix).
+    pub fn app_with_settings(settings: Settings) -> (tempfile::TempDir, App) {
+        fixture(settings)
+    }
+
+    pub fn app_with_fixture() -> (tempfile::TempDir, App) {
+        fixture(Settings::default())
     }
 
     pub fn key(code: ratatui::crossterm::event::KeyCode) -> ratatui::crossterm::event::KeyEvent {
@@ -1181,21 +1194,16 @@ mod tests {
     #[tokio::test]
     async fn startup_activates_the_saved_theme() {
         let _guard = crate::theme::test_lock();
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state = AppState::load_from(dir.path().join(".forestui-config.json"));
-        let (tx, _rx) = crate::event::start();
-        let settings = Settings {
+        let (_dir, _app) = test_support::app_with_settings(Settings {
             theme_name: "nord".into(),
             ..Settings::default()
-        };
-
-        let _app = App::with_state(tx, state, settings);
+        });
         assert_eq!(
             crate::theme::active().slug,
             "nord",
             "the saved theme must be active before the first frame"
         );
-        crate::theme::set_active("forest-dark");
+        // The guard restores the pre-test theme on drop.
     }
 
     #[tokio::test]

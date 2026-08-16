@@ -137,6 +137,15 @@ impl EventTx {
 }
 
 /// Create the channel and start the input reader and tick timer.
+/// A bare channel for tests: no stdin-polling reader thread, no tick task.
+/// [`start`] spawns both, and every test fixture that called it added another
+/// detached thread competing for the test binary's stdin.
+#[cfg(test)]
+pub fn test_channel() -> (EventTx, UnboundedReceiver<AppEvent>) {
+    let (tx, rx) = unbounded_channel::<AppEvent>();
+    (EventTx(tx), rx)
+}
+
 pub fn start() -> (EventTx, UnboundedReceiver<AppEvent>) {
     let (tx, rx) = unbounded_channel::<AppEvent>();
 
