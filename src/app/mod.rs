@@ -202,7 +202,10 @@ impl App {
     pub fn with_state(tx: EventTx, state: AppState, settings: Settings) -> Self {
         // The renderers read the active theme from the global; activate the
         // saved one before the first frame so launch never flashes the default.
-        crate::theme::set_active(&settings.theme);
+        // `theme_name` carries the chosen slug — `theme` is the legacy
+        // System/Dark/Light field preserved for the Python build, and reading
+        // it here silently reset every launch to the default palette.
+        crate::theme::set_active(&settings.theme_name);
         let version = crate::cli::VERSION.to_string();
         let mut app = Self {
             state,
@@ -1170,6 +1173,29 @@ mod tests {
         assert!(app.state.find_worktree(worktree_id).is_some());
         assert_eq!(app.notifications.len(), 1);
         assert!(app.notifications[0].text.contains("worktree is locked"));
+    }
+
+    /// The regression that made themes non-sticky: startup activated the
+    /// legacy `theme` field (always "system") instead of `theme_name`, so a
+    /// saved theme applied in-session and silently reset on every launch.
+    #[tokio::test]
+    async fn startup_activates_the_saved_theme() {
+        let _guard = crate::theme::test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = AppState::load_from(dir.path().join(".forestui-config.json"));
+        let (tx, _rx) = crate::event::start();
+        let settings = Settings {
+            theme_name: "nord".into(),
+            ..Settings::default()
+        };
+
+        let _app = App::with_state(tx, state, settings);
+        assert_eq!(
+            crate::theme::active().slug,
+            "nord",
+            "the saved theme must be active before the first frame"
+        );
+        crate::theme::set_active("forest-dark");
     }
 
     #[tokio::test]
