@@ -5,7 +5,24 @@
 
 use crate::models::ClaudeSession;
 use chrono::{DateTime, TimeZone, Utc};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+
+/// Last known sessions per path. There is no TTL: the panel renders this
+/// immediately on selection change while a fresh scan runs behind it, so the
+/// worst case is content a few seconds old for the blink before the scan
+/// lands — instead of a "Loading…" flash on every switch (#29).
+fn cache() -> &'static Mutex<HashMap<String, Vec<ClaudeSession>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Vec<ClaudeSession>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The last result [`get_sessions_for_path`] produced for this path, if any.
+/// Safe on the render thread: the lock is held only for the map read.
+pub fn peek_sessions(path: &str) -> Option<Vec<ClaudeSession>> {
+    cache().lock().ok()?.get(path).cloned()
+}
 
 /// Convert a filesystem path to Claude's folder naming convention.
 pub fn path_to_claude_folder(path: &str) -> String {
@@ -20,7 +37,11 @@ pub fn claude_projects_dir() -> PathBuf {
 /// Sessions for a path, newest first, capped at `limit`.
 pub fn get_sessions_for_path(path: &str, limit: usize) -> Vec<ClaudeSession> {
     let sessions_dir = claude_projects_dir().join(path_to_claude_folder(path));
-    read_sessions_dir(&sessions_dir, limit)
+    let sessions = read_sessions_dir(&sessions_dir, limit);
+    if let Ok(mut guard) = cache().lock() {
+        guard.insert(path.to_string(), sessions.clone());
+    }
+    sessions
 }
 
 /// Directory-scoped form of [`get_sessions_for_path`], for testing.
@@ -218,6 +239,17 @@ pub fn migrate_dirs(old_dir: &Path, new_dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The peek is what the panel renders on selection change while the scan
+    /// re-runs behind it (#29): whatever the last scan produced, instantly.
+    #[test]
+    fn peek_returns_the_last_scan() {
+        let path = "/nowhere/forestui-peek-test";
+        assert!(peek_sessions(path).is_none());
+        let scanned = get_sessions_for_path(path, 5);
+        let peeked = peek_sessions(path).expect("the scan populates the cache");
+        assert_eq!(peeked.len(), scanned.len());
+    }
 
     #[test]
     fn folder_naming_replaces_slashes() {

@@ -341,7 +341,9 @@ impl App {
                 }
             }
             Action::RefreshIssues => {
-                github::invalidate_cache(None);
+                // Manual refresh: only this repository's cache, and the
+                // spinner is deliberate — the user asked and gets feedback.
+                github::invalidate_cache(Some(&path));
                 self.issues = None;
                 self.fetch_issues();
             }
