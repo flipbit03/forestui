@@ -85,8 +85,10 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
         // space inside its own background on each side, so the key sits one
         // column from its label and the single trailing space here plus the next
         // badge's leading one put two between entries. The original
-        // ` {label}  ` spent two columns in each place, which at twelve entries
-        // pushed "? Help" off a 150-column terminal that Textual fitted.
+        // ` {label}  ` spent two columns in each place, which pushed the last
+        // entries off a 150-column terminal that Textual fitted. The footer is
+        // the complete key surface, so entries that do not fit simply clip —
+        // a narrow terminal shows a prefix, never a different set.
         let text = format!("{label} ");
         let width = (badge.chars().count() + text.chars().count()) as u16;
 
@@ -134,8 +136,9 @@ fn draw_notifications(frame: &mut Frame, app: &mut App, area: Rect) {
     if width < 10 {
         return;
     }
-    // Wrap rather than truncate: the help toast is a full key list, and cutting
-    // it at one line hides most of what the user pressed `?` to read.
+    // Wrap rather than truncate: notifications carry full sentences (git
+    // errors, update failures), and cutting them at one line hides the part
+    // the user needed to read.
     let inner_width = width as usize - 2;
     let mut lines: Vec<Line> = Vec::new();
     for notification in &app.notifications {

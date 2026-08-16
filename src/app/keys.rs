@@ -1,16 +1,16 @@
 //! Keyboard input: global hotkeys, focus movement, and the rename fields.
 
 use super::{Action, App, DetailItem, Field, Focus, PAGE_STEP};
-use crate::event::Severity;
 use crate::modal::{AddRepositoryModal, Modal, SettingsModal};
 use crate::ui::widgets::TextInput;
 
-/// Every footer binding, in the order Textual's `Footer` rendered them: `q`
-/// is declared first in the Python bindings but carries `priority=True`,
-/// which sorted it after `a`. One table drives both the footer and the `?`
-/// help toast, so the two lists cannot drift; `handle_key` below must handle
-/// every character listed here.
-pub const BINDINGS: [(char, &str); 12] = [
+/// Every key binding, in the order the footer renders them: `q` is declared
+/// first in the Python bindings but carried `priority=True`, which sorted it
+/// after `a`. The footer is the complete key surface — there is no help
+/// screen, so a binding missing from this table is undiscoverable by design
+/// review, not by accident. `handle_key` below must handle every character
+/// listed here.
+pub const BINDINGS: [(char, &str); 13] = [
     ('a', "Add Repo"),
     ('q', "Quit"),
     ('w', "Add Worktree"),
@@ -22,12 +22,9 @@ pub const BINDINGS: [(char, &str); 12] = [
     ('h', "Archive"),
     ('d', "Delete"),
     ('s', "Settings"),
-    ('?', "Help"),
+    ('r', "Refresh"),
+    ('A', "Show Archived"),
 ];
-
-/// Bindings that work everywhere but never fit Textual's footer. The help
-/// toast lists them; the footer does not, for parity with the Python build.
-pub const EXTRA_BINDINGS: [(char, &str); 2] = [('r', "Refresh"), ('A', "Show Archived")];
 
 impl App {
     // --------------------------------------------------------------------- keys
@@ -164,17 +161,6 @@ impl App {
             KeyCode::Char('A') => {
                 self.state.show_archived = !self.state.show_archived;
                 self.rebuild_rows();
-            }
-            KeyCode::Char('?') => {
-                // Derived from the binding tables, so a key can no longer be
-                // reachable yet undiscoverable — 'o', 'y', 'r' and 'A' were.
-                let help = BINDINGS
-                    .iter()
-                    .chain(EXTRA_BINDINGS.iter())
-                    .map(|(key, label)| format!("{key}: {label}"))
-                    .collect::<Vec<_>>()
-                    .join(" | ");
-                self.notify(help, Severity::Information);
             }
             _ => {}
         }

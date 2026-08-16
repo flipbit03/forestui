@@ -1064,10 +1064,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quit_and_help_hotkeys() {
+    async fn quit_hotkey_quits_and_unknown_keys_do_nothing() {
         let (_dir, mut app) = app_with_fixture();
+        // `?` is deliberately unbound: the footer is the complete key surface.
         app.handle_key(key(KeyCode::Char('?')));
-        assert_eq!(app.notifications.len(), 1);
+        assert!(app.notifications.is_empty());
+        assert!(app.modals.is_empty());
 
         app.handle_key(key(KeyCode::Char('q')));
         assert!(app.should_quit);
