@@ -63,12 +63,21 @@ def phrases(text):
                 out.add(phrase)
     return out
 
+# Cases retired from the sweep whose frozen frames may survive on one side
+# only (the python baselines are read-only history). One-sided by design,
+# never a failure — in either argument order.
+RETIRED = {"UC-59-help-notification"}
+
 fail = 0
 print(f"{'case':36} {'windows':>8} {f'only-{a}':>14} {f'only-{b}':>14}")
 print("-" * 76)
-for fa in sorted(da.glob("UC-*.txt")):
-    fb = db / fa.name
-    if not fb.exists():
+names = sorted({p.name for p in da.glob("UC-*.txt")} | {p.name for p in db.glob("UC-*.txt")})
+for name in names:
+    fa, fb = da / name, db / name
+    if fa.stem in RETIRED:
+        print(f"{fa.stem:36} {'RETIRED':>8}")
+        continue
+    if not fa.exists() or not fb.exists():
         print(f"{fa.stem:36} {'MISSING':>8}")
         fail += 1
         continue

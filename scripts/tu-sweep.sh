@@ -312,9 +312,6 @@ for spec in "a:UC-55:modal-add-repository:Repository Path" \
   focus_app; press Escape; sleep 1.0
 done
 
-focus_app; press '?'; sleep 1.2
-capture UC-59 help-notification
-
 for spec in "e:UC-60:window-editor:edit:alpha" \
             "t:UC-61:window-terminal:term:alpha" \
             "o:UC-62:window-files:files:alpha" \

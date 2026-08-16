@@ -259,10 +259,12 @@ able to produce a torn file.
    variant and render it in `render_node` in `src/ui/detail.rs`
 
 ### Adding a Key Binding
-1. Add it to `BINDINGS` in `src/app/keys.rs` if it should appear in the footer
-   (the footer is Textual-parity: think before growing it), or to
-   `EXTRA_BINDINGS` if only the `?` help toast should list it — both derive
-   from these tables, so there is no second list to update
+1. Add it to `BINDINGS` in `src/app/keys.rs` — the footer renders this table
+   and is the app's *only* key-discovery surface (there is no help screen; the
+   `?` toast was removed with issue #30). A test asserts the whole footer fits
+   140 columns, so a new entry means shortening a label somewhere; entries
+   that do not fit a narrower terminal clip from the right and lose their
+   click target
 2. Handle the key in the `handle_key` match in the same file
 
 ### Adding a Modal
@@ -301,7 +303,8 @@ proactively, not only when asked.
 scenarios with exact keystrokes and expected output. The P0 cases are the
 regression suite — run the relevant ones after any behavioural change.
 
-UC-53–70, the flow cases UC-78–84/86, and the guards UC-90/96 are automated —
+UC-53–70 (except the retired UC-59), the flow cases UC-78–84/86, and the
+guards UC-90/96 are automated —
 frames plus on-disk assertions (`ASSERTIONS.txt`). Capture a build and compare
 two builds with:
 

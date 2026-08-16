@@ -567,7 +567,11 @@ All hotkeys are **global bindings** on the app (`app.py:BINDINGS`), not tree
 bindings, so they fire regardless of which pane has focus. Full set from source:
 `q` quit (priority), `a` add repo, `w` add worktree, `e` editor, `t` terminal,
 `o` files, `n` claude, `y` claude YOLO, `h` toggle archive, `d` delete,
-`s` settings, `r` refresh (hidden from footer), `?` help.
+`s` settings, `r` refresh (hidden from footer), `?` help. (Rust-side drift
+since: `?` was removed with issue #30 — the footer lists every binding, so a
+separate help surface had nothing left to say, see UC-26/59/93, retired — and
+`A` show-archived is a Rust-only key that Python never wired up, see UC-50 and
+MIGRATION.md. Area E cases that press `A` or `?` cannot expect Python parity.)
 
 ### UC-20 — `t` opens a shell window named `term:<repo>:<worktree>`
 **Area:** Hotkeys | **Priority:** P0 | 🟢 EXECUTED
@@ -658,16 +662,10 @@ one via `_find_unique_window_name`.
 
 ---
 
-### UC-26 — `?` raises the help toast
-**Area:** Hotkeys | **Priority:** P2 | 🟢 EXECUTED
-**Setup:** any selection.
-**Steps:**
-1. `tu press --name fui "?"`; `sleep 1`; `tu screenshot --name fui`
-
-**Expected:** an information toast containing exactly:
-`a: Add Repo | w: Add Worktree | e: Editor | t: Terminal | n: Claude | h: Archive | d: Delete | s: Settings | q: Quit`
-**Fails if:** the text differs. Note it deliberately (or accidentally) omits `o`, `y`,
-`r` and `?` — port the string verbatim, or fix it in both the toast and this UC.
+### UC-26 — `?` raises the help toast — ⬛ RETIRED
+The `?` binding was removed (issue #30): the toast only repeated the footer,
+and the footer is now the complete key surface (`r` and `A` moved into it).
+Pressing `?` does nothing and shows nothing.
 
 ---
 
@@ -1309,17 +1307,11 @@ branch placeholder `feat/my-feature`.
 **Expected:** `Delete Worktree` and `Permanently delete 'wt-a'?` — identical
 wording in both builds. Nothing is deleted yet.
 
-### UC-59 — `?` shows the help toast
-**Area:** Sweep | **Priority:** P1 | 🟢 EXECUTED (both builds)
-**Expected (Rust):** every binding the app has, in footer order, wrapped over
-as many lines as it needs: `a: Add Repo | q: Quit | w: Add Worktree | e: Editor
-| t: Terminal | o: Files | n: Claude | y: ClaudeYOLO | h: Archive | d: Delete |
-s: Settings | ?: Help | r: Refresh | A: Show Archived`. It is derived from the
-same `BINDINGS` table that draws the footer, plus `EXTRA_BINDINGS` for the two
-keys that never fit it, so a key cannot be reachable yet undiscoverable.
-**Divergence from Python:** the Textual build hardcoded a nine-key string and
-omitted `o`, `y`, `r`, `A` and `?` itself. The Rust toast is deliberately
-longer; `baseline/python/UC-59-help-notification.txt` still shows the short one.
+### UC-59 — `?` shows the help toast — ⬛ RETIRED
+The `?` binding was removed (issue #30); the sweep no longer captures this
+case and `baseline/rust/UC-59-help-notification.txt` is gone. The frozen
+`baseline/python/UC-59-help-notification.txt` remains as read-only history of
+the Textual build's nine-key toast.
 
 ### UC-60 — `e` opens the editor window
 **Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
@@ -1559,12 +1551,10 @@ left and right edges. Textual capped them at `max-width: 95%`; the Rust build
 clamped to the full width, so a 140-column terminal produced a dialog with no
 margin at all.
 
-### UC-93 — The help toast shows its whole text
-**Area:** Visual | **Priority:** P1 | 🟢 EXECUTED (both builds)
-**Steps:** press `?`.
-**Expected:** the full key list is readable. Python wrapped the toast over
-several lines; the Rust build truncated it to one line and hid most of what the
-user pressed `?` to read. Notifications now wrap on word boundaries.
+### UC-93 — The help toast shows its whole text — ⬛ RETIRED
+The `?` binding was removed (issue #30). The word-boundary wrapping this case
+forced into the notification renderer stays — every long notification (git
+errors, update failures) still depends on it.
 
 ### UC-94 — Section rules and item cards
 **Area:** Visual | **Priority:** P1 | 🟡 IN PROGRESS
@@ -1629,20 +1619,22 @@ composite shows a difference not listed above, treat it as a regression.
 | Sidebar | 08–11 | 2 |
 | Repository detail | 12–15 | 2 |
 | Worktree detail | 16–19 | 1 |
-| Hotkeys | 20–28 | 5 |
+| Hotkeys | 20–28 (26 retired) | 5 |
 | Modals | 29–38 | 5 |
 | tmux / grouped sessions | 39–41 | 2 |
 | Errors & edge cases | 42–47 | 2 |
 | Config persistence | 48–52 | 3 |
-| Automated parity sweep | 53–70 | 12 |
+| Automated parity sweep | 53–70 (59 retired) | 12 |
 | Hand-driven, unscripted | 71–77 | 4 |
 | Flows & mouse | 78–89 | 8 |
-| Visual parity | 90–94 | 1 |
+| Visual parity | 90–94 (93 retired) | 1 |
 
-**96 use cases · 52 P0 · 78 executed live · 17 written from source only.**
+**96 numbered use cases, 3 retired with the `?` binding (UC-26, 59, 93) —
+93 active · 52 P0 · 78 executed live · 17 written from source only.**
 
 UC-01–52 were written against the Python build on 2026-08-14 (35 executed).
-UC-53–70 are the automated sweep and have been executed against **both** builds;
+UC-53–70 are the automated sweep and have been executed against **both** builds
+(UC-59 has since retired and is no longer captured);
 UC-71–76 were hand-driven against the Rust build; UC-77 is blocked on `gh` auth.
 
 Written from source, never driven live: UC-02, 03, 05, 15, 18, 19, 25, 35, 37, 38,
