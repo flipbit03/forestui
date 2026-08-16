@@ -173,7 +173,7 @@ pub const THEMES: &[Theme] = &[
     // there), selection/ruler colours composited over the background where the
     // original uses alpha, the Comment lavender as muted, and the signature
     // pink/red/yellow/green token colours.
-    build("SynthWave '84",     "synthwave-84",        0x262335, 0x2A2139, 0x413E4E, 0x633670, 0xFFFFFF, 0xB6B1B1, 0x848BBD, 0xFF7EDB, 0xFE4450, 0xFEDE5D, 0x72F1B8),
+    build("SynthWave '84",     "synthwave-84",        0x262335, 0x2A2139, 0x413F4E, 0x643670, 0xFFFFFF, 0xA7A4AC, 0x848BBD, 0xFF7EDB, 0xFE4450, 0xFEDE5D, 0x72F1B8),
 ];
 
 /// Look a theme up by its settings slug.
