@@ -618,12 +618,12 @@ mod tests {
     fn test_app(dir: &tempfile::TempDir) -> App {
         settings_service::set_forest_path(dir.path().to_str());
         // Dropping the receiver is fine: sends are best-effort and no test reads
-        // events back.
-        let (tx, _rx) = event::start();
-        let mut app = App::new(tx, "test".into());
-        app.state = AppState::load_from(dir.path().join(".forestui-config.json"));
-        app.settings = Settings::default();
-        app
+        // events back. Explicit default settings, never `App::new`: that reads
+        // the developer's real ~/.config/forestui/settings.json and would
+        // activate their personal theme, making test rendering machine-dependent.
+        let (tx, _rx) = event::test_channel();
+        let state = AppState::load_from(dir.path().join(".forestui-config.json"));
+        App::with_state(tx, state, Settings::default())
     }
 
     fn with_repository(app: &mut App) {

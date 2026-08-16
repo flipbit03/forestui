@@ -197,9 +197,10 @@ pub fn set_active(slug: &str) {
     // parallel: every mutation serializes behind the test lock so a picker
     // test's preview window cannot be clobbered by another test constructing
     // an App mid-assertion. Re-entrant per thread, so a test already holding
-    // the lock can call this freely. Compiled out of real builds.
+    // the lock can call this freely. Serialize-only — the restoring guard
+    // here would undo this very call on return. Compiled out of real builds.
     #[cfg(test)]
-    let _guard = test_lock();
+    let _guard = test_sync::serialize_only();
     let theme = by_slug(slug).unwrap_or(&THEMES[0]);
     if let Ok(mut guard) = active_cell().write() {
         *guard = theme;
@@ -359,7 +360,9 @@ pub fn action_border(focused: bool, variant: Variant, hovered: bool) -> Style {
 /// Serializes tests that touch the process-global active theme, so a preview
 /// in one test cannot race an assertion (or an `App` construction) in another.
 /// Re-entrant per thread: `set_active` takes it internally, and a test already
-/// holding it gets a no-op guard instead of deadlocking itself.
+/// holding it gets a no-op guard instead of deadlocking itself. On drop the
+/// outermost guard restores whatever theme was active when it was taken —
+/// cleanup that a panic cannot skip and no test has to remember.
 #[cfg(test)]
 pub(crate) fn test_lock() -> test_sync::ThemeGuard {
     test_sync::lock()
@@ -375,24 +378,46 @@ pub(crate) mod test_sync {
         static HELD: Cell<bool> = const { Cell::new(false) };
     }
 
-    pub struct ThemeGuard(Option<MutexGuard<'static, ()>>);
+    pub struct ThemeGuard {
+        /// The lock itself, plus the slug to put back — `None` for re-entrant
+        /// and serialize-only guards, which own neither.
+        held: Option<(MutexGuard<'static, ()>, Option<&'static str>)>,
+    }
 
     impl Drop for ThemeGuard {
         fn drop(&mut self) {
-            if self.0.is_some() {
+            if let Some((_lock, restore)) = self.held.take() {
+                if let Some(slug) = restore {
+                    // HELD is still set, so this re-enters as a no-op guard.
+                    super::set_active(slug);
+                }
                 HELD.set(false);
+                // `_lock` releases here, after the restore.
             }
         }
     }
 
+    /// The restoring flavour, for tests.
     pub fn lock() -> ThemeGuard {
+        acquire(true)
+    }
+
+    /// Serialization without restore-on-drop, for `set_active` itself.
+    pub(crate) fn serialize_only() -> ThemeGuard {
+        acquire(false)
+    }
+
+    fn acquire(restore: bool) -> ThemeGuard {
         if HELD.get() {
             // This thread already owns the lock; hand out a no-op guard.
-            return ThemeGuard(None);
+            return ThemeGuard { held: None };
         }
         let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         HELD.set(true);
-        ThemeGuard(Some(guard))
+        let previous = restore.then(|| super::active().slug);
+        ThemeGuard {
+            held: Some((guard, previous)),
+        }
     }
 }
 

@@ -796,7 +796,7 @@ impl SettingsModal {
                 .unwrap_or(0),
             opened_with_theme: theme_slug,
             theme_slug,
-            legacy_theme: settings.theme.clone(),
+            legacy_theme: settings.legacy_theme.clone(),
             branch_prefix: TextInput::new(settings.branch_prefix.clone()).with_placeholder("feat/"),
             custom_buttons: settings.custom_buttons.clone(),
             focus: Self::FOCUS_EDITOR,
@@ -816,7 +816,7 @@ impl SettingsModal {
             default_editor: EDITORS[self.editor_index].1.to_string(),
             default_terminal: String::new(),
             branch_prefix: self.branch_prefix.value().to_string(),
-            theme: self.legacy_theme.clone(),
+            legacy_theme: self.legacy_theme.clone(),
             theme_name: self.theme_slug.to_string(),
             custom_buttons: self.custom_buttons.clone(),
         }
@@ -1592,7 +1592,7 @@ mod tests {
         };
         assert_eq!(slug, crate::theme::THEMES[1].slug);
         assert_eq!(crate::theme::active().slug, slug);
-        crate::theme::set_active("forest-dark");
+        // The guard restores the pre-test theme on drop.
     }
 
     /// A previewed theme must not outlive the dialog it was previewed in:
@@ -1629,8 +1629,7 @@ mod tests {
         assert_eq!(saved.theme_name, "nord");
         // The legacy field is written back untouched — the Python build's
         // Settings dialog crashes on values outside System/Dark/Light.
-        assert_eq!(saved.theme, "system");
-        crate::theme::set_active("forest-dark");
+        assert_eq!(saved.legacy_theme, "system");
     }
 
     /// An unknown stored slug resolves to the default when the dialog opens,
