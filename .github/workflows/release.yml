@@ -40,6 +40,10 @@ jobs:
           sed -i "/^name = \"forestui\"$/{n;s/^version = \"0.0.0\"/version = \"${VERSION}\"/;}" Cargo.lock
           grep -A1 '^name = "forestui"$' Cargo.lock
 
+      # --allow-dirty is load-bearing, not leftover: the step above seds the
+      # tag's version into Cargo.toml and Cargo.lock without committing, so
+      # the tree is dirty by design at publish time. Removing the flag would
+      # require committing an ephemeral version-stamp commit instead.
       - name: Publish
         run: cargo publish --no-verify --allow-dirty
         env:
