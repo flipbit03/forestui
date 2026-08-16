@@ -735,7 +735,7 @@ fn settings(frame: &mut Frame, modal: &SettingsModal, area: Rect, hits: &mut Hit
         SettingsModal::FOCUS_PREFIX,
     );
 
-    let theme_name = crate::theme::by_slug(&modal.theme_slug).map_or("", |t| t.name);
+    let theme_name = crate::theme::by_slug(modal.theme_slug).map_or("", |t| t.name);
     column.line(frame, widgets::section("THEME"));
     column.controls(
         frame,
@@ -939,11 +939,18 @@ const THEME_ROWS: usize = 14;
 
 fn theme_picker(frame: &mut Frame, modal: &ThemePickerModal, area: Rect, hits: &mut Hits) {
     let themes = crate::theme::THEMES;
-    let rows = THEME_ROWS.min(themes.len());
     // Deliberately narrow: the app behind the dialog is the preview, so the
     // dialog covers as little of it as a readable list allows.
-    let rect = widgets::centered_rect(44, CHROME + rows as u16 + 2, area);
+    let rect = widgets::centered_rect(44, CHROME + THEME_ROWS.min(themes.len()) as u16 + 2, area);
     let mut column = dialog(frame, rect, "Theme", theme::title());
+
+    // The window is sized from the rows that actually fit — `centered_rect`
+    // clamps the dialog on a short terminal, and a window computed from the
+    // ideal height would scroll the highlighted row right out of the box.
+    let rows = (column.remaining().saturating_sub(2) as usize)
+        .min(THEME_ROWS)
+        .min(themes.len())
+        .max(1);
 
     // Keep the highlight centred while the window stays inside the list.
     let first = modal

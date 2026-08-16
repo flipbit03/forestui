@@ -343,14 +343,17 @@ impl Pane {
             self.lines.push(Line::from(spans));
             return;
         };
+        // One theme read for the whole line: consistent by construction, and
+        // spares the lock a handful of reads per content row.
+        let elevated = theme::active().bg_elevated;
         let width = card.width;
-        let filled = Style::default().bg(theme::active().bg_elevated);
+        let filled = Style::default().bg(elevated);
         // Text styles carry a foreground only, so without this the page colour
         // shows through the card. Spans that set their own background — the
         // controls — keep it, which is what makes one read as raised.
         for span in &mut spans {
             if span.style.bg.is_none() {
-                span.style = span.style.bg(theme::active().bg_elevated);
+                span.style = span.style.bg(elevated);
             }
         }
         let content = as_u16(spans.iter().map(Span::width).sum());
@@ -358,15 +361,12 @@ impl Pane {
         // the padding and border on the right.
         let fill = width.saturating_sub(CARD_INSET + content + 1);
         let mut line = vec![
-            Span::styled("│", theme::border().bg(theme::active().bg_elevated)),
+            Span::styled("│", theme::border().bg(elevated)),
             Span::styled(" ", filled),
         ];
         line.append(&mut spans);
         line.push(Span::styled(" ".repeat(fill as usize), filled));
-        line.push(Span::styled(
-            "│",
-            theme::border().bg(theme::active().bg_elevated),
-        ));
+        line.push(Span::styled("│", theme::border().bg(elevated)));
         self.lines.push(Line::from(line));
     }
 
@@ -493,12 +493,13 @@ fn draw_scrollbar(frame: &mut Frame, geom: Option<ScrollbarGeom>, offset: u16) {
         return;
     };
     let top = geom.thumb_top(offset);
+    let palette = theme::active();
     for row in 0..geom.track.height {
         let inside = row >= top && row < top.saturating_add(geom.thumb);
         let colour = if inside {
-            theme::active().accent_dark
+            palette.accent_dark
         } else {
-            theme::active().scrollbar_trough
+            palette.scrollbar_trough
         };
         frame.render_widget(
             Block::default().style(Style::default().bg(colour)),
@@ -771,6 +772,10 @@ mod tests {
     /// lines: a border in the border colour over an elevated background.
     #[tokio::test]
     async fn session_and_issue_items_render_as_cards() {
+        // This test compares rendered colours against the active theme, so it
+        // pins the theme for its whole render-and-assert window.
+        let _guard = crate::theme::test_lock();
+        crate::theme::set_active("forest-dark");
         let dir = tempfile::tempdir().expect("tempdir");
         let mut app = test_app(&dir);
         with_repository(&mut app);

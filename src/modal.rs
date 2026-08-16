@@ -93,8 +93,9 @@ pub enum ModalResult {
     CustomButtonsSaved(Vec<CustomClaudeButton>),
     CustomButtonSaved(Box<CustomClaudeButton>),
     /// The theme picker committed a slug; the Settings modal underneath
-    /// carries it into the settings it will save.
-    ThemeChosen(String),
+    /// carries it into the settings it will save. `&'static` because every
+    /// slug lives in `theme::THEMES` — a non-theme value is unrepresentable.
+    ThemeChosen(&'static str),
     Confirmed(ConfirmAction),
 }
 
@@ -131,7 +132,7 @@ impl Modal {
                 parent.custom_buttons = buttons.clone();
             }
             (Modal::Settings(parent), ModalResult::ThemeChosen(slug)) => {
-                parent.theme_slug = slug.clone();
+                parent.theme_slug = slug;
             }
             (Modal::CustomButtons(parent), ModalResult::CustomButtonSaved(button)) => {
                 parent.apply_edit((**button).clone());
@@ -760,9 +761,12 @@ pub struct SettingsModal {
     /// Slug of the theme this dialog will save. The *active* theme may run
     /// ahead of it while the picker previews; Save persists this, Cancel
     /// restores the theme the dialog opened with.
-    pub theme_slug: String,
+    pub theme_slug: &'static str,
     /// What was active when the dialog opened, for the Cancel path.
-    opened_with_theme: String,
+    opened_with_theme: &'static str,
+    /// The Python build's inert theme value, written back untouched — its
+    /// Settings dialog crashes on anything outside its own option list.
+    legacy_theme: String,
     pub branch_prefix: TextInput,
     pub custom_buttons: Vec<CustomClaudeButton>,
     /// One of the `FOCUS_*` constants; see [`SettingsModal`].
@@ -780,19 +784,19 @@ impl SettingsModal {
     pub const FIELDS: usize = Self::FOCUS_CANCEL + 1;
 
     pub fn new(settings: &Settings) -> Self {
-        // Resolve legacy values ("system"/"dark"/"light") to a real slug once,
-        // here, so the dialog and the picker only ever see valid themes.
-        let theme_slug = crate::theme::by_slug(&settings.theme)
+        // Resolve an unknown slug to the default once, here, so the dialog
+        // and the picker only ever see valid themes.
+        let theme_slug = crate::theme::by_slug(&settings.theme_name)
             .unwrap_or(&crate::theme::THEMES[0])
-            .slug
-            .to_string();
+            .slug;
         Self {
             editor_index: EDITORS
                 .iter()
                 .position(|(_, cmd)| *cmd == settings.default_editor)
                 .unwrap_or(0),
-            opened_with_theme: theme_slug.clone(),
+            opened_with_theme: theme_slug,
             theme_slug,
+            legacy_theme: settings.theme.clone(),
             branch_prefix: TextInput::new(settings.branch_prefix.clone()).with_placeholder("feat/"),
             custom_buttons: settings.custom_buttons.clone(),
             focus: Self::FOCUS_EDITOR,
@@ -812,7 +816,8 @@ impl SettingsModal {
             default_editor: EDITORS[self.editor_index].1.to_string(),
             default_terminal: String::new(),
             branch_prefix: self.branch_prefix.value().to_string(),
-            theme: self.theme_slug.clone(),
+            theme: self.legacy_theme.clone(),
+            theme_name: self.theme_slug.to_string(),
             custom_buttons: self.custom_buttons.clone(),
         }
     }
@@ -820,7 +825,7 @@ impl SettingsModal {
     /// Closing without saving abandons any theme the picker applied — the
     /// live preview must not outlive the dialog it was previewed in.
     fn close_without_saving(&self) -> ModalOutcome {
-        crate::theme::set_active(&self.opened_with_theme);
+        crate::theme::set_active(self.opened_with_theme);
         ModalOutcome::Close
     }
 
@@ -876,12 +881,12 @@ pub struct ThemePickerModal {
     /// Highlighted row, an index into [`crate::theme::THEMES`].
     pub index: usize,
     /// Active slug when the picker opened, restored on Esc.
-    opened_with: String,
+    opened_with: &'static str,
 }
 
 impl ThemePickerModal {
     pub fn new() -> Self {
-        let opened_with = crate::theme::active().slug.to_string();
+        let opened_with = crate::theme::active().slug;
         Self {
             index: crate::theme::THEMES
                 .iter()
@@ -897,9 +902,17 @@ impl ThemePickerModal {
         crate::theme::set_active(crate::theme::THEMES[self.index].slug);
     }
 
+    /// One step in either direction, for the wheel: unlike the arrow keys it
+    /// does not wrap, so scrolling to an end stops there the way every
+    /// scrolled list does.
+    pub fn step(&mut self, delta: isize) {
+        let stepped = self.index.saturating_add_signed(delta);
+        self.select(stepped);
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
         if is_escape(key) {
-            crate::theme::set_active(&self.opened_with);
+            crate::theme::set_active(self.opened_with);
             return ModalOutcome::Close;
         }
         let len = crate::theme::THEMES.len();
@@ -921,7 +934,7 @@ impl ThemePickerModal {
                 ModalOutcome::None
             }
             KeyCode::Enter => ModalOutcome::Submit(ModalResult::ThemeChosen(
-                crate::theme::THEMES[self.index].slug.to_string(),
+                crate::theme::THEMES[self.index].slug,
             )),
             _ => ModalOutcome::None,
         }
@@ -1592,7 +1605,7 @@ mod tests {
         let mut settings = SettingsModal::new(&Settings::default());
         // The picker previewed and committed a different slug into the dialog.
         crate::theme::set_active("dracula");
-        settings.theme_slug = "dracula".into();
+        settings.theme_slug = "dracula";
 
         assert!(matches!(
             settings.handle_key(key(KeyCode::Esc)),
@@ -1605,7 +1618,7 @@ mod tests {
     fn saving_settings_carries_the_chosen_theme() {
         let _guard = crate::theme::test_lock();
         let mut settings = SettingsModal::new(&Settings::default());
-        settings.theme_slug = "nord".into();
+        settings.theme_slug = "nord";
         settings.focus = SettingsModal::FOCUS_SAVE;
 
         let ModalOutcome::Submit(ModalResult::SettingsSaved(saved)) =
@@ -1613,17 +1626,20 @@ mod tests {
         else {
             panic!("Save must submit the settings");
         };
-        assert_eq!(saved.theme, "nord");
+        assert_eq!(saved.theme_name, "nord");
+        // The legacy field is written back untouched — the Python build's
+        // Settings dialog crashes on values outside System/Dark/Light.
+        assert_eq!(saved.theme, "system");
         crate::theme::set_active("forest-dark");
     }
 
-    /// Legacy settings values ("system"/"dark"/"light") resolve to the default
-    /// slug when the dialog opens, so old files neither crash nor persist an
-    /// unknown value forward.
+    /// An unknown stored slug resolves to the default when the dialog opens,
+    /// so a hand-edited or future-versioned file neither crashes nor persists
+    /// an unknown value forward.
     #[test]
-    fn legacy_theme_values_resolve_to_the_default_slug() {
+    fn unknown_theme_names_resolve_to_the_default_slug() {
         let settings = Settings {
-            theme: "system".into(),
+            theme_name: "some-future-theme".into(),
             ..Settings::default()
         };
         let modal = SettingsModal::new(&settings);

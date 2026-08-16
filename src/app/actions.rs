@@ -99,9 +99,12 @@ impl App {
             } => self.create_worktree(repo_id, name, branch, true, base_branch, pull_first),
             ModalResult::SettingsSaved(settings) => {
                 self.settings = *settings;
-                // Snap the live theme to what was actually saved — a picker
-                // preview may have run ahead of the committed slug.
-                crate::theme::set_active(&self.settings.theme);
+                // On every path that reaches Save the picker has already made
+                // active == theme_name (commit applies, Esc reverts), so this
+                // is not correction but ownership: the fold applies the state
+                // it was handed, rather than trusting a dialog to have left
+                // the global in the right place.
+                crate::theme::set_active(&self.settings.theme_name);
                 if let Err(error) = settings_service::save_settings(&self.settings) {
                     self.notify(format!("Could not save settings: {error}"), Severity::Error);
                 } else {

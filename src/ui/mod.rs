@@ -46,7 +46,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     sidebar::draw(frame, app, sidebar_area);
     detail::draw(frame, app, detail_area);
     draw_footer(frame, app, footer_area);
-    draw_notifications(frame, app, body_area);
+    // Toasts are hidden while any modal is open — under most modals the
+    // backdrop wipes them anyway; the picker skips the backdrop, so it has to
+    // skip the toasts explicitly or they float over the preview.
+    if app.modals.is_empty() {
+        draw_notifications(frame, app, body_area);
+    }
 
     if !app.modals.is_empty() {
         // Textual's `ModalScreen` painted over the app rather than tinting it —
@@ -155,17 +160,14 @@ fn draw_notifications(frame: &mut Frame, app: &mut App, area: Rect) {
     // the user needed to read.
     let inner_width = width as usize - 2;
     let mut lines: Vec<Line> = Vec::new();
+    let palette = theme::active();
     for notification in &app.notifications {
         let style = match notification.severity {
             Severity::Information => Style::default()
-                .bg(theme::active().accent_dark)
-                .fg(theme::active().text_primary),
-            Severity::Warning => Style::default()
-                .bg(theme::active().warning)
-                .fg(theme::active().bg),
-            Severity::Error => Style::default()
-                .bg(theme::active().destructive)
-                .fg(theme::active().bg),
+                .bg(palette.accent_dark)
+                .fg(palette.text_primary),
+            Severity::Warning => Style::default().bg(palette.warning).fg(palette.bg),
+            Severity::Error => Style::default().bg(palette.destructive).fg(palette.bg),
         };
         for chunk in wrap_words(&notification.text, inner_width) {
             lines.push(Line::from(Span::styled(

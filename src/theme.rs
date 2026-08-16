@@ -193,6 +193,13 @@ pub fn active() -> &'static Theme {
 /// back to the default palette — a stored slug must never block startup or
 /// change the schema's meaning.
 pub fn set_active(slug: &str) {
+    // The active theme is process-global, and `cargo test` runs threads in
+    // parallel: every mutation serializes behind the test lock so a picker
+    // test's preview window cannot be clobbered by another test constructing
+    // an App mid-assertion. Re-entrant per thread, so a test already holding
+    // the lock can call this freely. Compiled out of real builds.
+    #[cfg(test)]
+    let _guard = test_lock();
     let theme = by_slug(slug).unwrap_or(&THEMES[0]);
     if let Ok(mut guard) = active_cell().write() {
         *guard = theme;
@@ -349,12 +356,44 @@ pub fn action_border(focused: bool, variant: Variant, hovered: bool) -> Style {
     }
 }
 
-/// Serializes tests that mutate the process-global active theme, so a preview
-/// in one test cannot race an assertion in another.
+/// Serializes tests that touch the process-global active theme, so a preview
+/// in one test cannot race an assertion (or an `App` construction) in another.
+/// Re-entrant per thread: `set_active` takes it internally, and a test already
+/// holding it gets a no-op guard instead of deadlocking itself.
 #[cfg(test)]
-pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+pub(crate) fn test_lock() -> test_sync::ThemeGuard {
+    test_sync::lock()
+}
+
+#[cfg(test)]
+pub(crate) mod test_sync {
+    use std::cell::Cell;
+    use std::sync::{Mutex, MutexGuard};
+
+    static LOCK: Mutex<()> = Mutex::new(());
+    thread_local! {
+        static HELD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub struct ThemeGuard(Option<MutexGuard<'static, ()>>);
+
+    impl Drop for ThemeGuard {
+        fn drop(&mut self) {
+            if self.0.is_some() {
+                HELD.set(false);
+            }
+        }
+    }
+
+    pub fn lock() -> ThemeGuard {
+        if HELD.get() {
+            // This thread already owns the lock; hand out a no-op guard.
+            return ThemeGuard(None);
+        }
+        let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        HELD.set(true);
+        ThemeGuard(Some(guard))
+    }
 }
 
 #[cfg(test)]
