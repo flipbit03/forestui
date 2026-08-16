@@ -106,9 +106,9 @@ const TWISTY_WIDTH: u16 = 2;
 
 fn draw_gh_status(frame: &mut Frame, app: &App, area: Rect) {
     let style = match app.gh_status.as_str() {
-        s if s.starts_with("ok") => Style::default().fg(theme::SUCCESS),
-        "unauth'd" => Style::default().fg(theme::WARNING),
-        _ => Style::default().fg(theme::TEXT_MUTED),
+        s if s.starts_with("ok") => Style::default().fg(theme::active().success),
+        "unauth'd" => Style::default().fg(theme::active().warning),
+        _ => Style::default().fg(theme::active().text_muted),
     };
     let text = format!("gh cli: {}", app.gh_status);
     let padding = (area.width as usize).saturating_sub(text.chars().count()) / 2;
@@ -126,7 +126,7 @@ fn draw_gh_status(frame: &mut Frame, app: &App, area: Rect) {
                 theme::border(),
             )),
         ])
-        .style(Style::default().bg(theme::BG_ELEVATED)),
+        .style(Style::default().bg(theme::active().bg_elevated)),
         area,
     );
 }
@@ -183,7 +183,7 @@ fn row_to_item(row: &SidebarRow, hovered: bool) -> ListItem<'static> {
         ))),
     };
     if hovered {
-        item.style(Style::default().bg(theme::BG_HOVER))
+        item.style(Style::default().bg(theme::active().bg_hover))
     } else {
         item
     }

@@ -85,7 +85,7 @@ mod tests {
         std::fs::write(&p, r#"{"default_editor": "nvim"}"#).unwrap();
         let s = load_settings_from(&p);
         assert_eq!(s.default_editor, "nvim");
-        assert_eq!(s.theme, "system");
+        assert_eq!(s.theme, "forest-dark");
         assert!(s.custom_buttons.is_empty());
     }
 

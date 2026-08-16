@@ -344,13 +344,13 @@ impl Pane {
             return;
         };
         let width = card.width;
-        let filled = Style::default().bg(theme::BG_ELEVATED);
+        let filled = Style::default().bg(theme::active().bg_elevated);
         // Text styles carry a foreground only, so without this the page colour
         // shows through the card. Spans that set their own background — the
         // controls — keep it, which is what makes one read as raised.
         for span in &mut spans {
             if span.style.bg.is_none() {
-                span.style = span.style.bg(theme::BG_ELEVATED);
+                span.style = span.style.bg(theme::active().bg_elevated);
             }
         }
         let content = as_u16(spans.iter().map(Span::width).sum());
@@ -358,12 +358,15 @@ impl Pane {
         // the padding and border on the right.
         let fill = width.saturating_sub(CARD_INSET + content + 1);
         let mut line = vec![
-            Span::styled("│", theme::border().bg(theme::BG_ELEVATED)),
+            Span::styled("│", theme::border().bg(theme::active().bg_elevated)),
             Span::styled(" ", filled),
         ];
         line.append(&mut spans);
         line.push(Span::styled(" ".repeat(fill as usize), filled));
-        line.push(Span::styled("│", theme::border().bg(theme::BG_ELEVATED)));
+        line.push(Span::styled(
+            "│",
+            theme::border().bg(theme::active().bg_elevated),
+        ));
         self.lines.push(Line::from(line));
     }
 
@@ -493,9 +496,9 @@ fn draw_scrollbar(frame: &mut Frame, geom: Option<ScrollbarGeom>, offset: u16) {
     for row in 0..geom.track.height {
         let inside = row >= top && row < top.saturating_add(geom.thumb);
         let colour = if inside {
-            theme::ACCENT_DARK
+            theme::active().accent_dark
         } else {
-            theme::SCROLLBAR_TROUGH
+            theme::active().scrollbar_trough
         };
         frame.render_widget(
             Block::default().style(Style::default().bg(colour)),
@@ -518,7 +521,7 @@ fn card_edge(width: u16, left: char, right: char) -> Line<'static> {
     let span = width.saturating_sub(2) as usize;
     Line::from(Span::styled(
         format!("{left}{}{right}", "─".repeat(span)),
-        theme::border().bg(theme::BG_ELEVATED),
+        theme::border().bg(theme::active().bg_elevated),
     ))
 }
 
@@ -794,18 +797,22 @@ mod tests {
             assert_eq!(cell(left, y - 1).symbol(), "│", "{label}: padding row");
             assert_eq!(
                 cell(x, y - 1).bg,
-                theme::BG_ELEVATED,
+                theme::active().bg_elevated,
                 "{label}: padding row is filled",
             );
             assert_eq!(cell(left, y).symbol(), "│", "{label}: left border");
             assert_eq!(cell(right, y).symbol(), "│", "{label}: right border");
-            assert_eq!(cell(left, y).fg, theme::BORDER, "{label}: border colour");
+            assert_eq!(
+                cell(left, y).fg,
+                theme::active().border,
+                "{label}: border colour"
+            );
             // The background has to reach past the text, or the card is a frame
             // around the page colour rather than a filled box.
             for probe in [x, right - 1] {
                 assert_eq!(
                     cell(probe, y).bg,
-                    theme::BG_ELEVATED,
+                    theme::active().bg_elevated,
                     "{label}: background at {probe}",
                 );
             }

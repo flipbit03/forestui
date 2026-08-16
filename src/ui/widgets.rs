@@ -206,7 +206,13 @@ pub fn section(title: &str) -> Line<'static> {
 /// takes the focus accent: a dialog is always the focused thing, so an accent
 /// border there would say nothing and compete with the button that has one.
 pub fn framed(frame: &mut Frame, area: Rect, title: &str) -> Rect {
-    boxed(frame, area, title, theme::border(), theme::BG_ELEVATED)
+    boxed(
+        frame,
+        area,
+        title,
+        theme::border(),
+        theme::active().bg_elevated,
+    )
 }
 
 fn boxed(frame: &mut Frame, area: Rect, title: &str, border_style: Style, bg: Color) -> Rect {

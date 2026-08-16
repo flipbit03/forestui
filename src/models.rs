@@ -221,7 +221,10 @@ fn default_branch_prefix() -> String {
 }
 
 fn default_theme() -> String {
-    "system".into()
+    // A theme slug from `theme::THEMES`. Old settings files carry the legacy
+    // "system"/"dark"/"light" strings, which load fine and resolve to this
+    // default at activation time — the field's schema never changed shape.
+    "forest-dark".into()
 }
 
 /// Application settings, persisted to `~/.config/forestui/settings.json`.

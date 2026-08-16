@@ -99,6 +99,9 @@ impl App {
             } => self.create_worktree(repo_id, name, branch, true, base_branch, pull_first),
             ModalResult::SettingsSaved(settings) => {
                 self.settings = *settings;
+                // Snap the live theme to what was actually saved — a picker
+                // preview may have run ahead of the committed slug.
+                crate::theme::set_active(&self.settings.theme);
                 if let Err(error) = settings_service::save_settings(&self.settings) {
                     self.notify(format!("Could not save settings: {error}"), Severity::Error);
                 } else {
@@ -110,7 +113,12 @@ impl App {
                 // or they keep showing the old elision until something else does.
                 self.rebuild_rows();
             }
-            ModalResult::CustomButtonsSaved(_) | ModalResult::CustomButtonSaved(_) => {}
+            // The picker already applied the theme live and `receive_child`
+            // carried the slug into the Settings dialog; persisting waits for
+            // Save.
+            ModalResult::CustomButtonsSaved(_)
+            | ModalResult::CustomButtonSaved(_)
+            | ModalResult::ThemeChosen(_) => {}
             ModalResult::Confirmed(action) => self.apply_confirmed(action),
         }
     }
