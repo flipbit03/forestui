@@ -44,6 +44,10 @@ struct Cached {
 struct State {
     cache: HashMap<String, Cached>,
     auth: Option<(AuthStatus, Option<String>)>,
+    /// Bumped by every invalidation. A fetch that started before an
+    /// invalidation must not store its result afterwards — it would re-stamp
+    /// pre-invalidation data as fresh and silently undo the refresh.
+    generation: u64,
 }
 
 fn state() -> &'static Mutex<State> {
@@ -145,37 +149,55 @@ pub fn peek_issues(path: &str) -> Option<(Vec<GitHubIssue>, bool)> {
 /// Open issues assigned to or authored by the current user, newest first.
 pub async fn list_issues(path: &str, limit: usize) -> Vec<GitHubIssue> {
     // The cache answers before any subprocess runs; a warm hit costs nothing.
-    if let Ok(guard) = state().lock()
-        && let Some(cached) = guard.cache.get(path)
-        && (Utc::now() - cached.fetched_at).num_seconds() < CACHE_TTL_SECONDS
-    {
-        return cached.issues.clone();
+    // Freshness has exactly one definition, and it lives in `peek_issues`.
+    if let Some((issues, true)) = peek_issues(path) {
+        return issues;
     }
+    let generation = state().lock().map(|g| g.generation).unwrap_or_default();
 
-    // The empty answers are cached too: a local-only repository or an
+    // Empty answers are cached too — a local-only repository or an
     // unauthenticated `gh` would otherwise re-flash "Loading…" and re-spawn
-    // subprocesses on every visit, forever.
+    // subprocesses on every visit — but as *already stale*: the panel renders
+    // them instantly while the next visit silently re-checks, so a transient
+    // failure (a killed probe, a network blip during `gh repo view`) never
+    // masquerades as a confident 300-second "No issues found".
     let (auth, _) = get_auth_status().await;
     if auth != AuthStatus::Authenticated {
-        return store(path, Vec::new());
+        return store_if_current(generation, path, Vec::new(), false);
     }
 
     // Only the gate cares about owner/repo: a path that is not a GitHub
     // repository has no issues to list.
     if get_repo_info(path).await.is_none() {
-        return store(path, Vec::new());
+        return store_if_current(generation, path, Vec::new(), false);
     }
 
-    store(path, fetch_issues(path, limit).await)
+    let issues = fetch_issues(path, limit).await;
+    store_if_current(generation, path, issues, true)
 }
 
-fn store(path: &str, issues: Vec<GitHubIssue>) -> Vec<GitHubIssue> {
-    if let Ok(mut guard) = state().lock() {
+/// Store a fetch result unless an invalidation landed while it ran. `fresh`
+/// decides the stamp: `false` back-dates the entry to the TTL boundary so it
+/// renders instantly but re-checks on the next visit.
+fn store_if_current(
+    generation: u64,
+    path: &str,
+    issues: Vec<GitHubIssue>,
+    fresh: bool,
+) -> Vec<GitHubIssue> {
+    let fetched_at = if fresh {
+        Utc::now()
+    } else {
+        Utc::now() - chrono::Duration::seconds(CACHE_TTL_SECONDS)
+    };
+    if let Ok(mut guard) = state().lock()
+        && guard.generation == generation
+    {
         guard.cache.insert(
             path.to_string(),
             Cached {
                 issues: issues.clone(),
-                fetched_at: Utc::now(),
+                fetched_at,
             },
         );
     }
@@ -233,17 +255,14 @@ async fn fetch_issues(path: &str, limit: usize) -> Vec<GitHubIssue> {
     issues
 }
 
-/// Drop cached issues for one repository path, or all of them when `path` is
-/// `None`. Prefer the targeted form: clearing everything makes the next
-/// selection change on every other repository a guaranteed cold miss.
-pub fn invalidate_cache(path: Option<&str>) {
+/// Drop the cached issues for one repository path. Deliberately not a
+/// clear-everything: nuking the whole cache made the next selection change on
+/// every other repository a guaranteed cold miss, which was half of #29.
+pub fn invalidate_cache(path: &str) {
     if let Ok(mut guard) = state().lock() {
-        match path {
-            Some(path) => {
-                guard.cache.remove(path);
-            }
-            None => guard.cache.clear(),
-        }
+        guard.cache.remove(path);
+        // Fence out any fetch already in flight for the old contents.
+        guard.generation += 1;
     }
 }
 
@@ -312,12 +331,48 @@ mod tests {
         let (_, fresh) = peek_issues("/repo/stale").expect("cached");
         assert!(!fresh, "an expired entry must read as stale");
 
-        invalidate_cache(Some("/repo/fresh"));
+        invalidate_cache("/repo/fresh");
         assert!(peek_issues("/repo/fresh").is_none());
         assert!(
             peek_issues("/repo/stale").is_some(),
             "targeted invalidation"
         );
+    }
+
+    /// A fetch that started before an invalidation must not store afterwards:
+    /// it would re-stamp pre-invalidation data as fresh and silently undo the
+    /// refresh the user just asked for.
+    #[test]
+    fn an_invalidation_fences_out_older_fetches() {
+        let before = state().lock().unwrap().generation;
+        invalidate_cache("/repo/fenced");
+        store_if_current(before, "/repo/fenced", Vec::new(), true);
+        assert!(
+            peek_issues("/repo/fenced").is_none(),
+            "a pre-invalidation fetch must not repopulate the cache"
+        );
+
+        // Re-read and retry: another test may invalidate concurrently, and
+        // only a store with the *current* generation may land.
+        for _ in 0..10 {
+            let current = state().lock().unwrap().generation;
+            store_if_current(current, "/repo/fenced", Vec::new(), true);
+            if peek_issues("/repo/fenced").is_some() {
+                break;
+            }
+        }
+        assert!(peek_issues("/repo/fenced").is_some());
+    }
+
+    /// Negative answers render instantly but re-check on the next visit — a
+    /// transient failure must not read as a confident fresh "No issues found".
+    #[test]
+    fn empty_answers_are_cached_as_already_stale() {
+        let generation = state().lock().unwrap().generation;
+        store_if_current(generation, "/repo/negative", Vec::new(), false);
+        let (issues, fresh) = peek_issues("/repo/negative").expect("cached");
+        assert!(issues.is_empty());
+        assert!(!fresh, "a negative answer must not count as fresh");
     }
 
     #[test]

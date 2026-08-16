@@ -341,11 +341,17 @@ impl App {
                 }
             }
             Action::RefreshIssues => {
-                // Manual refresh: only this repository's cache, and the
-                // spinner is deliberate — the user asked and gets feedback.
-                github::invalidate_cache(Some(&path));
-                self.issues = None;
-                self.fetch_issues();
+                // The cache is keyed by the *repository* path — `path` here is
+                // the selected path, which for a worktree row would be the
+                // worktree's directory and would invalidate nothing.
+                if let Some(repo) = self.state.selected_repository() {
+                    let repo_path = repo.source_path.clone();
+                    github::invalidate_cache(&repo_path);
+                    // The spinner is deliberate: the user asked for a refresh
+                    // and gets feedback.
+                    self.issues = None;
+                    self.fetch_issues();
+                }
             }
             Action::CreateFromIssue(index) => {
                 // The issue is captured here rather than looked up again when

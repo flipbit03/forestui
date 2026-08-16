@@ -9,19 +9,27 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-/// Last known sessions per path. There is no TTL: the panel renders this
-/// immediately on selection change while a fresh scan runs behind it, so the
-/// worst case is content a few seconds old for the blink before the scan
-/// lands — instead of a "Loading…" flash on every switch (#29).
-fn cache() -> &'static Mutex<HashMap<String, Vec<ClaudeSession>>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, Vec<ClaudeSession>>>> = OnceLock::new();
+/// Last known sessions per `(path, limit)`. There is no TTL: the panel renders
+/// this immediately on selection change while a fresh scan runs behind it, so
+/// the worst case is content a few seconds old for the blink before the scan
+/// lands — instead of a "Loading…" flash on every switch (#29). The limit is
+/// part of the key so a future caller with a different cap cannot poison the
+/// entry another consumer peeks.
+type SessionCacheKey = (String, usize);
+
+fn cache() -> &'static Mutex<HashMap<SessionCacheKey, Vec<ClaudeSession>>> {
+    static CACHE: OnceLock<Mutex<HashMap<SessionCacheKey, Vec<ClaudeSession>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The last result [`get_sessions_for_path`] produced for this path, if any.
-/// Safe on the render thread: the lock is held only for the map read.
-pub fn peek_sessions(path: &str) -> Option<Vec<ClaudeSession>> {
-    cache().lock().ok()?.get(path).cloned()
+/// The last result [`get_sessions_for_path`] produced for this path and limit,
+/// if any. Safe on the render thread: the lock is held only for the map read.
+pub fn peek_sessions(path: &str, limit: usize) -> Option<Vec<ClaudeSession>> {
+    cache()
+        .lock()
+        .ok()?
+        .get(&(path.to_string(), limit))
+        .cloned()
 }
 
 /// Convert a filesystem path to Claude's folder naming convention.
@@ -39,7 +47,7 @@ pub fn get_sessions_for_path(path: &str, limit: usize) -> Vec<ClaudeSession> {
     let sessions_dir = claude_projects_dir().join(path_to_claude_folder(path));
     let sessions = read_sessions_dir(&sessions_dir, limit);
     if let Ok(mut guard) = cache().lock() {
-        guard.insert(path.to_string(), sessions.clone());
+        guard.insert((path.to_string(), limit), sessions.clone());
     }
     sessions
 }
@@ -245,10 +253,12 @@ mod tests {
     #[test]
     fn peek_returns_the_last_scan() {
         let path = "/nowhere/forestui-peek-test";
-        assert!(peek_sessions(path).is_none());
+        assert!(peek_sessions(path, 5).is_none());
         let scanned = get_sessions_for_path(path, 5);
-        let peeked = peek_sessions(path).expect("the scan populates the cache");
+        let peeked = peek_sessions(path, 5).expect("the scan populates the cache");
         assert_eq!(peeked.len(), scanned.len());
+        // A different limit is a different entry, never a poisoned shared one.
+        assert!(peek_sessions(path, 50).is_none());
     }
 
     #[test]
