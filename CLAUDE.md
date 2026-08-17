@@ -155,10 +155,22 @@ event's `path` against the current one before applying it.
 
 **The main loop is the single writer of `.forestui-config.json`.** Background
 tasks never load or save state themselves — they send their results as data
-(`WorktreeAdded`, `WorktreesImported`, `WorktreeRenamed`) and `App::handle_event`
+(`WorktreeAdded`, `WorktreesScanned`, `WorktreeRenamed`) and `App::handle_event`
 folds them in and persists. Two writers means last-write-wins, and a user
 action mid-flight silently clobbers the task's save. Success toasts belong in
 the fold, not the task: a result the fold drops must not be announced.
+
+**The worktree list is reconciled against git, not owned by the config.**
+`git worktree list` is scanned in the background (startup, repo add, selection
+change, focus return, a 30s sweep) and the fold adopts, prunes and
+branch-corrects via `AppState::reconcile_worktrees` — the config only
+annotates worktrees (name, archived flag, sort order). A scan result is a
+*snapshot*, so it must never outrank a fresher mutation: results carry the
+repository's mutation epoch and fold as stale when a create/remove/rename
+folded in between, and entries in `removals_in_flight` / `renames_in_flight`
+are excluded from reconciliation entirely. Any new worktree-mutating flow must
+bump the epoch in its fold and, if it has a mid-flight window a listing could
+misread, register itself in an in-flight set.
 
 **The tick must earn its repaints.** Ticks arrive ten times a second; an idle
 frame repaints once a second (matching the second granularity of the relative
@@ -223,7 +235,12 @@ forestui ~/forest      # default
 forestui ~/work        # different forest
 ```
 
-Each forest has its own `.forestui-config.json` state file.
+Each forest has its own `.forestui-config.json` state file. Note that the
+worktree *list* under a repository is reconciled from `git worktree list`,
+which knows nothing about forests: tracking the same repository in two
+forests shows the same worktrees in both, and removing one removes it for
+both. Forests separate which *repositories* you look at, not worktree
+ownership — git owns that.
 
 ### Config Compatibility
 `.forestui-config.json` and `~/.config/forestui/settings.json` keep the exact

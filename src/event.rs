@@ -84,12 +84,27 @@ pub enum AppEvent {
         repo_id: Uuid,
         worktree: Box<Worktree>,
     },
-    /// An import scan finished; fold the discovered worktrees into state.
+    /// A `git worktree list` scan finished; the fold reconciles the config
+    /// against it (git is the source of truth for which worktrees exist).
+    /// `None` means git itself failed — the fold releases the in-flight guard
+    /// and keeps state untouched, because "could not list" must never read as
+    /// "there are none" and prune every tracked worktree.
     /// Single-writer for the same reason as [`AppEvent::WorktreeAdded`].
-    WorktreesImported {
+    ///
+    /// `epoch` is the repository's mutation counter at the moment the scan
+    /// was spawned. A create, remove, or rename folding while git ran bumps
+    /// the counter, and the fold discards a mismatched result: that listing
+    /// describes a state the config has already moved past, and reconciling
+    /// against it would revert the newer change.
+    WorktreesScanned {
         repo_id: Uuid,
-        worktrees: Vec<Worktree>,
+        epoch: u64,
+        listed: Option<Vec<crate::services::git::WorktreeInfo>>,
     },
+    /// A rename task ended without renaming (the target existed, or the move
+    /// itself failed). Exists so the fold can release the rename's
+    /// reconcile-protection; the error itself was already notified.
+    WorktreeRenameAborted { worktree_id: Uuid },
     /// A worktree's directory was renamed on disk; fold the new name and path
     /// into state. Single-writer for the same reason as
     /// [`AppEvent::WorktreeAdded`].

@@ -134,10 +134,12 @@ fui_fixture() {
 
 **Notes that matter for assertions**
 
-- `alpha`'s pre-existing worktree lives *inside* the forest dir. "Import existing
-  worktrees" deliberately **skips** anything already under the forest dir
-  (`app.py:_import_existing_worktrees`), so it will not appear — that is correct,
-  not a bug.
+- `alpha`'s pre-existing worktree lives *inside* the forest dir and is seeded
+  into the config. Historical note for the frozen python frames: that build's
+  "Import existing worktrees" deliberately **skipped** anything already under
+  the forest dir (`app.py:_import_existing_worktrees`). The rust build has no
+  import checkbox at all — the reconcile scan adopts whatever
+  `git worktree list` reports, wherever it lives, and dedups by path.
 - Isolated `HOME` means `gh` is unauthenticated, so the sidebar always shows
   `gh cli: unauth'd` and the GitHub-issues section is always empty. Deterministic.
 - Isolated `HOME` means settings are always defaults on first run:
@@ -715,8 +717,10 @@ from source)
 
 **Expected:**
 - Modal title ` Add Repository`; section header `Repository Path`; an input with
-  placeholder `Enter path or paste from clipboard...`; a checkbox
-  `Import existing worktrees`; buttons `Cancel` / `Add Repository`.
+  placeholder `Enter path or paste from clipboard...`; buttons `Cancel` /
+  `Add Repository`. (No import checkbox in the rust build: existing worktrees
+  are adopted by the reconcile scan. The frozen python frames show the
+  `Import existing worktrees` checkbox.)
 - The app footer is **hidden** while a modal is up.
 - After typing a valid repo path, a status line appears: `Repository: alpha`.
 
@@ -1292,7 +1296,8 @@ control is enabled without a remote.
 **Area:** Sweep | **Priority:** P0 | 🟢 EXECUTED (both builds)
 **Expected:** `Repository Path`, the placeholder
 `Enter path or paste from clipboard...` **while the empty field is focused**,
-`Import existing worktrees`, `Add Repository`, `Cancel`.
+`Add Repository`, `Cancel`. (The python frames additionally show the retired
+`Import existing worktrees` checkbox.)
 **Fails if:** the placeholder is hidden on focus. The Rust build did hide it; the
 sweep caught it and it was fixed in `ui/widgets.rs`.
 
@@ -1454,14 +1459,17 @@ the new directory (i.e. `git worktree repair` ran).
 **Expected:** `git branch --show-current` inside the worktree returns the new name,
 and the config `branch` matches.
 
-### UC-80 — Add a repository with "Import existing worktrees"
+### UC-80 — Adding a repository adopts its existing worktrees
 **Area:** Modals | **Priority:** P1 | 🟢 EXECUTED (both builds)
 **Setup:** the fixture's `gamma` repo is deliberately untracked and owns a worktree
 **outside** the forest directory.
-**Steps:** `a`, type the gamma path, tick the checkbox, confirm.
-**Expected:** `gamma` joins the config **and** its external worktree is imported
-with branch `feat/imported`.
-**Fails if:** the repo is added but the worktree is not — the checkbox did nothing.
+**Steps:** `a`, type the gamma path, confirm. (The python build needed its
+"Import existing worktrees" checkbox ticked first; the rust build adopts
+unconditionally via the reconcile scan.)
+**Expected:** `gamma` joins the config **and** its external worktree is adopted
+with branch `feat/imported` — automatically, no opt-in.
+**Fails if:** the repo is added but the worktree never appears — the reconcile
+scan did not run or dropped its result.
 
 ### UC-81 — A second terminal joins as a grouped session
 **Area:** tmux | **Priority:** P0 | 🟢 EXECUTED (both builds)

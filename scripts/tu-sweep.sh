@@ -113,7 +113,8 @@ git -C "$ROOT/src/alpha" worktree add -q -b feat/wt-a "$ROOT/forest/alpha/wt-a"
 REF="$(git -C "$ROOT/src/alpha" rev-parse --short HEAD)"
 
 # gamma is deliberately NOT in the config, and owns a worktree OUTSIDE the
-# forest directory — that is what "Import existing worktrees" has to discover.
+# forest directory — that is what the add-time reconcile scan (python: the
+# "Import existing worktrees" checkbox) has to discover.
 git -C "$ROOT/src/gamma" worktree add -q -b feat/imported "$ROOT/outside/gamma-imported"
 
 # Claude sessions, so the RECENT SESSIONS cards actually render. Without these
@@ -421,24 +422,26 @@ assert UC-79 branch-in-config "feat/wt-a-v2" "$(cfg "d['repositories'][0]['workt
 assert UC-79 branch-checked-out "feat/wt-a-v2" \
   "$(git -C "$ROOT/forest/alpha/wt-a-renamed" branch --show-current 2>/dev/null || echo '<none>')"
 
-# --- UC-80: add a repository with "Import existing worktrees" ----------------
+# --- UC-80: adding a repository adopts its existing worktrees ----------------
+#
+# The rust build has no "Import existing worktrees" checkbox: the reconcile
+# scan adopts whatever `git worktree list` reports, at add time and forever
+# after. The python build kept the one-shot opt-in checkbox.
 focus_app
 press a; await "Repository Path"; sleep 0.8
 type_ "$ROOT/src/gamma"; sleep 1.0
-if [ "$LABEL" = "rust" ]; then
-  press Tab; sleep 0.4          # focus 1 = checkbox
-  press Space; sleep 0.4
-else
+if [ "$LABEL" != "rust" ]; then
   tu mouse click --name "$SESS" --on-text "Import existing worktrees" >/dev/null 2>&1
   sleep 0.6
 fi
 capture UC-80 import-checked
 if [ "$LABEL" = "rust" ]; then
-  press Tab; sleep 0.4; press Enter
+  press Enter
 else
   tu mouse click --name "$SESS" --on-regex "│ Add Repository │" >/dev/null 2>&1
 fi
-sleep 4
+await "gamma-imported" 15000
+sleep 1
 capture UC-80 import-after
 
 assert UC-80 gamma-tracked "gamma" "$(cfg "[r['name'] for r in d['repositories']][-1]")"

@@ -74,7 +74,6 @@ impl ConfirmAction {
 pub enum ModalResult {
     RepositoryAdded {
         path: String,
-        import_worktrees: bool,
     },
     WorktreeCreated {
         repo_id: Uuid,
@@ -234,7 +233,6 @@ fn edit_input(input: &mut TextInput, key: KeyEvent) -> bool {
 #[derive(Debug)]
 pub struct AddRepositoryModal {
     pub path: TextInput,
-    pub import_worktrees: bool,
     /// One of the `FOCUS_*` constants; see [`AddRepositoryModal`].
     pub focus: usize,
 }
@@ -250,15 +248,13 @@ impl AddRepositoryModal {
     /// single definition of the contract between the two files: the renderer
     /// records a click region against the same constant `handle_key` matches on.
     pub const FOCUS_PATH: usize = 0;
-    pub const FOCUS_IMPORT: usize = 1;
-    pub const FOCUS_ADD: usize = 2;
-    pub const FOCUS_CANCEL: usize = 3;
+    pub const FOCUS_ADD: usize = 1;
+    pub const FOCUS_CANCEL: usize = 2;
     pub const FIELDS: usize = Self::FOCUS_CANCEL + 1;
 
     pub fn new() -> Self {
         Self {
             path: TextInput::new("").with_placeholder("Enter path or paste from clipboard..."),
-            import_worktrees: false,
             focus: Self::FOCUS_PATH,
         }
     }
@@ -294,10 +290,7 @@ impl AddRepositoryModal {
         let path = util::expanduser(self.path.value())
             .to_string_lossy()
             .to_string();
-        ModalOutcome::Submit(ModalResult::RepositoryAdded {
-            path,
-            import_worktrees: self.import_worktrees,
-        })
+        ModalOutcome::Submit(ModalResult::RepositoryAdded { path })
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
@@ -312,10 +305,6 @@ impl AddRepositoryModal {
             return ModalOutcome::None;
         }
         match (self.focus, key.code) {
-            (Self::FOCUS_IMPORT, KeyCode::Char(' ')) | (Self::FOCUS_IMPORT, KeyCode::Enter) => {
-                self.import_worktrees = !self.import_worktrees;
-                ModalOutcome::None
-            }
             (Self::FOCUS_PATH | Self::FOCUS_ADD, KeyCode::Enter) => self.submit(),
             (Self::FOCUS_CANCEL, KeyCode::Enter) => ModalOutcome::Close,
             _ => ModalOutcome::None,
@@ -1341,14 +1330,6 @@ mod tests {
             modal.handle_key(key(KeyCode::Enter)),
             ModalOutcome::Submit(ModalResult::RepositoryAdded { .. })
         ));
-    }
-
-    #[test]
-    fn add_repository_toggles_import_checkbox() {
-        let mut modal = AddRepositoryModal::new();
-        modal.focus = AddRepositoryModal::FOCUS_IMPORT;
-        modal.handle_key(key(KeyCode::Char(' ')));
-        assert!(modal.import_worktrees);
     }
 
     #[test]

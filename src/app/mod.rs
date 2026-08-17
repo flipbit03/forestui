@@ -27,6 +27,10 @@ use uuid::Uuid;
 /// Textual's `App.NOTIFICATION_TIMEOUT`, which every `notify()` here inherited.
 pub const NOTIFICATION_TTL: Duration = Duration::from_secs(5);
 pub const ISSUE_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
+/// How often every repository is re-checked against `git worktree list`, so
+/// worktrees created or removed outside forestui (an agent's `git worktree
+/// add`, a manual remove) converge into the sidebar without being asked for.
+pub const WORKTREE_SCAN_INTERVAL: Duration = Duration::from_secs(30);
 pub const SESSION_LIMIT: usize = 5;
 pub const ISSUE_LIMIT: usize = 10;
 /// Lines the detail pane moves per wheel notch, matching Textual's
@@ -131,6 +135,19 @@ pub struct App {
     /// concurrent duplicate fetches for identical results.
     issues_in_flight: std::collections::HashSet<String>,
     sessions_in_flight: std::collections::HashSet<String>,
+    /// Repositories with a `git worktree list` scan already running — the same
+    /// duplicate-work guard as above, keyed by repository.
+    worktree_scans_in_flight: std::collections::HashSet<Uuid>,
+    /// When the last periodic worktree sweep started.
+    last_worktree_scan: Instant,
+    /// Per-repository worktree mutation counter; see
+    /// [`AppEvent::WorktreesScanned`]. Missing means 0 — repositories only
+    /// enter the map once something about their worktrees changes.
+    worktree_epochs: std::collections::HashMap<Uuid, u64>,
+    /// Worktrees with a directory or branch rename running. Like
+    /// [`App::removals_in_flight`], the reconcile must not act on what a
+    /// listing says about these — it may describe the half-done rename.
+    renames_in_flight: std::collections::HashSet<Uuid>,
     /// Worktrees with a removal running in the background. Guards duplicate
     /// removals, disables the Delete control, and holds quit until the results
     /// are folded (an orphaned git child would remove the tree on disk after
@@ -227,6 +244,10 @@ impl App {
             should_quit: false,
             issues_in_flight: std::collections::HashSet::new(),
             sessions_in_flight: std::collections::HashSet::new(),
+            worktree_scans_in_flight: std::collections::HashSet::new(),
+            last_worktree_scan: Instant::now(),
+            worktree_epochs: std::collections::HashMap::new(),
+            renames_in_flight: std::collections::HashSet::new(),
             removals_in_flight: std::collections::HashSet::new(),
             quit_pending: false,
             hits: Vec::new(),
@@ -286,9 +307,64 @@ impl App {
             self.sync_sidebar_index();
         }
         self.reload_detail();
+        self.scan_all_worktrees();
         self.load_gh_status();
         if self.self_update {
             self.check_for_update();
+        }
+    }
+
+    /// Reconcile every repository against `git worktree list`. One cheap git
+    /// subprocess per repository, so this runs on startup, on tmux focus
+    /// return, and on the periodic sweep.
+    fn scan_all_worktrees(&mut self) {
+        let ids: Vec<Uuid> = self.state.repositories().iter().map(|r| r.id).collect();
+        for id in ids {
+            self.scan_worktrees(id);
+        }
+    }
+
+    /// Kick a background `git worktree list` for one repository. The listing
+    /// comes back as [`AppEvent::WorktreesScanned`] and is reconciled against
+    /// the config on the main loop — never here, where state may move while
+    /// git runs.
+    pub(super) fn scan_worktrees(&mut self, repo_id: Uuid) {
+        let Some(repo) = self.state.find_repository(repo_id) else {
+            return;
+        };
+        if !self.worktree_scans_in_flight.insert(repo_id) {
+            return;
+        }
+        let source = repo.source_path.clone();
+        let epoch = self.worktree_epoch(repo_id);
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let listed = git::list_worktrees(&source).await.ok();
+            tx.send(AppEvent::WorktreesScanned {
+                repo_id,
+                epoch,
+                listed,
+            });
+        });
+    }
+
+    fn worktree_epoch(&self, repo_id: Uuid) -> u64 {
+        self.worktree_epochs.get(&repo_id).copied().unwrap_or(0)
+    }
+
+    /// Record that a repository's worktrees changed, so any scan spawned
+    /// before this moment is folded as stale rather than reconciled.
+    pub(super) fn bump_worktree_epoch(&mut self, repo_id: Uuid) {
+        let counter = self.worktree_epochs.entry(repo_id).or_insert(0);
+        *counter = counter.wrapping_add(1);
+    }
+
+    /// Bump the epoch of whichever repository owns a worktree, for the folds
+    /// that arrive keyed by worktree alone.
+    fn bump_worktree_epoch_for(&mut self, worktree_id: Uuid) {
+        if let Some((repo, _)) = self.state.find_worktree(worktree_id) {
+            let repo_id = repo.id;
+            self.bump_worktree_epoch(repo_id);
         }
     }
 
@@ -408,6 +484,11 @@ impl App {
             None => return,
         }
         self.reload_detail();
+        // Landing on a repository (or one of its worktrees) is the moment its
+        // tree should be fresh — an agent may have added one since last look.
+        if let Some(repo_id) = self.state.selection.repository_id {
+            self.scan_worktrees(repo_id);
+        }
     }
 
     // ------------------------------------------------------------------- detail
@@ -619,6 +700,13 @@ impl App {
             self.redraw = true;
         }
 
+        if self.last_worktree_scan.elapsed() >= WORKTREE_SCAN_INTERVAL {
+            self.last_worktree_scan = Instant::now();
+            // No repaint here: a sweep that changes nothing stays invisible,
+            // and one that does pays for its own when the fold lands.
+            self.scan_all_worktrees();
+        }
+
         if self.last_issue_refresh.elapsed() >= ISSUE_REFRESH_INTERVAL {
             self.last_issue_refresh = Instant::now();
             // Only while a repository pane is actually showing its issues —
@@ -654,7 +742,12 @@ impl App {
         // repaint some other event in the same drain already earned. The tick
         // decides for itself in `on_tick`: at ten a second, repainting an idle
         // frame on every one keeps the terminal permanently busy for nothing.
-        if !mouse::is_pointer_motion(&event) && !matches!(event, AppEvent::Tick) {
+        // Scan results opt out for the same reason as the tick — the periodic
+        // sweep almost always finds nothing, and its fold claims a repaint
+        // itself when it changes something.
+        if !mouse::is_pointer_motion(&event)
+            && !matches!(event, AppEvent::Tick | AppEvent::WorktreesScanned { .. })
+        {
             self.redraw = true;
         }
         match event {
@@ -713,6 +806,7 @@ impl App {
                 }
                 let worktree_id = worktree.id;
                 let name = worktree.name.clone();
+                self.bump_worktree_epoch(repo_id);
                 self.state.add_worktree(repo_id, *worktree);
                 // Selecting a row a collapsed repository hides would leave the
                 // cursor pointing at nothing, so the fold opens to reveal what
@@ -728,27 +822,94 @@ impl App {
                 // extends that to a write that was attempted and failed.
                 self.notify_saved(format!("Created worktree '{name}'"));
             }
-            AppEvent::WorktreesImported { repo_id, worktrees } => {
+            AppEvent::WorktreesScanned {
+                repo_id,
+                epoch,
+                listed,
+            } => {
+                // Release the guard even for a result the checks below drop.
+                self.worktree_scans_in_flight.remove(&repo_id);
+                // A failed listing keeps state as-is: "could not list" must
+                // never read as "there are none" and prune the whole tree.
+                let Some(listed) = listed else { return };
+                // The repository can be removed while git runs.
                 if self.state.find_repository(repo_id).is_none() {
                     return;
                 }
-                let count = worktrees.len();
-                self.state.add_worktrees(repo_id, worktrees);
-                // Imported worktrees are new *sidebar rows*; no detail pane
-                // shows them. Selecting the repository and reloading its pane
-                // only ever moved someone who had navigated on while the
-                // `git worktree list` ran, throwing away the sessions and
-                // issues they were reading. The add-repository flow that starts
-                // this import has already selected the repository itself.
+                // A create, remove, or rename folded while git ran: the
+                // listing describes a state the config has moved past, and
+                // reconciling against it would revert the newer change (a
+                // renamed branch back to its old name, most visibly).
+                if epoch != self.worktree_epoch(repo_id) {
+                    return;
+                }
+                // Mutations still in flight are not the listing's to judge
+                // either way; their own fold lands the truth.
+                let protected: std::collections::HashSet<Uuid> = self
+                    .removals_in_flight
+                    .union(&self.renames_in_flight)
+                    .copied()
+                    .collect();
+                let selected = self.state.selection;
+                let Some(outcome) = self.state.reconcile_worktrees(repo_id, &listed, &protected)
+                else {
+                    return;
+                };
+                self.redraw = true;
+                // Changed worktrees are *sidebar rows*; no detail pane shows
+                // them, so the pane is left alone — reloading it would reset
+                // the scroll of whatever the user is reading, twice a minute.
                 self.rebuild_rows();
                 self.sync_sidebar_index();
-                self.notify_saved(format!("Imported {count} worktrees"));
+                // …unless the reconcile disturbed the selection itself. A
+                // pruned selection reloads the pane outright. A branch that
+                // drifted on the selected worktree reseeds only the rename
+                // inputs — Enter would otherwise rename the branch straight
+                // back to the stale value they still show — but must not
+                // reload the pane: the path is unchanged, so its sessions and
+                // scroll position are not stale, and a full reload on every
+                // external `git checkout` would yank them out from under the
+                // reader twice a minute.
+                if self.state.selection != selected {
+                    self.rename_target = None;
+                    self.reload_detail();
+                } else if selected
+                    .worktree_id
+                    .is_some_and(|id| outcome.branch_updated.contains(&id))
+                    && let Some((_, worktree)) = self.state.selected_worktree()
+                {
+                    self.rename_target = Some(worktree.id);
+                    self.name_input = TextInput::new(worktree.name.clone());
+                    self.branch_input = TextInput::new(worktree.branch.clone());
+                }
+                let mut parts: Vec<String> = Vec::new();
+                match outcome.added.as_slice() {
+                    [] => {}
+                    [name] => parts.push(format!("Detected worktree '{name}'")),
+                    added => parts.push(format!("Detected {} worktrees", added.len())),
+                }
+                match outcome.removed.as_slice() {
+                    [] => {}
+                    [name] => parts.push(format!("Worktree '{name}' was removed outside forestui")),
+                    removed => parts.push(format!(
+                        "{} worktrees were removed outside forestui",
+                        removed.len()
+                    )),
+                }
+                if parts.is_empty() {
+                    // A branch-only correction saved, but is not worth a toast.
+                    self.report_save_error();
+                } else {
+                    self.notify_saved(parts.join("; "));
+                }
             }
             AppEvent::WorktreeRenamed {
                 worktree_id,
                 name,
                 path,
             } => {
+                self.renames_in_flight.remove(&worktree_id);
+                self.bump_worktree_epoch_for(worktree_id);
                 self.state.update_worktree(worktree_id, |worktree| {
                     worktree.name = name;
                     worktree.path = path;
@@ -768,6 +929,8 @@ impl App {
                 worktree_id,
                 branch,
             } => {
+                self.renames_in_flight.remove(&worktree_id);
+                self.bump_worktree_epoch_for(worktree_id);
                 self.state
                     .update_worktree(worktree_id, |worktree| worktree.branch = branch);
                 self.rename_target = None;
@@ -780,6 +943,9 @@ impl App {
                 worktree_id,
                 outcome,
             } => self.on_worktree_remove_result(worktree_id, outcome),
+            AppEvent::WorktreeRenameAborted { worktree_id } => {
+                self.renames_in_flight.remove(&worktree_id);
+            }
             AppEvent::ReloadDetail => self.reload_detail(),
         }
     }
@@ -804,6 +970,7 @@ impl App {
         let name = worktree.name.clone();
         match outcome {
             Ok(git::RemoveOutcome::Removed) => {
+                self.bump_worktree_epoch_for(worktree_id);
                 self.state.remove_worktree(worktree_id);
                 self.rebuild_rows();
                 self.sync_sidebar_index();
@@ -841,8 +1008,13 @@ impl App {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key),
             Event::Mouse(mouse) => self.handle_mouse(mouse),
-            // tmux focus-events let the app refresh when the user comes back.
-            Event::FocusGained => self.reload_detail(),
+            // tmux focus-events let the app refresh when the user comes back —
+            // which is exactly when an agent in another window may have
+            // created or removed a worktree.
+            Event::FocusGained => {
+                self.reload_detail();
+                self.scan_all_worktrees();
+            }
             _ => {}
         }
     }
@@ -1384,45 +1556,251 @@ mod tests {
         assert!(app.state.find_worktree(worktree_id).is_none());
     }
 
-    /// An import scan delivers its batch as one event, folded in with one save,
-    /// and leaves the repository selected.
+    /// A scan result stamped with the repository's *current* epoch, the way a
+    /// listing that raced nothing would arrive.
+    fn scanned(app: &App, repo_id: Uuid, listed: Vec<git::WorktreeInfo>) -> AppEvent {
+        AppEvent::WorktreesScanned {
+            repo_id,
+            epoch: app.worktree_epoch(repo_id),
+            listed: Some(listed),
+        }
+    }
+
+    /// What `git worktree list` would print for the fixture repository: the
+    /// main checkout first, then every tracked worktree, plus `extra` paths.
+    fn scan_listing(app: &App, extra: &[(&std::path::Path, &str)]) -> Vec<git::WorktreeInfo> {
+        let repo = &app.state.repositories()[0];
+        let mut listed = vec![git::WorktreeInfo {
+            path: repo.source_path.clone(),
+            head: "abc123".into(),
+            branch: Some("main".into()),
+        }];
+        listed.extend(repo.worktrees.iter().map(|w| git::WorktreeInfo {
+            path: w.path.clone(),
+            head: "abc123".into(),
+            branch: Some(w.branch.clone()),
+        }));
+        listed.extend(extra.iter().map(|(path, branch)| git::WorktreeInfo {
+            path: path.to_string_lossy().to_string(),
+            head: "abc123".into(),
+            branch: Some((*branch).to_string()),
+        }));
+        listed
+    }
+
+    /// A scan delivers git's listing as one event; the fold adopts the
+    /// worktrees the config has never seen, keeps every tracked one
+    /// (archived included), and persists the result once.
     #[tokio::test]
-    async fn imported_worktrees_are_folded_into_state() {
+    async fn scanned_worktrees_reconcile_into_state() {
         let (dir, mut app) = app_with_fixture();
         let repo_id = app.state.repositories()[0].id;
         let before = app.state.repositories()[0].worktrees.len();
 
-        app.handle_event(AppEvent::WorktreesImported {
-            repo_id,
-            worktrees: vec![
-                Worktree::new("i1".into(), "main".into(), "/tmp/i1".into()),
-                Worktree::new("i2".into(), "main".into(), "/tmp/i2".into()),
-            ],
-        });
+        // A worktree created outside forestui — the directory must exist, or
+        // the reconcile treats it as a prunable stub.
+        let adhoc = dir.path().join("adhoc");
+        std::fs::create_dir_all(&adhoc).unwrap();
+        let listed = scan_listing(&app, &[(&adhoc, "feat/adhoc")]);
 
-        assert_eq!(app.state.repositories()[0].worktrees.len(), before + 2);
+        let event = scanned(&app, repo_id, listed.clone());
+        app.handle_event(event);
+
+        let worktrees = &app.state.repositories()[0].worktrees;
+        assert_eq!(worktrees.len(), before + 1);
+        let adopted = worktrees.last().expect("the adopted worktree");
+        assert_eq!(adopted.name, "adhoc");
+        assert_eq!(adopted.branch, "feat/adhoc");
+        assert!(
+            worktrees.iter().any(|w| w.is_archived),
+            "reconciling dropped the archived flag"
+        );
         assert_eq!(app.state.selection.repository_id, Some(repo_id));
         assert_eq!(app.state.selection.worktree_id, None);
 
-        // In memory is not enough: an import that never reaches the config is
-        // gone on the next launch, and the fold is the only writer.
+        // In memory is not enough: an adoption that never reaches the config
+        // is gone on the next launch, and the fold is the only writer.
         let reloaded = AppState::load_from(dir.path().join(".forestui-config.json"));
         assert_eq!(
             reloaded.repositories()[0].worktrees.len(),
-            before + 2,
-            "the import was never persisted"
+            before + 1,
+            "the adoption was never persisted"
         );
 
-        // A result for a repository that has since been removed is dropped.
-        app.handle_event(AppEvent::WorktreesImported {
-            repo_id: Uuid::new_v4(),
-            worktrees: vec![Worktree::new(
-                "ghost".into(),
-                "main".into(),
-                "/tmp/g".into(),
-            )],
+        // The same listing again is a no-op, not a duplicate row.
+        let event = scanned(&app, repo_id, listed.clone());
+        app.handle_event(event);
+        assert_eq!(app.state.repositories()[0].worktrees.len(), before + 1);
+
+        // A result for a repository that has since been removed is dropped,
+        // and a failed listing must not prune anything.
+        let event = scanned(&app, Uuid::new_v4(), listed);
+        app.handle_event(event);
+        let epoch = app.worktree_epoch(repo_id);
+        app.handle_event(AppEvent::WorktreesScanned {
+            repo_id,
+            epoch,
+            listed: None,
         });
-        assert_eq!(app.state.repositories()[0].worktrees.len(), before + 2);
+        assert_eq!(app.state.repositories()[0].worktrees.len(), before + 1);
+    }
+
+    /// A scan that no longer lists a tracked worktree prunes it — someone ran
+    /// `git worktree remove` outside forestui — and when it was the worktree
+    /// on screen, the selection falls back to its repository.
+    #[tokio::test]
+    async fn a_scan_prunes_worktrees_git_no_longer_lists() {
+        let (dir, mut app) = app_with_fixture();
+        let repo_id = app.state.repositories()[0].id;
+
+        app.handle_key(key(KeyCode::Down));
+        let selected = app.state.selection.worktree_id.expect("a worktree");
+
+        let mut listed = scan_listing(&app, &[]);
+        let removed_path = app
+            .state
+            .find_worktree(selected)
+            .map(|(_, w)| w.path.clone())
+            .expect("the selected worktree");
+        listed.retain(|info| info.path != removed_path);
+
+        let event = scanned(&app, repo_id, listed);
+        app.handle_event(event);
+
+        assert!(app.state.find_worktree(selected).is_none());
+        assert_eq!(app.state.selection.repository_id, Some(repo_id));
+        assert_eq!(app.state.selection.worktree_id, None);
+        let reloaded = AppState::load_from(dir.path().join(".forestui-config.json"));
+        assert!(
+            reloaded
+                .repositories()
+                .iter()
+                .flat_map(|r| &r.worktrees)
+                .all(|w| w.path != removed_path),
+            "the prune was never persisted"
+        );
+    }
+
+    /// A listing spawned before a mutation folded describes a state the
+    /// config has moved past; reconciling against it would revert the newer
+    /// change, so it must fold as stale.
+    #[tokio::test]
+    async fn a_scan_older_than_a_mutation_is_discarded() {
+        let (dir, mut app) = app_with_fixture();
+        let repo_id = app.state.repositories()[0].id;
+
+        // Captured now, delivered later: the listing predates the rename.
+        let stale = scanned(&app, repo_id, scan_listing(&app, &[]));
+
+        app.handle_key(key(KeyCode::Down));
+        let worktree_id = app.state.selection.worktree_id.expect("a worktree");
+        app.handle_event(AppEvent::WorktreeBranchRenamed {
+            worktree_id,
+            branch: "feat/renamed".into(),
+        });
+
+        app.handle_event(stale);
+        assert_eq!(
+            app.state
+                .find_worktree(worktree_id)
+                .map(|(_, w)| w.branch.as_str()),
+            Some("feat/renamed"),
+            "the stale listing reverted the rename"
+        );
+        let reloaded = AppState::load_from(dir.path().join(".forestui-config.json"));
+        assert!(
+            reloaded
+                .repositories()
+                .iter()
+                .flat_map(|r| &r.worktrees)
+                .any(|w| w.branch == "feat/renamed"),
+            "the reverted branch was persisted"
+        );
+    }
+
+    /// A worktree whose removal (or rename) is still in flight is not the
+    /// listing's to judge: git may have already deleted the directory, but
+    /// the removal's own fold owns both the state change and the toast.
+    #[tokio::test]
+    async fn a_scan_does_not_prune_a_worktree_with_a_removal_in_flight() {
+        let (_dir, mut app) = app_with_fixture();
+        let repo_id = app.state.repositories()[0].id;
+        let worktree_id = app.state.repositories()[0].worktrees[0].id;
+        app.removals_in_flight.insert(worktree_id);
+
+        let mut listed = scan_listing(&app, &[]);
+        let removed_path = app.state.repositories()[0].worktrees[0].path.clone();
+        listed.retain(|info| info.path != removed_path);
+
+        let event = scanned(&app, repo_id, listed);
+        app.handle_event(event);
+        assert!(
+            app.state.find_worktree(worktree_id).is_some(),
+            "the scan pruned an entry whose removal fold still owns it"
+        );
+    }
+
+    /// Focus return and the periodic tick are the standing triggers — the
+    /// promise that an agent's worktree appears without being asked for.
+    #[tokio::test]
+    async fn focus_return_and_the_tick_kick_a_sweep() {
+        let (_dir, mut app) = app_with_fixture();
+
+        app.handle_event(AppEvent::Term(
+            ratatui::crossterm::event::Event::FocusGained,
+        ));
+        assert!(
+            !app.worktree_scans_in_flight.is_empty(),
+            "focus return did not start a scan"
+        );
+
+        app.worktree_scans_in_flight.clear();
+        app.last_worktree_scan = Instant::now() - WORKTREE_SCAN_INTERVAL;
+        app.handle_event(AppEvent::Tick);
+        assert!(
+            !app.worktree_scans_in_flight.is_empty(),
+            "the periodic sweep did not start a scan"
+        );
+    }
+
+    /// When a scan corrects the branch of the worktree on screen, the rename
+    /// input must be reseeded — otherwise Enter renames the branch straight
+    /// back to the stale value it still shows.
+    #[tokio::test]
+    async fn branch_drift_on_the_selected_worktree_reseeds_the_rename_input() {
+        let (_dir, mut app) = app_with_fixture();
+        let repo_id = app.state.repositories()[0].id;
+        app.handle_key(key(KeyCode::Down));
+        let worktree_id = app.state.selection.worktree_id.expect("a worktree");
+
+        let mut listed = scan_listing(&app, &[]);
+        let path = app
+            .state
+            .find_worktree(worktree_id)
+            .map(|(_, w)| w.path.clone())
+            .expect("the selected worktree");
+        for info in &mut listed {
+            if info.path == path {
+                info.branch = Some("feat/drifted".into());
+            }
+        }
+
+        // The pane's async content must survive: the path did not change, so
+        // a full reload here would only reset the reader's scroll and drop
+        // the sessions list back to Loading on every external checkout.
+        app.sessions = Some(Vec::new());
+
+        let event = scanned(&app, repo_id, listed);
+        app.handle_event(event);
+        assert_eq!(
+            app.branch_input.value(),
+            "feat/drifted",
+            "the rename input still shows the branch git no longer has"
+        );
+        assert!(
+            app.sessions.is_some(),
+            "a branch drift reloaded the whole pane"
+        );
     }
 
     /// A branch rename that git refuses must leave no trace. The name used to
@@ -1473,24 +1851,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_import_that_lands_late_does_not_steal_the_selection() {
-        let (_dir, mut app) = app_with_fixture();
+    async fn a_scan_that_lands_late_does_not_steal_the_selection() {
+        let (dir, mut app) = app_with_fixture();
         let repo_id = app.state.repositories()[0].id;
 
-        // The user moved on to a worktree while the import was still running.
+        // The user moved on to a worktree while the scan was still running.
         app.handle_key(key(KeyCode::Down));
         let selected = app.state.selection.worktree_id.expect("a worktree");
         app.sessions = Some(Vec::new());
 
-        app.handle_event(AppEvent::WorktreesImported {
-            repo_id,
-            worktrees: vec![Worktree::new("i1".into(), "main".into(), "/tmp/i1".into())],
-        });
+        let adhoc = dir.path().join("late-adhoc");
+        std::fs::create_dir_all(&adhoc).unwrap();
+        let listed = scan_listing(&app, &[(&adhoc, "feat/late")]);
+        let event = scanned(&app, repo_id, listed);
+        app.handle_event(event);
 
         assert_eq!(
             app.state.selection.worktree_id,
             Some(selected),
-            "the import yanked the cursor back to the repository"
+            "the scan yanked the cursor back to the repository"
         );
         assert!(
             app.sessions.is_some(),

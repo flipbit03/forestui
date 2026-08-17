@@ -375,8 +375,9 @@ fn arrow(glyph: char, direction: Direction, focused: bool, index: usize) -> Cont
 // ----------------------------------------------------------- Add repository
 
 fn add_repository(frame: &mut Frame, modal: &AddRepositoryModal, area: Rect, hits: &mut Hits) {
-    // Label, input, status, gap, checkbox, gap, buttons.
-    let rect = widgets::centered_rect(WIDTH, CHROME + 13, area);
+    // Label, input, status, gap, buttons. No import checkbox: existing
+    // worktrees are adopted by the reconcile scan, not a one-shot choice.
+    let rect = widgets::centered_rect(WIDTH, CHROME + 9, area);
     let mut column = dialog(frame, rect, "Add Repository", theme::title());
 
     column.line(frame, widgets::section("Repository Path"));
@@ -395,19 +396,6 @@ fn add_repository(frame: &mut Frame, modal: &AddRepositoryModal, area: Rect, hit
         theme::secondary()
     };
     column.text(frame, status, style);
-    column.gap();
-
-    column.controls(
-        frame,
-        hits,
-        vec![checkbox(
-            "Import existing worktrees",
-            modal.import_worktrees,
-            modal.focus == AddRepositoryModal::FOCUS_IMPORT,
-            AddRepositoryModal::FOCUS_IMPORT,
-        )],
-        false,
-    );
     column.gap();
     column.controls(
         frame,
@@ -1285,7 +1273,6 @@ mod tests {
             .set_value(dir.path().to_string_lossy().to_string());
         let screen = render(&Modal::AddRepository(modal), 100, 20);
         assert!(screen.contains("Not a git repository"), "{screen}");
-        assert!(screen.contains("[ ] Import existing worktrees"), "{screen}");
     }
 
     #[test]
@@ -1384,10 +1371,6 @@ mod tests {
         let (screen, hits) = render_with_hits(&add, 100, 20);
         for (needle, index) in [
             ("Enter path or paste", AddRepositoryModal::FOCUS_PATH),
-            (
-                "│ [ ] Import existing worktrees │",
-                AddRepositoryModal::FOCUS_IMPORT,
-            ),
             ("│ Add Repository │", AddRepositoryModal::FOCUS_ADD),
             ("│ Cancel │", AddRepositoryModal::FOCUS_CANCEL),
         ] {

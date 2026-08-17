@@ -157,6 +157,9 @@ impl App {
             KeyCode::Char('r') => {
                 self.rebuild_rows();
                 self.reload_detail();
+                // Refresh is the gesture for "I know something changed" — it
+                // must rescan worktrees too, not just repaint what is tracked.
+                self.scan_all_worktrees();
             }
             KeyCode::Char('A') => {
                 self.state.show_archived = !self.state.show_archived;
