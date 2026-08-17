@@ -383,23 +383,36 @@ pub async fn list_worktrees(repo_path: &str) -> GitResult<Vec<WorktreeInfo>> {
 }
 
 /// Parse `git worktree list --porcelain` output.
+///
+/// A bare repository's own entry has no `HEAD` line — just `worktree <path>`
+/// and `bare` — and must still be emitted: git puts the main entry first, and
+/// a caller that skips the main checkout *by position* would otherwise skip a
+/// real worktree in a bare-plus-worktrees layout instead.
 pub fn parse_worktree_porcelain(stdout: &str) -> Vec<WorktreeInfo> {
     let mut worktrees = Vec::new();
     let mut current_path: Option<String> = None;
     let mut current_head: Option<String> = None;
     let mut current_branch: Option<String> = None;
+    let mut current_bare = false;
 
     let flush = |worktrees: &mut Vec<WorktreeInfo>,
                  path: &mut Option<String>,
                  head: &mut Option<String>,
-                 branch: &mut Option<String>| {
-        if let (Some(p), Some(h)) = (path.clone(), head.clone()) {
+                 branch: &mut Option<String>,
+                 bare: &mut bool| {
+        if let Some(p) = path.take()
+            && (head.is_some() || *bare)
+        {
             worktrees.push(WorktreeInfo {
                 path: p,
-                head: h,
+                head: head.clone().unwrap_or_default(),
                 branch: branch.clone(),
             });
         }
+        *path = None;
+        *head = None;
+        *branch = None;
+        *bare = false;
     };
 
     for raw in stdout.split('\n') {
@@ -410,24 +423,25 @@ pub fn parse_worktree_porcelain(stdout: &str) -> Vec<WorktreeInfo> {
                 &mut current_path,
                 &mut current_head,
                 &mut current_branch,
+                &mut current_bare,
             );
             current_path = Some(rest.to_string());
-            current_head = None;
-            current_branch = None;
         } else if let Some(rest) = line.strip_prefix("HEAD ") {
             current_head = Some(rest.to_string());
         } else if let Some(rest) = line.strip_prefix("branch ") {
             current_branch = Some(rest.replace("refs/heads/", ""));
-        } else if line.is_empty() && current_path.is_some() && current_head.is_some() {
+        } else if line == "bare" {
+            current_bare = true;
+        } else if line.is_empty() {
+            // Entries are blank-line separated; a blank with nothing pending
+            // flushes nothing.
             flush(
                 &mut worktrees,
                 &mut current_path,
                 &mut current_head,
                 &mut current_branch,
+                &mut current_bare,
             );
-            current_path = None;
-            current_head = None;
-            current_branch = None;
         }
     }
     flush(
@@ -435,6 +449,7 @@ pub fn parse_worktree_porcelain(stdout: &str) -> Vec<WorktreeInfo> {
         &mut current_path,
         &mut current_head,
         &mut current_branch,
+        &mut current_bare,
     );
     worktrees
 }
@@ -565,6 +580,21 @@ mod tests {
         assert_eq!(parsed[1].branch.as_deref(), Some("feat/x"));
         assert_eq!(parsed[2].branch, None);
         assert_eq!(parsed[2].head, "000111");
+    }
+
+    /// A bare repository's entry has no HEAD line and must still come out
+    /// first — consumers skip the main checkout by position, and dropping the
+    /// bare entry would make them skip a real worktree instead.
+    #[test]
+    fn porcelain_parsing_keeps_the_bare_entry() {
+        let out = "worktree /srv/repo.git\nbare\n\
+                   \nworktree /srv/wt-one\nHEAD abc123\nbranch refs/heads/main\n";
+        let parsed = parse_worktree_porcelain(out);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].path, "/srv/repo.git");
+        assert_eq!(parsed[0].branch, None);
+        assert_eq!(parsed[1].path, "/srv/wt-one");
+        assert_eq!(parsed[1].branch.as_deref(), Some("main"));
     }
 
     #[tokio::test]

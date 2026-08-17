@@ -511,14 +511,23 @@ impl App {
                 // the git repair — runs off the loop; a slow disk must not
                 // freeze the UI mid-keystroke. The result comes back as an
                 // event and only the main loop touches state.
+                //
+                // While it runs, a worktree scan must not act on what a
+                // listing says about this entry: after `git worktree repair`
+                // the listing shows the new path while the config still holds
+                // the old one, which reads as "removed" to the reconcile.
+                // Every exit below releases the protection by event.
+                self.renames_in_flight.insert(worktree_id);
                 let tx = self.tx.clone();
                 tokio::spawn(async move {
                     if tokio::fs::try_exists(&new_path).await.unwrap_or(false) {
                         tx.error("Path already exists");
+                        tx.send(AppEvent::WorktreeRenameAborted { worktree_id });
                         return;
                     }
                     if let Err(error) = tokio::fs::rename(&old_path, &new_path).await {
                         tx.error(format!("Rename failed: {error}"));
+                        tx.send(AppEvent::WorktreeRenameAborted { worktree_id });
                         return;
                     }
                     let (migrate_old, migrate_new) = (old_path.clone(), new_path.clone());
@@ -544,6 +553,10 @@ impl App {
                     return;
                 }
                 let worktree_path = worktree.path.clone();
+                // Reconcile-protected like the directory rename: a listing
+                // captured mid-rename must not "correct" the branch either
+                // direction while git is still deciding.
+                self.renames_in_flight.insert(worktree_id);
                 let tx = self.tx.clone();
                 let requested = new_branch.clone();
                 tokio::spawn(async move {
@@ -555,7 +568,10 @@ impl App {
                             worktree_id,
                             branch: requested,
                         }),
-                        Err(error) => tx.error(format!("Branch rename failed: {error}")),
+                        Err(error) => {
+                            tx.error(format!("Branch rename failed: {error}"));
+                            tx.send(AppEvent::WorktreeRenameAborted { worktree_id });
+                        }
                     }
                 });
             }

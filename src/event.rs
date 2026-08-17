@@ -90,10 +90,21 @@ pub enum AppEvent {
     /// and keeps state untouched, because "could not list" must never read as
     /// "there are none" and prune every tracked worktree.
     /// Single-writer for the same reason as [`AppEvent::WorktreeAdded`].
+    ///
+    /// `epoch` is the repository's mutation counter at the moment the scan
+    /// was spawned. A create, remove, or rename folding while git ran bumps
+    /// the counter, and the fold discards a mismatched result: that listing
+    /// describes a state the config has already moved past, and reconciling
+    /// against it would revert the newer change.
     WorktreesScanned {
         repo_id: Uuid,
+        epoch: u64,
         listed: Option<Vec<crate::services::git::WorktreeInfo>>,
     },
+    /// A rename task ended without renaming (the target existed, or the move
+    /// itself failed). Exists so the fold can release the rename's
+    /// reconcile-protection; the error itself was already notified.
+    WorktreeRenameAborted { worktree_id: Uuid },
     /// A worktree's directory was renamed on disk; fold the new name and path
     /// into state. Single-writer for the same reason as
     /// [`AppEvent::WorktreeAdded`].

@@ -294,8 +294,8 @@ modules are stubs totalling 18 lines.
 | Claude session discovery, skip rules, 100-char clip, blank-line collapse, newest-first | Identical | `src/services/claude_session.rs:30-188`, 5 tests at `:229-313` |
 | Session directory migration on rename | Identical | `src/services/claude_session.rs:191-227` ↔ `claude_session.py` |
 | Relative-time phrasing | Changed | Hand-rolled `naturaltime` (`src/util.rs:51-87`) approximates `humanize`; matches on the tested cases (`:260-273`) but is not the same library and may differ at boundaries |
-| `Imported N worktrees` count | Fixed | Rust counts the worktrees it actually added (`src/app.rs:1247`); Python printed `len(worktrees) - 1`, over-reporting whenever entries inside the forest dir were skipped (`app.py:1016`) |
-| Worktrees already inside the forest dir are skipped on import | Identical | `src/app.rs:1230-1236` ↔ `app.py:1000-1007` |
+| `Imported N worktrees` count | Superseded | The one-shot import became the reconcile scan; its toast names what actually changed ("Detected worktree 'x'"), folded in `src/app/mod.rs` where a dropped result cannot be announced. Python printed `len(worktrees) - 1`, over-reporting whenever entries inside the forest dir were skipped (`app.py:1016`) |
+| Worktrees already inside the forest dir are skipped on import | Removed | The reconcile scan (`src/state.rs::reconcile_worktrees`) adopts every listed worktree regardless of location, deduplicating by path; Python's forest-dir skip (`app.py:1000-1007`) is gone with the import itself |
 | Config written on every mutation, non-atomically | Identical | `src/state.rs:44-54` ↔ `state.py:47-53`; `ARCHITECTURE.md`'s atomic-write recommendation was **not** implemented |
 | Unparseable config → empty state, file left intact until the first mutation | Identical | `src/state.rs:29-42`, tested at `:204-210`; UC-46 |
 | Unparseable `settings.json` → defaults | Identical | `src/services/settings.rs:51-56`, tested at `:75-91` |
@@ -609,7 +609,7 @@ but several rows have since been resolved and the file paths moved when
   per-frame `App::drawn_items` snapshot, so neither drift nor the
   list-grew-under-the-cursor race can fire the wrong action.
 - **R4 — closed (#34).** `StateChanged` no longer exists. Background tasks send
-  `WorktreeAdded` / `WorktreesImported` / `WorktreeRenamed`; the main loop is
+  `WorktreeAdded` / `WorktreesScanned` / `WorktreeRenamed`; the main loop is
   the single writer of the state file and carries the selection explicitly.
 - **R7 — fixed.** The release matrix is musl Linux x86_64 + aarch64 and macOS
   aarch64, matching `install.sh`, which now verifies checksums.
