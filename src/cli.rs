@@ -126,8 +126,14 @@ pub fn ensure_tmux(args: &Args) -> anyhow::Result<()> {
         .unwrap_or(false);
 
     if !session_exists {
-        // No session: create one with forestui as the initial command.
-        exec_tmux(&["new-session", "-s", &session, &command]);
+        // No session: create it detached so the server is live, tell that
+        // server the terminal is truecolor, then attach. Creating detached
+        // first is deliberate — `set-option` before any session exists lands
+        // on a transient empty server that tmux tears down, losing the
+        // setting (which is why forestui's own themes rendered as flat grey).
+        let _ = tmux_output(&["new-session", "-d", "-s", &session, &command]);
+        enable_truecolor();
+        exec_tmux(&["attach-session", "-t", &session]);
     }
 
     // The session is alive but forestui may have been killed inside it.
@@ -179,6 +185,17 @@ pub fn ensure_tmux(args: &Args) -> anyhow::Result<()> {
     }
 
     exec_tmux(&["attach-session", "-t", &grouped]);
+}
+
+/// Tell tmux the client terminal is truecolor so it stops downsampling
+/// forestui's 24-bit theme colours to the 256-colour palette. These are server
+/// options, appended so a user's own `terminal-features` are preserved. Must
+/// run against a live server (a session already created) — tmux discards
+/// options set on the empty transient server it spins up when none exists. The
+/// `Tc` override covers tmux < 3.2, which predates `terminal-features`.
+fn enable_truecolor() {
+    let _ = tmux_output(&["set-option", "-as", "terminal-features", ",*:RGB"]);
+    let _ = tmux_output(&["set-option", "-ag", "terminal-overrides", ",*:Tc"]);
 }
 
 fn which_tmux() -> Option<PathBuf> {
