@@ -8,7 +8,15 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
+/// A sidebar row wider than the sidebar, hovered: the full line and where to
+/// paint it. Returned by [`draw`] and rendered by the caller *after* the
+/// detail pane, so the revealed text wins the cells it spills onto.
+pub struct HoverReveal {
+    pub rect: Rect,
+    pub line: Line<'static>,
+}
+
+pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) -> Option<HoverReveal> {
     // `#sidebar-header-box { height: 3; padding: 1 0 0 0; border-bottom: solid }`
     // — a blank row, the centred status, then the rule that closes the box.
     let [header_area, tree_area] =
@@ -34,7 +42,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             Line::from(Span::styled("Press [a] to add one", theme::muted())),
         ];
         frame.render_widget(Paragraph::new(lines), inner);
-        return;
+        return None;
     }
 
     let hovered = match app.hovered {
@@ -99,6 +107,66 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             );
         }
     }
+
+    // A hovered row that does not fit reveals itself in full: its line is
+    // repainted from the same left edge, spilling over the divider onto the
+    // detail pane. Mouse-only by design — keyboard users see the same names
+    // in the detail pane header when they select the row.
+    let index = hovered?;
+    let row = app.rows.get(index)?;
+    let screen_row = index.checked_sub(offset)?;
+    if screen_row >= inner.height as usize {
+        return None;
+    }
+    let line = row_line(row);
+    if line.width() <= inner.width as usize {
+        return None;
+    }
+    // The reveal is a boxed tooltip: a bordered, elevated panel centred on
+    // the hovered row, so the spilled text is unmistakably an overlay rather
+    // than words leaking into the detail pane. Three rows tall, which is why
+    // it clamps inside the body — at the tree's last row the box shifts up a
+    // row instead of drawing its bottom border over the footer.
+    if area.height < 3 {
+        return None;
+    }
+    // The left border claims column 0 instead of pushing the text right:
+    // every row shape spends that cell on a one-column glyph (the tree
+    // angle, the twisty, padding), so the border chomps it and the name
+    // keeps its columns — hovering must never make the text jump.
+    let mut spans = line.spans;
+    if let Some(first) = spans.first_mut() {
+        let mut chars = first.content.chars();
+        chars.next();
+        *first = Span::styled(chars.as_str().to_string(), first.style);
+    }
+    let line = Line::from(spans);
+    let width = (line.width() as u16).saturating_add(2);
+    let right_edge = frame.area().right();
+    let y = (inner.y + screen_row as u16)
+        .saturating_sub(1)
+        .clamp(area.y, area.bottom().saturating_sub(3));
+    Some(HoverReveal {
+        rect: Rect {
+            x: inner.x,
+            y,
+            width: width.min(right_edge.saturating_sub(inner.x)),
+            height: 3,
+        },
+        line,
+    })
+}
+
+/// Paint a [`HoverReveal`]: the full row in a bordered box, over whatever the
+/// panes drew there.
+pub fn draw_hover_reveal(frame: &mut Frame, reveal: HoverReveal) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::border())
+        .style(Style::default().bg(theme::active().bg_elevated));
+    let text_area = block.inner(reveal.rect);
+    frame.render_widget(block, reveal.rect);
+    frame.render_widget(Paragraph::new(reveal.line), text_area);
 }
 
 /// Cells the `▾`/`▸` twisty and its trailing space occupy.
@@ -134,7 +202,19 @@ fn draw_gh_status(frame: &mut Frame, app: &App, area: Rect) {
 fn row_to_item(row: &SidebarRow, hovered: bool) -> ListItem<'static> {
     // `ListItem`'s own style paints the whole row, so hover reads as a band
     // across the sidebar exactly as Textual's `ListItem:hover` did.
-    let item = match row {
+    let item = ListItem::new(row_line(row));
+    if hovered {
+        item.style(Style::default().bg(theme::active().bg_hover))
+    } else {
+        item
+    }
+}
+
+/// One sidebar row as its full, unclipped line. The list clips this at the
+/// divider; the hover reveal draws it whole — both must come from here or the
+/// revealed text could disagree with the row it replaces.
+fn row_line(row: &SidebarRow) -> Line<'static> {
+    match row {
         SidebarRow::Repository {
             name,
             has_worktrees,
@@ -150,10 +230,10 @@ fn row_to_item(row: &SidebarRow, hovered: bool) -> ListItem<'static> {
                 (true, false) => "▼ ",
                 (true, true) => "▶ ",
             };
-            ListItem::new(Line::from(vec![
+            Line::from(vec![
                 Span::styled(twisty, theme::muted()),
                 Span::styled(name.clone(), theme::title()),
-            ]))
+            ])
         }
         SidebarRow::Worktree {
             name,
@@ -169,23 +249,17 @@ fn row_to_item(row: &SidebarRow, hovered: bool) -> ListItem<'static> {
             if let Some(branch) = branch {
                 spans.push(Span::styled(format!(" [{branch}]"), theme::accent()));
             }
-            ListItem::new(Line::from(spans))
+            Line::from(spans)
         }
-        SidebarRow::ArchivedHeader => ListItem::new(Line::from(Span::styled(
-            " Archived",
-            theme::section_header(),
-        ))),
+        SidebarRow::ArchivedHeader => {
+            Line::from(Span::styled(" Archived", theme::section_header()))
+        }
         SidebarRow::ArchivedWorktree {
             name, repo_name, ..
-        } => ListItem::new(Line::from(Span::styled(
+        } => Line::from(Span::styled(
             format!("   {name} ({repo_name})"),
             theme::muted(),
-        ))),
-    };
-    if hovered {
-        item.style(Style::default().bg(theme::active().bg_hover))
-    } else {
-        item
+        )),
     }
 }
 
