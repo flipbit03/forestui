@@ -43,8 +43,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.sidebar_rect = sidebar_area;
     app.detail_rect = detail_area;
 
-    sidebar::draw(frame, app, sidebar_area);
+    let hover_reveal = sidebar::draw(frame, app, sidebar_area);
     detail::draw(frame, app, detail_area);
+    // Painted after the detail pane so a hovered row that is too wide for the
+    // sidebar spills its full text over the divider instead of under it.
+    // Skipped under modals: their backdrop repaints the panes anyway, and the
+    // theme picker (which keeps the panes visible as its preview) must not
+    // have a stray hover band floating through it.
+    if app.modals.is_empty()
+        && let Some(reveal) = hover_reveal
+    {
+        sidebar::draw_hover_reveal(frame, reveal);
+    }
     draw_footer(frame, app, footer_area);
     // Toasts are hidden while any modal is open — under most modals the
     // backdrop wipes them anyway; the picker skips the backdrop, so it has to
@@ -286,6 +296,69 @@ mod tests {
         assert!(
             rows_with_text > 1,
             "the notification text occupies {rows_with_text} row(s); it must wrap"
+        );
+    }
+
+    /// Hovering a row wider than the sidebar reveals the whole name across
+    /// the divider; the same row un-hovered stays clipped at the divider.
+    #[tokio::test]
+    async fn a_hovered_overlong_row_reveals_past_the_divider() {
+        use crate::app::test_support::app_with_fixture;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let long_name = "a-worktree-name-far-wider-than-the-sidebar-allows";
+        let (_dir, mut app) = app_with_fixture();
+        if let Some(crate::app::SidebarRow::Worktree { name, .. }) = app.rows.get_mut(1) {
+            *name = long_name.into();
+        } else {
+            panic!("fixture row 1 is not a worktree");
+        }
+
+        let row_text = |terminal: &Terminal<TestBackend>, row: u16| -> String {
+            let buffer = terminal.backend().buffer();
+            (0..buffer.area.width)
+                .map(|col| buffer[(col, row)].symbol().chars().next().unwrap_or(' '))
+                .collect()
+        };
+        // Header row + the 3-row gh-status box put the first tree row at y=4;
+        // the mutated worktree is the row below it.
+        let worktree_row = 5;
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("test terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        assert!(
+            !row_text(&terminal, worktree_row).contains(long_name),
+            "an un-hovered overlong row must clip at the divider"
+        );
+
+        app.hovered = Some(HitTarget::SidebarRow(1));
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let revealed = row_text(&terminal, worktree_row);
+        let end = revealed
+            .find(long_name)
+            .expect("the hovered row must reveal its full name across the divider")
+            + long_name.len();
+        assert!(
+            revealed[end..].trim_start().starts_with('│'),
+            "the reveal must close with a right border, got: {:?}",
+            &revealed[end..]
+        );
+        // Zero horizontal shift: the left border chomps the one-cell tree
+        // angle in column 0 and everything after it keeps its column.
+        assert!(
+            revealed.starts_with("│─ "),
+            "the left border must replace the angle without shifting the text, got: {:?}",
+            &revealed[..8]
+        );
+        // The box: its border rows sit on the neighbouring lines.
+        assert!(
+            row_text(&terminal, worktree_row - 1).contains('┌'),
+            "the reveal must draw a top border above the row"
+        );
+        assert!(
+            row_text(&terminal, worktree_row + 1).contains('└'),
+            "the reveal must draw a bottom border below the row"
         );
     }
 
