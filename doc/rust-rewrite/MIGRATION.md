@@ -230,7 +230,7 @@ modules are stubs totalling 18 lines.
 | Add Repository live validation: `Path does not exist` / `Path is not a directory` / `Not a git repository` / `Repository: <name>` | Identical | `src/modal.rs:224-244` ↔ `modals.py:85-119` |
 | Add Repository `Enter` in the path field submits | Identical | `src/modal.rs:276` ↔ `modals.py:80-83` |
 | Add Repository is a hard no-op unless `<path>/.git` exists | Identical | `src/modal.rs:246-252`, tested at `:1100-1113` |
-| `Import existing worktrees` checkbox | Identical | `src/modal.rs:272-275` |
+| `Import existing worktrees` checkbox | Removed | The one-shot import became a standing reconcile: `git worktree list` is scanned on add, startup, focus, selection and every 30s, adopting/pruning worktrees changed outside forestui (`src/state.rs::reconcile_worktrees`) |
 | Worktree name sanitised to `[A-Za-z0-9-_]` as you type | Identical | `src/modal.rs:355-361` ↔ `modals.py:274-276`, tested at `:1124-1142` |
 | Branch auto-fills `<prefix><name>` in New Branch mode | Identical | `src/modal.rs:430-436` |
 | Path preview under the name field | Identical | `src/modal.rs:363-369` |

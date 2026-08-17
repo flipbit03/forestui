@@ -80,10 +80,7 @@ impl App {
 
     fn apply_modal_result(&mut self, result: ModalResult) {
         match result {
-            ModalResult::RepositoryAdded {
-                path,
-                import_worktrees,
-            } => self.add_repository(path, import_worktrees),
+            ModalResult::RepositoryAdded { path } => self.add_repository(path),
             ModalResult::WorktreeCreated {
                 repo_id,
                 name,
@@ -565,65 +562,21 @@ impl App {
         }
     }
 
-    fn add_repository(&mut self, path: String, import_worktrees: bool) {
+    fn add_repository(&mut self, path: String) {
         let name = Path::new(&path)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.clone());
-        let repo = Repository::new(name, path.clone());
+        let repo = Repository::new(name, path);
         let repo_id = repo.id;
         self.state.add_repository(repo);
         self.state.select_repository(repo_id);
         self.rebuild_rows();
         self.sync_sidebar_index();
         self.reload_detail();
-
-        if import_worktrees {
-            self.import_existing_worktrees(repo_id, path);
-        }
-    }
-
-    fn import_existing_worktrees(&mut self, repo_id: Uuid, source_path: String) {
-        let forest_dir = settings_service::get_forest_path();
-        let tx = self.tx.clone();
-
-        tokio::spawn(async move {
-            let listed = match git::list_worktrees(&source_path).await {
-                Ok(listed) => listed,
-                Err(error) => {
-                    tx.error(format!("Failed to import worktrees: {error}"));
-                    return;
-                }
-            };
-
-            let source_resolved = std::fs::canonicalize(&source_path).ok();
-            let mut worktrees = Vec::new();
-
-            for info in &listed {
-                let candidate = std::fs::canonicalize(&info.path).ok();
-                if candidate.is_some() && candidate == source_resolved {
-                    continue;
-                }
-                if info
-                    .path
-                    .starts_with(&forest_dir.to_string_lossy().to_string())
-                {
-                    continue;
-                }
-                let name = Path::new(&info.path)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| info.path.clone());
-                let branch = info.branch.clone().unwrap_or_else(|| "HEAD".to_string());
-                worktrees.push(Worktree::new(name, branch, info.path.clone()));
-            }
-
-            // The main loop folds these into state, saves, and announces the
-            // result; writing the config file from here would race a save the
-            // user's next action makes, and announcing from here would toast a
-            // success even when the fold drops a late result.
-            tx.send(AppEvent::WorktreesImported { repo_id, worktrees });
-        });
+        // Existing worktrees appear via the same reconcile scan that keeps
+        // them fresh afterwards — there is no one-shot import to opt into.
+        self.scan_worktrees(repo_id);
     }
 
     fn create_worktree(

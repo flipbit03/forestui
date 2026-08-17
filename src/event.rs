@@ -84,11 +84,15 @@ pub enum AppEvent {
         repo_id: Uuid,
         worktree: Box<Worktree>,
     },
-    /// An import scan finished; fold the discovered worktrees into state.
+    /// A `git worktree list` scan finished; the fold reconciles the config
+    /// against it (git is the source of truth for which worktrees exist).
+    /// `None` means git itself failed — the fold releases the in-flight guard
+    /// and keeps state untouched, because "could not list" must never read as
+    /// "there are none" and prune every tracked worktree.
     /// Single-writer for the same reason as [`AppEvent::WorktreeAdded`].
-    WorktreesImported {
+    WorktreesScanned {
         repo_id: Uuid,
-        worktrees: Vec<Worktree>,
+        listed: Option<Vec<crate::services::git::WorktreeInfo>>,
     },
     /// A worktree's directory was renamed on disk; fold the new name and path
     /// into state. Single-writer for the same reason as
