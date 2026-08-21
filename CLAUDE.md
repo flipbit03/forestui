@@ -6,10 +6,18 @@ This file provides context for AI assistants (like Claude) working on forestui.
 
 **This rule applies to every task in this repo, not just testing.**
 
-The user is almost certainly running their own forestui inside tmux *right
-now*. A bare `tmux` command from a shell talks to their live server, and the
-very next command is always the one that renames, kills, or reorders a window
-they are actually using. This has gone wrong repeatedly.
+Whoever works on forestui is, almost by definition, *running* forestui. That
+is what makes this different from an ordinary "be careful" note: a live tmux
+server is up right now, holding their actual work — editors mid-edit,
+terminals mid-command, Claude sessions mid-conversation, laid out the way they
+left them. It is not a risk to weigh against convenience; it is the default
+state of this repo's development environment, and a bare `tmux` command from a
+shell attaches straight to it.
+
+The session running this task is very likely one of those windows — forestui
+opens Claude sessions in tmux windows, and this is a Claude session. A stray
+`rename-window`, `kill-window` or `kill-server` can destroy the user's work,
+up to and including the conversation that issued the command.
 
 - **Never run a bare `tmux` command** — not to look, not to list, not "just
   once". `tmux list-sessions` is as dangerous as `tmux kill-server`, because
@@ -19,8 +27,9 @@ they are actually using. This has gone wrong repeatedly.
 - **Exploring tmux behaviour is not an exception.** Learning what a tmux
   command does, probing options or hooks, reproducing something from the
   docs — all of it goes on an isolated server under `tu`. A separate `-L`
-  socket is not a sanctioned workaround: one forgotten flag hits the live
-  server.
+  socket looks like it solves this, and it does not: it relies on never once
+  forgetting the flag, against a default that reaches the user's live
+  session.
 
 The `test-forestui` skill carries the full harness recipe, but it only loads
 when a task *looks* like forestui testing. Tasks that do not look like
