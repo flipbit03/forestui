@@ -250,6 +250,11 @@ write without writing any of them.
 
 Three pieces make it work, and each is load-bearing:
 
+The session is named on its **first prompt**, not at `SessionStart`. A title
+set before the session's UI is live is stored but never drawn, and the name
+badge on the input box is the only place Claude shows a session's name — so
+naming it at launch produced a correctly named session that looked unnamed.
+
 - **`@claude_birth_name`**, a tmux window option stamped when the window is
   created, answers one question: did forestui open this window? A window the
   user made by hand carries none and is left alone, as is a bare `claude` in a

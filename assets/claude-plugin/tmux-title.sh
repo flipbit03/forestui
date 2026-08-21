@@ -86,9 +86,15 @@ case "$mode" in
     tmux set-option -w -t "$TMUX_PANE" @claude_synced_name "$title" 2>/dev/null
     ;;
   push)
-    # Stop cannot set a title; the next prompt picks this up.
+    # Only on a prompt, never at SessionStart. A title set before the UI is
+    # live is stored but never drawn: the name badge on the input box, which is
+    # the one place Claude shows a session's name, renders from state the
+    # session picks up while running. Setting it at SessionStart therefore
+    # produced a correctly named session that looked unnamed. Waiting for the
+    # first prompt names it on turn one and draws the badge, exactly as
+    # /rename does. Stop cannot set a title at all.
     case "$event" in
-      SessionStart | UserPromptSubmit) ;;
+      UserPromptSubmit) ;;
       *) exit 0 ;;
     esac
     tmux set-option -w -t "$TMUX_PANE" @claude_synced_name "$window" 2>/dev/null

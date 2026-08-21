@@ -37,7 +37,7 @@ const EXECUTABLE: &str = "hooks/tmux-title.sh";
 
 /// Bumped whenever a shipped file changes, so an install by an older forestui
 /// is recognised as old rather than reported as the user having edited it.
-const SHIPPED_VERSION: &str = "2";
+const SHIPPED_VERSION: &str = "3";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
