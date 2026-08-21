@@ -62,46 +62,69 @@ fn jq_available() -> bool {
 /// running one.
 fn run_claude_plugin_action(action: cli::ClaudePluginAction) -> anyhow::Result<()> {
     use services::claude_plugin::{self, Status};
+    use std::fmt::Write as _;
 
     let dir = claude_plugin::plugin_dir();
-    println!("plugin:  {}", claude_plugin::PLUGIN_NAME);
-    println!("path:    {}", dir.display());
-    println!("status:  {}", claude_plugin::status().label());
+    let mut out = String::new();
+    let _ = writeln!(out, "plugin:  {}", claude_plugin::PLUGIN_NAME);
+    let _ = writeln!(out, "path:    {}", dir.display());
+    let _ = writeln!(out, "status:  {}", claude_plugin::status().label());
 
-    match action {
+    let result = match action {
         cli::ClaudePluginAction::Status => {
             if let Status::Drifted(files) = claude_plugin::status() {
                 for file in files {
-                    println!("modified: {file}");
+                    let _ = writeln!(out, "modified: {file}");
                 }
             }
-            println!();
-            println!("An install writes only these files. Your settings.json is not touched;");
-            println!("Claude discovers plugin directories on its own.");
+            let _ = writeln!(out);
+            let _ = writeln!(
+                out,
+                "An install writes only these files. Your settings.json is not touched;"
+            );
+            let _ = writeln!(out, "Claude discovers plugin directories on its own.");
             for path in claude_plugin::planned_paths() {
-                println!("  {}", path.display());
+                let _ = writeln!(out, "  {}", path.display());
             }
+            Ok(())
         }
-        cli::ClaudePluginAction::Install => {
-            claude_plugin::install(false).map_err(|e| anyhow::anyhow!(e))?;
-            println!();
-            println!("Installed. It takes effect in Claude sessions started from now on.");
+        cli::ClaudePluginAction::Install => claude_plugin::install(false).map(|()| {
+            let _ = writeln!(out);
+            let _ = writeln!(
+                out,
+                "Installed. It takes effect in Claude sessions started from now on."
+            );
+            let _ = writeln!(
+                out,
+                "Renaming a forestui tab now renames the Claude session in it."
+            );
+            let _ = writeln!(
+                out,
+                "To stop that, uninstall — there is no per-tab switch to remember."
+            );
             if !jq_available() {
-                println!();
-                println!("Note: `jq` is not on PATH. The hook reads the session's own name");
-                println!("with it, so until jq is installed the sync does nothing at all");
-                println!("rather than half of it.");
+                let _ = writeln!(out);
+                let _ = writeln!(
+                    out,
+                    "Note: `jq` is not on PATH. The hook reads the session's own name"
+                );
+                let _ = writeln!(
+                    out,
+                    "with it, so until jq is installed the sync does nothing at all"
+                );
+                let _ = writeln!(out, "rather than half of it.");
             }
-            println!("Renaming a forestui tab now renames the Claude session in it.");
-            println!("To stop that, uninstall — there is no per-tab switch to remember.");
-        }
-        cli::ClaudePluginAction::Uninstall => {
-            claude_plugin::uninstall().map_err(|e| anyhow::anyhow!(e))?;
-            println!();
-            println!("Removed.");
-        }
-    }
-    Ok(())
+        }),
+        cli::ClaudePluginAction::Uninstall => claude_plugin::uninstall().map(|()| {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "Removed.");
+        }),
+    };
+
+    // Written once, and a write error is dropped: piping this into `head`
+    // closes the pipe, and `println!` turns that into a panic.
+    let _ = std::io::stdout().write_all(out.as_bytes());
+    result.map_err(|e| anyhow::anyhow!(e))
 }
 
 async fn run(self_update: bool) -> anyhow::Result<()> {
