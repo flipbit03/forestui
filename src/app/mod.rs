@@ -1186,6 +1186,7 @@ mod tests {
         assert_eq!(app.detail_items().len(), baseline + 1);
 
         app.sessions = Some(vec![ClaudeSession {
+            custom_title: None,
             id: "s1".into(),
             title: "t".into(),
             last_message: String::new(),

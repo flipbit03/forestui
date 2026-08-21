@@ -645,6 +645,7 @@ mod tests {
 
     fn a_session() -> ClaudeSession {
         ClaudeSession {
+            custom_title: None,
             id: "abc".into(),
             title: "Refactor the detail pane".into(),
             last_message: "and then some".into(),

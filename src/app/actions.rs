@@ -290,6 +290,16 @@ impl App {
             .map(|s| s.id.clone())
     }
 
+    /// The name the user gave this session, if any. Resuming a named session
+    /// names its window after the session, so the tab says which conversation
+    /// it holds rather than repeating the worktree already selected on screen.
+    fn session_window_name(&self, index: usize) -> Option<String> {
+        self.sessions
+            .as_ref()
+            .and_then(|s| s.get(index))
+            .and_then(|s| s.custom_title.clone())
+    }
+
     pub fn run_action(&mut self, action: Action) {
         let Some(path) = self.state.selected_path() else {
             return;
@@ -324,28 +334,31 @@ impl App {
             Action::Editor => self.open_in_editor(&path),
             Action::Terminal => self.open_in_terminal(&path),
             Action::Files => self.open_in_file_manager(&path),
-            Action::ClaudeNew => self.start_claude(&path, None, false, None),
-            Action::ClaudeYolo => self.start_claude(&path, None, true, None),
+            Action::ClaudeNew => self.start_claude(&path, None, false, None, None),
+            Action::ClaudeYolo => self.start_claude(&path, None, true, None, None),
             Action::ClaudeCustom(index) => {
                 if let Some(button) = self.custom_button(index) {
-                    self.start_claude(&path, None, false, Some(button));
+                    self.start_claude(&path, None, false, Some(button), None);
                 }
             }
             Action::ResumeSession(index) => {
                 if let Some(id) = self.session_id(index) {
-                    self.start_claude(&path, Some(&id), false, None);
+                    let seed = self.session_window_name(index);
+                    self.start_claude(&path, Some(&id), false, None, seed);
                 }
             }
             Action::ResumeYolo(index) => {
                 if let Some(id) = self.session_id(index) {
-                    self.start_claude(&path, Some(&id), true, None);
+                    let seed = self.session_window_name(index);
+                    self.start_claude(&path, Some(&id), true, None, seed);
                 }
             }
             Action::ResumeCustom { button, session } => {
                 if let (Some(id), Some(button)) =
                     (self.session_id(session), self.custom_button(button))
                 {
-                    self.start_claude(&path, Some(&id), false, Some(button));
+                    let seed = self.session_window_name(session);
+                    self.start_claude(&path, Some(&id), false, Some(button), seed);
                 }
             }
             Action::RefreshIssues => {
@@ -453,8 +466,9 @@ impl App {
         resume_session_id: Option<&str>,
         yolo: bool,
         custom: Option<CustomClaudeButton>,
+        seed_name: Option<String>,
     ) {
-        let name = self.state.tmux_window_name(path);
+        let name = seed_name.unwrap_or_else(|| self.state.tmux_window_name(path));
         let window = tmux::create_claude_window(
             &name,
             path,

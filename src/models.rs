@@ -200,7 +200,12 @@ impl Repository {
 #[derive(Debug, Clone)]
 pub struct ClaudeSession {
     pub id: String,
+    /// What to show in the list: the name Claude records, else the first prompt.
     pub title: String,
+    /// A name a human chose via `/rename`, if any. Only this is eligible to
+    /// seed a tmux window name — an ai-title is a sentence and the first-prompt
+    /// fallback is 100 characters of prose; neither is a tab name.
+    pub custom_title: Option<String>,
     pub last_message: String,
     pub last_timestamp: DateTime<Utc>,
     pub message_count: usize,

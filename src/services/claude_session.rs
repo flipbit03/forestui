@@ -135,11 +135,20 @@ fn text_content(data: &serde_json::Value) -> Option<String> {
     None
 }
 
+/// A non-empty string field, trimmed. Claude re-appends title records, so the
+/// last one wins; an empty value is treated as no name at all.
+fn title_field(data: &serde_json::Value, key: &str) -> Option<String> {
+    let value = data.get(key)?.as_str()?.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
 pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
     let session_id = file_path.file_stem()?.to_string_lossy().to_string();
     let raw = std::fs::read_to_string(file_path).ok()?;
 
-    let mut title = String::new();
+    let mut first_prompt = String::new();
+    let mut custom_title: Option<String> = None;
+    let mut ai_title: Option<String> = None;
     let mut last_message = String::new();
     let mut last_timestamp: Option<DateTime<Utc>> = None;
     let mut message_count = 0usize;
@@ -160,6 +169,17 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
             last_timestamp = Some(ts);
         }
 
+        // The names Claude itself records. A forked transcript carries the
+        // parent's entries verbatim, so only entries stamped with this file's
+        // own session id are allowed to name it.
+        if data.get("sessionId").and_then(|s| s.as_str()) == Some(session_id.as_str()) {
+            match data.get("type").and_then(|t| t.as_str()) {
+                Some("custom-title") => custom_title = title_field(&data, "customTitle"),
+                Some("ai-title") => ai_title = title_field(&data, "aiTitle"),
+                _ => {}
+            }
+        }
+
         let is_user = data.get("type").and_then(|t| t.as_str()) == Some("user")
             || data.get("role").and_then(|r| r.as_str()) == Some("user");
         if is_user {
@@ -170,8 +190,8 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
             {
                 let normalized = collapse_blank_lines(&content);
                 let clipped: String = normalized.chars().take(100).collect();
-                if title.is_empty() {
-                    title = clipped.clone();
+                if first_prompt.is_empty() {
+                    first_prompt = clipped.clone();
                 }
                 last_message = clipped;
             }
@@ -190,6 +210,13 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
             .unwrap_or_else(|_| Utc::now())
     });
 
+    let title = custom_title
+        .clone()
+        .or(ai_title)
+        .unwrap_or(first_prompt)
+        .trim()
+        .to_string();
+
     Some(ClaudeSession {
         id: session_id,
         title: if title.is_empty() {
@@ -197,6 +224,7 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
         } else {
             title
         },
+        custom_title,
         last_message,
         last_timestamp,
         message_count,
@@ -266,6 +294,58 @@ mod tests {
         let folder = path_to_claude_folder("/tmp");
         assert!(!folder.contains('/'));
         assert!(folder.starts_with('-') || folder.contains("tmp"));
+    }
+
+    /// The session list is only useful if it shows the name the user gave the
+    /// session. The first prompt is the last resort, not the first choice.
+    #[test]
+    fn title_prefers_the_recorded_name_over_the_first_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sess-name.jsonl");
+        std::fs::write(
+            &file,
+            "{\"type\":\"user\",\"timestamp\":\"2026-08-01T10:00:00Z\",\
+              \"message\":{\"content\":\"please refactor the flaky retry loop\"}}\n\
+             {\"type\":\"ai-title\",\"aiTitle\":\"Refactor the flaky retry loop\",\
+              \"sessionId\":\"sess-name\"}\n",
+        )
+        .unwrap();
+
+        let ai = parse_session_file(&file).expect("a session with an ai title");
+        assert_eq!(ai.title, "Refactor the flaky retry loop");
+        assert_eq!(ai.custom_title, None, "an ai title is not a chosen name");
+
+        // A name the user chose outranks the generated one.
+        let mut raw = std::fs::read_to_string(&file).unwrap();
+        raw.push_str(
+            "{\"type\":\"custom-title\",\"customTitle\":\"retry loop\",\
+              \"sessionId\":\"sess-name\"}\n",
+        );
+        std::fs::write(&file, &raw).unwrap();
+
+        let named = parse_session_file(&file).expect("a named session");
+        assert_eq!(named.title, "retry loop");
+        assert_eq!(named.custom_title.as_deref(), Some("retry loop"));
+    }
+
+    /// A fork copies the parent's transcript verbatim, parent title records
+    /// included. Adopting those would name every fork after its parent.
+    #[test]
+    fn a_forked_transcript_does_not_inherit_the_parent_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("the-fork.jsonl");
+        std::fs::write(
+            &file,
+            "{\"type\":\"user\",\"timestamp\":\"2026-08-01T10:00:00Z\",\
+              \"message\":{\"content\":\"carried over from the parent\"}}\n\
+             {\"type\":\"custom-title\",\"customTitle\":\"the parent name\",\
+              \"sessionId\":\"the-parent\"}\n",
+        )
+        .unwrap();
+
+        let forked = parse_session_file(&file).expect("a forked session");
+        assert_eq!(forked.custom_title, None);
+        assert_eq!(forked.title, "carried over from the parent");
     }
 
     #[test]
