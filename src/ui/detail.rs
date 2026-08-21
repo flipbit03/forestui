@@ -787,7 +787,13 @@ mod tests {
         // inside that, so the card's edge lands short of the screen edge.
         let right = buffer.area.width - PANE_PAD_X - RIGHT_MARGIN - 1;
 
-        for label in ["Refactor the detail pane", "#42 Fix login bug"] {
+        // A session card is unpadded — its name carries the separation instead,
+        // so its top border sits directly above the name — while an issue card
+        // keeps `padding: 1` and a blank row between the two.
+        for (label, padded) in [
+            ("Refactor the detail pane", false),
+            ("#42 Fix login bug", true),
+        ] {
             let (x, y) = find_cell(&buffer, label);
             let cell = |x: u16, y: u16| {
                 buffer
@@ -796,16 +802,17 @@ mod tests {
             };
 
             let left = x - CARD_INSET;
-            // `padding: 1` puts a blank card row between the top edge and the
-            // first line of content.
-            assert_eq!(cell(left, y - 2).symbol(), "┌", "{label}: top left");
-            assert_eq!(cell(right, y - 2).symbol(), "┐", "{label}: top right");
-            assert_eq!(cell(left, y - 1).symbol(), "│", "{label}: padding row");
-            assert_eq!(
-                cell(x, y - 1).bg,
-                theme::active().bg_elevated,
-                "{label}: padding row is filled",
-            );
+            let top = if padded { y - 2 } else { y - 1 };
+            assert_eq!(cell(left, top).symbol(), "┌", "{label}: top left");
+            assert_eq!(cell(right, top).symbol(), "┐", "{label}: top right");
+            if padded {
+                assert_eq!(cell(left, y - 1).symbol(), "│", "{label}: padding row");
+                assert_eq!(
+                    cell(x, y - 1).bg,
+                    theme::active().bg_elevated,
+                    "{label}: padding row is filled",
+                );
+            }
             assert_eq!(cell(left, y).symbol(), "│", "{label}: left border");
             assert_eq!(cell(right, y).symbol(), "│", "{label}: right border");
             assert_eq!(

@@ -423,12 +423,18 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
     // which is Textual's `.session-item { margin: 0 2 1 0 }` seen from above.
     for (index, session) in list.iter().enumerate() {
         nodes.push(DetailNode::Blank);
-        nodes.push(DetailNode::CardStart { padded: true });
+        // Unpadded: the card's own top and bottom blanks cost two rows per
+        // session, and with five cards on screen that is ten rows of nothing.
+        // The name carries the separation instead, where it does some work.
+        nodes.push(DetailNode::CardStart { padded: false });
         text(
             nodes,
             crate::util::truncate(&session.title, 60),
             theme::primary(),
         );
+        // The name is what you scan the list for, so it gets the whitespace —
+        // everything below it reads as one block of detail about that name.
+        nodes.push(DetailNode::Blank);
         if !session.last_message.is_empty() && session.last_message != session.title {
             text(
                 nodes,
@@ -436,9 +442,6 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
                 theme::secondary(),
             );
         }
-        // `.session-preview { margin-bottom: 1 }` — the meta line is spaced
-        // away from the message preview above it.
-        nodes.push(DetailNode::Blank);
         // A card being re-read says so on its own meta line. Without it a
         // conversation that moved on while forestui was in the background just
         // sits at its old turn count and then changes with no explanation.

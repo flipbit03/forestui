@@ -179,13 +179,19 @@ async fn run(self_update: bool) -> anyhow::Result<()> {
 /// hung off it was dead code. `ensure_focus_events` turning on tmux's
 /// `focus-events` is only half of the handshake: tmux forwards the sequences
 /// to a pane that asked for them, and this is the asking.
+/// Kept as one string so a test can pin it: a mode dropped from here fails
+/// silently and takes a whole feature with it, which is how focus reporting
+/// went missing and left `Event::FocusGained` unable to fire at all.
+const TERMINAL_MODES_ON: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1004h";
+const TERMINAL_MODES_OFF: &str = "\x1b[?1004l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+
 fn enable_mouse() {
-    print!("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1004h");
+    print!("{TERMINAL_MODES_ON}");
     let _ = std::io::stdout().flush();
 }
 
 fn disable_mouse() {
-    print!("\x1b[?1004l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l");
+    print!("{TERMINAL_MODES_OFF}");
     let _ = std::io::stdout().flush();
 }
 
@@ -202,4 +208,35 @@ fn report_crash(error: &anyhow::Error) {
     let _ = std::io::stderr().flush();
     let mut discard = String::new();
     let _ = std::io::stdin().read_line(&mut discard);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Both of these are load-bearing and neither fails loudly.
+    ///
+    /// Without `?1003h` the terminal never reports a bare pointer move, so
+    /// hover cannot work. Without `?1004h` it never reports focus at all, so
+    /// `Event::FocusGained` never arrives and everything hanging off it —
+    /// refreshing sessions and worktrees when the user comes back — is dead
+    /// code that still compiles and still has passing tests.
+    #[test]
+    fn the_terminal_modes_we_depend_on_are_requested() {
+        for (mode, why) in [
+            ("?1003h", "any-motion, for hover"),
+            ("?1004h", "focus reporting, for refresh on return"),
+            ("?1006h", "SGR coordinates, for columns past 223"),
+        ] {
+            assert!(
+                TERMINAL_MODES_ON.contains(mode),
+                "{mode} ({why}) is not requested"
+            );
+            let off = mode.replace('h', "l");
+            assert!(
+                TERMINAL_MODES_OFF.contains(&off),
+                "{mode} ({why}) is requested but never turned off"
+            );
+        }
+    }
 }
