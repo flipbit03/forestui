@@ -157,11 +157,11 @@ pub fn find_window(name: &str) -> Option<String> {
 
 /// Record the name a window was born with.
 ///
-/// The Claude title-sync hook uses this to tell a tab somebody renamed from an
-/// untouched one, so an unclaimed tab never overwrites the session's own title.
-/// Stamped whether or not the plugin is installed: it is one string on a window
-/// that tmux discards when the window closes, and writing it eagerly means
-/// installing the plugin later also works for windows that are already open.
+/// The title-sync hook reads this to answer one question: did forestui open
+/// this window? A window the user made by hand carries no stamp and is left
+/// alone. Stamped whether or not the plugin is installed: it is one string on a
+/// window that tmux discards when the window closes, and writing it eagerly
+/// means installing the plugin later also works for windows already open.
 pub fn stamp_birth_name(window_name: &str) -> bool {
     let Some(id) = find_window(window_name) else {
         return false;

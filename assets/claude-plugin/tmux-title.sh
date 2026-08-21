@@ -39,8 +39,9 @@ input=$(cat)
 # checks for jq and says so when it is missing.
 command -v jq >/dev/null 2>&1 || exit 0
 
-# No stamp means forestui did not open this window, so its name is not ours to
-# read or write: a tmux window the user made themselves is left alone.
+# The stamp answers one question only: did forestui open this window? A tmux
+# window the user made themselves carries none and is left alone. It is not a
+# claim marker — every window forestui opens syncs, from its first turn.
 birth=$(tmux show-options -wqv -t "$TMUX_PANE" @claude_birth_name 2>/dev/null) || exit 0
 [ -n "$birth" ] || exit 0
 
@@ -53,19 +54,14 @@ window=$(tmux display-message -p -t "$TMUX_PANE" '#{window_name}' 2>/dev/null) |
 title=$(printf '%s' "$input" | jq -r '.session_title // empty' 2>/dev/null)
 synced=$(tmux show-options -wqv -t "$TMUX_PANE" @claude_synced_name 2>/dev/null)
 
-# An untouched tab and an unnamed session: nothing to agree on yet. Leaving
-# both alone is what lets Claude go on titling the session itself.
-if [ "$window" = "$birth" ] && [ -z "$title" ]; then
-  exit 0
-fi
-
 mode=none
 if [ -z "$synced" ]; then
-  # First reconciliation for this window. A tab still carrying the name
-  # forestui gave it has not been claimed, so it adopts the session's name;
-  # a tab already renamed claims the session.
-  if [ "$window" = "$birth" ]; then
-    [ -n "$title" ] && mode=adopt
+  # First reconciliation for this window. A session that already has a name
+  # keeps it and names the tab — that is a resume. Otherwise the tab names the
+  # session, which is what gives every forestui window a session name from the
+  # start rather than only once somebody renames something.
+  if [ -n "$title" ]; then
+    mode=adopt
   else
     mode=push
   fi
