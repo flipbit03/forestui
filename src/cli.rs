@@ -3,7 +3,7 @@
 //! forestui runs inside tmux. When started outside one it re-executes itself
 //! through `tmux`, creating or joining a session named after the forest folder.
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::path::{Path, PathBuf};
 
 /// Taken from `Cargo.toml`, which the release workflow stamps from the git tag.
@@ -36,6 +36,19 @@ pub struct Args {
     /// Dev mode: use a timestamped window name (forestui-dev-HHMM)
     #[arg(long = "dev")]
     pub dev_mode: bool,
+
+    /// Manage the Claude Code plugin that names a session after its tmux
+    /// window. Reports what it would touch and exits without starting the UI,
+    /// so the install can be inspected before it happens.
+    #[arg(long = "claude-plugin", value_name = "ACTION")]
+    pub claude_plugin: Option<ClaudePluginAction>,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClaudePluginAction {
+    Status,
+    Install,
+    Uninstall,
 }
 
 /// tmux window name for this instance.
@@ -244,6 +257,7 @@ mod tests {
             no_self_update: true,
             debug_mode: false,
             dev_mode: true,
+            claude_plugin: None,
         };
         let command = self_command(&args, Path::new("/usr/local/bin/forestui"));
         assert!(command.starts_with("/usr/local/bin/forestui"));
@@ -260,6 +274,7 @@ mod tests {
             no_self_update: false,
             debug_mode: false,
             dev_mode: false,
+            claude_plugin: None,
         };
         let command = self_command(&args, Path::new("/tmp/my dir/forestui"));
         assert_eq!(command, "'/tmp/my dir/forestui'");

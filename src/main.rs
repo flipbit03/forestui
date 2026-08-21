@@ -19,6 +19,12 @@ use std::io::Write;
 fn main() -> anyhow::Result<()> {
     let args = cli::Args::parse();
 
+    // A one-shot maintenance action: report and exit, before anything
+    // re-executes into tmux or paints a UI.
+    if let Some(action) = args.claude_plugin {
+        return run_claude_plugin_action(action);
+    }
+
     // Re-executes into tmux and never returns when we are outside one.
     cli::ensure_tmux(&args)?;
 
@@ -38,6 +44,49 @@ fn main() -> anyhow::Result<()> {
         report_crash(error);
     }
     result
+}
+
+/// `--claude-plugin status|install|uninstall`.
+///
+/// Prints the plugin's directory and every file involved before doing anything,
+/// so this is also the way to see exactly what an install writes without
+/// running one.
+fn run_claude_plugin_action(action: cli::ClaudePluginAction) -> anyhow::Result<()> {
+    use services::claude_plugin::{self, Status};
+
+    let dir = claude_plugin::plugin_dir();
+    println!("plugin:  {}", claude_plugin::PLUGIN_NAME);
+    println!("path:    {}", dir.display());
+    println!("status:  {}", claude_plugin::status().label());
+
+    match action {
+        cli::ClaudePluginAction::Status => {
+            if let Status::Drifted(files) = claude_plugin::status() {
+                for file in files {
+                    println!("modified: {file}");
+                }
+            }
+            println!();
+            println!("An install writes only these files. Your settings.json is not touched;");
+            println!("Claude discovers plugin directories on its own.");
+            for path in claude_plugin::planned_paths() {
+                println!("  {}", path.display());
+            }
+        }
+        cli::ClaudePluginAction::Install => {
+            claude_plugin::install(false).map_err(|e| anyhow::anyhow!(e))?;
+            println!();
+            println!("Installed. It takes effect in Claude sessions started from now on.");
+            println!("Turn it off for one tmux window with:");
+            println!("  tmux set-option -w @claude_title_sync 0");
+        }
+        cli::ClaudePluginAction::Uninstall => {
+            claude_plugin::uninstall().map_err(|e| anyhow::anyhow!(e))?;
+            println!();
+            println!("Removed.");
+        }
+    }
+    Ok(())
 }
 
 async fn run(self_update: bool) -> anyhow::Result<()> {

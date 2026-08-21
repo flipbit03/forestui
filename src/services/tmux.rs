@@ -155,6 +155,28 @@ pub fn find_window(name: &str) -> Option<String> {
     None
 }
 
+/// Record the name a window was born with.
+///
+/// The Claude title-sync hook uses this to tell a tab somebody renamed from an
+/// untouched one, so an unclaimed tab never overwrites the session's own title.
+/// Stamped whether or not the plugin is installed: it is one string on a window
+/// that tmux discards when the window closes, and writing it eagerly means
+/// installing the plugin later also works for windows that are already open.
+pub fn stamp_birth_name(window_name: &str) -> bool {
+    let Some(id) = find_window(window_name) else {
+        return false;
+    };
+    tmux(&[
+        "set-option",
+        "-w",
+        "-t",
+        &id,
+        "@claude_birth_name",
+        window_name,
+    ])
+    .is_some()
+}
+
 /// Append `:2`, `:3`, … until the window name is unused.
 pub fn find_unique_window_name(base_name: &str) -> String {
     unique_name_among(base_name, &window_names())
@@ -278,6 +300,7 @@ pub fn create_claude_window(
     );
 
     if new_window(&window_name, path, Some(&shell_cmd)) {
+        stamp_birth_name(&window_name);
         Some(window_name)
     } else {
         None

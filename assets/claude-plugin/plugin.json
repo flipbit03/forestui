@@ -1,0 +1,5 @@
+{
+  "name": "forestui-tmux-title",
+  "description": "Names each Claude Code session after the tmux window forestui opened it in.",
+  "version": "1"
+}
