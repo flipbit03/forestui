@@ -28,66 +28,68 @@ fn tmux(args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// The session of the most recently active tmux client.
+/// The tmux session forestui creates its windows in.
 ///
-/// Not cached: the active client changes between grouped sessions, because the
-/// user may be viewing forestui from any terminal.
+/// Resolved from `TMUX_PANE`, which names this process's own pane and so is
+/// exact. This used to ask `list-clients` for the most recently active client
+/// on the server, filtered by session group — but a session `ensure_tmux`
+/// creates on first launch is not in a group at all (the grouped session is
+/// only made when the base session already existed), so `session_group` came
+/// back empty, the filter went inert, and the scan returned whichever session
+/// the user had touched last. A second forestui, opened on a different forest,
+/// therefore created its windows in the first one's session.
+///
+/// Sessions in a group genuinely share their windows, so there any member is a
+/// correct target; the activity scan still runs in that case, so the window
+/// opens in whichever terminal the user is actually looking at.
 pub fn current_session() -> Option<String> {
     if !is_inside_tmux() {
         return None;
     }
 
-    // Only consider clients attached to sessions in our own group.
-    let our_group = tmux(&["display-message", "-p", "#{session_group}"])
+    let pane = std::env::var("TMUX_PANE").ok()?;
+    let own = tmux(&["display-message", "-p", "-t", &pane, "#{session_id}"])?
+        .trim()
+        .to_string();
+    if own.is_empty() {
+        return None;
+    }
+
+    let group = tmux(&["display-message", "-p", "-t", &pane, "#{session_group}"])
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
+    if group.is_empty() {
+        return Some(own);
+    }
 
-    if let Some(out) = tmux(&[
+    let clients = tmux(&[
         "list-clients",
         "-F",
         "#{client_activity} #{session_id} #{session_group}",
-    ]) {
-        let mut best_id: Option<String> = None;
-        let mut best_time: i64 = -1;
-        for line in out.lines() {
-            let parts: Vec<&str> = line.trim().splitn(3, ' ').collect();
-            if parts.len() != 3 {
-                continue;
-            }
-            let Ok(activity) = parts[0].parse::<i64>() else {
-                continue;
-            };
-            if !our_group.is_empty() && parts[2] != our_group {
-                continue;
-            }
-            if activity > best_time {
-                best_time = activity;
-                best_id = Some(parts[1].to_string());
-            }
-        }
-        if best_id.is_some() {
-            return best_id;
-        }
-    }
+    ])
+    .unwrap_or_default();
+    Some(most_active_in_group(&clients, &group, &own))
+}
 
-    // Fallback: first attached session, then any session.
-    if let Some(out) = tmux(&["list-sessions", "-F", "#{session_id} #{session_attached}"]) {
-        let mut first: Option<String> = None;
-        for line in out.lines() {
-            let mut parts = line.trim().split(' ');
-            let (Some(id), Some(attached)) = (parts.next(), parts.next()) else {
-                continue;
-            };
-            if first.is_none() {
-                first = Some(id.to_string());
-            }
-            if attached.parse::<i64>().unwrap_or(0) > 0 {
-                return Some(id.to_string());
-            }
+/// Of the clients attached to our own session group, the session of the most
+/// recently active one — falling back to our own session. Pure, for testing.
+fn most_active_in_group(clients: &str, group: &str, own: &str) -> String {
+    let mut best = own.to_string();
+    let mut best_activity = i64::MIN;
+    for line in clients.lines() {
+        let parts: Vec<&str> = line.trim().splitn(3, ' ').collect();
+        if parts.len() != 3 || parts[2] != group {
+            continue;
         }
-        return first;
+        let Ok(activity) = parts[0].parse::<i64>() else {
+            continue;
+        };
+        if activity > best_activity {
+            best_activity = activity;
+            best = parts[1].to_string();
+        }
     }
-    None
+    best
 }
 
 /// The tmux window this process is running in.
@@ -279,6 +281,34 @@ pub fn create_claude_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bug this replaced: a forestui opened on a second forest created its
+    /// windows in the *first* forestui's session, because ungrouped sessions
+    /// report an empty group and the scan then ranged over the whole server,
+    /// returning whichever terminal the user had touched most recently.
+    #[test]
+    fn a_client_outside_our_group_never_wins() {
+        let clients = "100 $1 ours\n900 $2 someone-else\n300 $3 ours\n";
+        assert_eq!(most_active_in_group(clients, "ours", "$9"), "$3");
+    }
+
+    /// An ungrouped session short-circuits before this is reached, but a group
+    /// whose clients have all detached must still answer with our own session
+    /// rather than someone else's.
+    #[test]
+    fn our_own_session_is_the_fallback() {
+        assert_eq!(most_active_in_group("900 $2 other\n", "ours", "$7"), "$7");
+        assert_eq!(most_active_in_group("", "ours", "$7"), "$7");
+        assert_eq!(most_active_in_group("garbage\n", "ours", "$7"), "$7");
+    }
+
+    /// Within our own group the windows are shared, so the most recently active
+    /// client is the right one: the window opens where the user is looking.
+    #[test]
+    fn the_most_recently_active_client_in_our_group_wins() {
+        let clients = "100 $1 ours\n500 $2 ours\n300 $3 ours\n";
+        assert_eq!(most_active_in_group(clients, "ours", "$1"), "$2");
+    }
 
     #[test]
     fn tui_editor_detection() {
