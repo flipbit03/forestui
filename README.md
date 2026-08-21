@@ -84,8 +84,10 @@ day, so this is not a network call on every launch, and a build from source
 ## Claude session names
 
 forestui can keep each tmux tab and the Claude session inside it under one
-name. Rename the tab and the session follows; `/rename` inside Claude renames
-the tab. The name is used verbatim — no prefix is added or stripped.
+name. A session opened from forestui is named after its tab from the moment it
+opens. Rename the tab and the session follows; `/rename` inside Claude renames
+the tab. The name is used verbatim — no prefix is added or stripped, and
+resuming a session keeps the name it already had.
 
 ```bash
 forestui --claude-plugin status      # what an install would write

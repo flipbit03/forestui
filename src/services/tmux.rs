@@ -286,7 +286,17 @@ pub fn claude_shell_command(
         cmd.push_str(" --dangerously-skip-permissions");
     }
     if let Some(id) = resume_session_id {
+        // No -n here on purpose. A resumed session already carries the name it
+        // was given, and passing one would overwrite it — with the *window's*
+        // name, which may have picked up a `:2` from uniquifying against a
+        // window still open for the same conversation. The hook adopts the
+        // stored name onto the window instead.
         cmd.push_str(&format!(" -r {id}"));
+    } else {
+        // Claude renders this in the prompt box from the first frame, which no
+        // hook can do: a title set before the session's UI is live is stored
+        // but never drawn.
+        cmd.push_str(&format!(" -n {}", sh_quote(window_name)));
     }
     // The birth stamp is written from inside the window, before the command
     // that needs it runs. Stamping from forestui after new-window returns is a
@@ -471,10 +481,14 @@ mod tests {
             )
         };
 
-        assert_eq!(build(None, false, None, None), format!("{stamp}; claude"));
+        // A fresh session is named at launch; a resumed one keeps its own name.
+        assert_eq!(
+            build(None, false, None, None),
+            format!("{stamp}; claude -n 'claude:wt'")
+        );
         assert_eq!(
             build(None, true, None, None),
-            format!("{stamp}; claude --dangerously-skip-permissions")
+            format!("{stamp}; claude --dangerously-skip-permissions -n 'claude:wt'")
         );
         assert_eq!(
             build(Some("abc123"), false, None, None),
@@ -483,7 +497,7 @@ mod tests {
         // A custom button never gets the YOLO flag appended.
         assert_eq!(
             build(None, true, Some("claude --model opus"), Some("opus")),
-            format!("{stamp}; claude --model opus")
+            format!("{stamp}; claude --model opus -n 'claude:wt'")
         );
     }
 
@@ -522,7 +536,9 @@ mod tests {
         let built = claude_shell_command(None, false, None, None, "/bin/sh", "$(id); rm -rf /");
         assert_eq!(
             decoded(&built, "/bin/sh"),
-            "tmux set-option -w @claude_birth_name '$(id); rm -rf /'; claude"
+            "tmux set-option -w @claude_birth_name '$(id); rm -rf /'; \
+             claude -n '$(id); rm -rf /'"
+                .replace("\\\n             ", "")
         );
     }
 }

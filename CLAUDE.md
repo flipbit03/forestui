@@ -250,10 +250,18 @@ write without writing any of them.
 
 Three pieces make it work, and each is load-bearing:
 
-The session is named on its **first prompt**, not at `SessionStart`. A title
-set before the session's UI is live is stored but never drawn, and the name
-badge on the input box is the only place Claude shows a session's name — so
-naming it at launch produced a correctly named session that looked unnamed.
+A new session is named at launch, by passing Claude's own `-n` flag with the
+window's name. That is not interchangeable with setting the title from a hook:
+Claude draws the name in the prompt box from the first frame with `-n`, whereas
+a title a hook sets at `SessionStart` is stored and never drawn — the session is
+correctly named and looks unnamed. A hook still names one on its first prompt if
+`-n` never reached it.
+
+**A resumed session is not given `-n`.** It already carries the name it was
+given, and the window's name may have picked up a `:2` from uniquifying against
+a window still open for the same conversation — passing it would overwrite the
+real name with the suffixed one. The hook adopts the stored name onto the
+window instead.
 
 - **`@claude_birth_name`**, a tmux window option stamped when the window is
   created, answers one question: did forestui open this window? A window the
