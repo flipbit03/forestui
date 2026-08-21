@@ -189,11 +189,18 @@ capture() {
   local id="$1" slug="$2" sess="${3:-$SESS}"
   tu screenshot --name "$sess" --png -o "$SHOTS/$id-$slug.png" >/dev/null 2>&1
   tu screenshot --name "$sess" 2>/dev/null \
-    | ROOT="$ROOT" HOST="$(hostname)" HOST_SHORT="$(hostname -s)" WHO="$(id -un)" python3 -c '
+    | ROOT="$ROOT" HOST="$(hostname)" HOST_SHORT="$(hostname -s)" WHO="$(id -un)" \
+      FUI_BIN="${FUI_CMD[0]}" python3 -c '
 import json, os, re, sys
 root = os.environ["ROOT"]
 text = json.load(sys.stdin)["content"]
 text = text.replace(root, "<ROOT>")
+# The command line is echoed in frames that show a shell. CLAUDE.md tells you
+# to pass an absolute binary path when the tu cwd is not the repo, which would
+# otherwise put a local path — and the branch worktree it was built in — into a
+# committed frame, making the baseline depend on who ran the sweep and from
+# where.
+text = text.replace(os.environ["FUI_BIN"], "<forestui>")
 text = re.sub(r"\b[0-9a-f]{7}\b", "<sha>", text)
 # Bare or parenthesised: session cards and issue rows print "N days ago"
 # with no parentheses, and an unmasked one rots the committed frames daily.
