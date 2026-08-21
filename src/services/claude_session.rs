@@ -17,8 +17,21 @@ use std::sync::{Mutex, OnceLock};
 /// entry another consumer peeks.
 type SessionCacheKey = (String, usize);
 
-fn cache() -> &'static Mutex<HashMap<SessionCacheKey, Vec<ClaudeSession>>> {
-    static CACHE: OnceLock<Mutex<HashMap<SessionCacheKey, Vec<ClaudeSession>>>> = OnceLock::new();
+/// What the directory looked like when a cached answer was built: how many
+/// transcripts there were and the newest modification time among them.
+///
+/// This is what makes a frequent refresh affordable. Parsing is the expensive
+/// half — every transcript is read whole and every line JSON-parsed, and a busy
+/// conversation runs to megabytes — while listing the directory and stat-ing it
+/// is not. An unchanged fingerprint means an unchanged answer, so the sweep
+/// costs one `readdir` on the overwhelmingly common tick where nobody has said
+/// anything.
+type Fingerprint = (usize, Option<std::time::SystemTime>);
+
+type CacheEntry = (Fingerprint, Vec<ClaudeSession>);
+
+fn cache() -> &'static Mutex<HashMap<SessionCacheKey, CacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<SessionCacheKey, CacheEntry>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -29,7 +42,38 @@ pub fn peek_sessions(path: &str, limit: usize) -> Option<Vec<ClaudeSession>> {
         .lock()
         .ok()?
         .get(&(path.to_string(), limit))
-        .cloned()
+        .map(|(_, sessions)| sessions.clone())
+}
+
+/// Count of transcripts and the newest mtime among them. Agent transcripts are
+/// skipped here for the same reason the scan skips them, so one starting does
+/// not read as a change.
+fn fingerprint(sessions_dir: &Path) -> Fingerprint {
+    let Ok(entries) = std::fs::read_dir(sessions_dir) else {
+        return (0, None);
+    };
+    let mut count = 0usize;
+    let mut newest: Option<std::time::SystemTime> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("agent-"))
+        {
+            continue;
+        }
+        count += 1;
+        if let Ok(modified) = entry.metadata().and_then(|m| m.modified())
+            && newest.is_none_or(|prev| modified > prev)
+        {
+            newest = Some(modified);
+        }
+    }
+    (count, newest)
 }
 
 /// Convert a filesystem path to Claude's folder naming convention.
@@ -45,11 +89,37 @@ pub fn claude_projects_dir() -> PathBuf {
 /// Sessions for a path, newest first, capped at `limit`.
 pub fn get_sessions_for_path(path: &str, limit: usize) -> Vec<ClaudeSession> {
     let sessions_dir = claude_projects_dir().join(path_to_claude_folder(path));
+    let key = (path.to_string(), limit);
+    let current = fingerprint(&sessions_dir);
+
+    // Nothing in the directory has changed since the cached answer was built,
+    // so re-reading every transcript would produce the same list.
+    if let Ok(guard) = cache().lock()
+        && let Some((cached, sessions)) = guard.get(&key)
+        && *cached == current
+    {
+        return sessions.clone();
+    }
+
     let sessions = read_sessions_dir(&sessions_dir, limit);
     if let Ok(mut guard) = cache().lock() {
-        guard.insert((path.to_string(), limit), sessions.clone());
+        guard.insert(key, (current, sessions.clone()));
     }
     sessions
+}
+
+/// Re-read one transcript. `None` means it is gone or no longer has any
+/// messages, which is how a session that was deleted while forestui was in the
+/// background leaves the list.
+///
+/// This is the per-card refresh: five transcripts re-read concurrently answer
+/// far sooner than one walk of a directory that may hold dozens, and each card
+/// updates the moment its own read lands rather than all of them together.
+pub fn refresh_one(path: &str, session_id: &str) -> Option<ClaudeSession> {
+    let file = claude_projects_dir()
+        .join(path_to_claude_folder(path))
+        .join(format!("{session_id}.jsonl"));
+    parse_session_file(&file)
 }
 
 /// Directory-scoped form of [`get_sessions_for_path`], for testing.

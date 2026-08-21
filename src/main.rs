@@ -173,13 +173,19 @@ async fn run(self_update: bool) -> anyhow::Result<()> {
 /// one repaint and sliding around inside it costs none.
 ///
 /// `?1006h` asks for SGR coordinates so columns past 223 still resolve.
+///
+/// `?1004h` asks for focus reporting, and without it the terminal never sends
+/// focus in/out at all — so `Event::FocusGained` never arrived and everything
+/// hung off it was dead code. `ensure_focus_events` turning on tmux's
+/// `focus-events` is only half of the handshake: tmux forwards the sequences
+/// to a pane that asked for them, and this is the asking.
 fn enable_mouse() {
-    print!("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
+    print!("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1004h");
     let _ = std::io::stdout().flush();
 }
 
 fn disable_mouse() {
-    print!("\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l");
+    print!("\x1b[?1004l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l");
     let _ = std::io::stdout().flush();
 }
 

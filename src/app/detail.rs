@@ -406,6 +406,9 @@ fn custom_controls<'a>(
         })
 }
 
+/// Shared by the issue header and the per-session refresh indicator.
+const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
+
 fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
     nodes.push(DetailNode::Section("RECENT SESSIONS"));
     let Some(list) = app.sessions.as_deref() else {
@@ -436,15 +439,23 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
         // `.session-preview { margin-bottom: 1 }` — the meta line is spaced
         // away from the message preview above it.
         nodes.push(DetailNode::Blank);
-        text(
-            nodes,
+        // A card being re-read says so on its own meta line. Without it a
+        // conversation that moved on while forestui was in the background just
+        // sits at its old turn count and then changes with no explanation.
+        let meta = if app.sessions_refreshing.contains(&session.id) {
+            format!(
+                "{} refreshing • {} msgs",
+                SPINNER[app.spinner_index % SPINNER.len()],
+                session.message_count
+            )
+        } else {
             format!(
                 "{} • {} msgs",
                 session.relative_time(),
                 session.message_count
-            ),
-            theme::muted(),
-        );
+            )
+        };
+        text(nodes, meta, theme::muted());
 
         let mut row = vec![
             ControlSpec::new(
@@ -470,7 +481,6 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
 fn issues(nodes: &mut Vec<DetailNode>, app: &App) {
     // The refresh control rides the header line and doubles as the loading
     // spinner — Textual's `.refresh-btn` was flat, `height: 1; border: none`.
-    const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
     nodes.push(DetailNode::Blank);
     nodes.push(DetailNode::IssuesHeader {
         glyph: match app.issues {

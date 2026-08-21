@@ -53,6 +53,13 @@ pub enum AppEvent {
     /// failed (a panicked blocking task) — the fold must release its in-flight
     /// guard but keep whatever content is already on screen rather than
     /// overwriting it with an authoritative-looking empty list.
+    /// One transcript was re-read. Carries its id so the fold can replace that
+    /// card alone, and `None` when the session no longer exists.
+    SessionRefreshed {
+        path: String,
+        id: String,
+        session: Box<Option<ClaudeSession>>,
+    },
     Sessions {
         path: String,
         sessions: Option<Vec<ClaudeSession>>,
