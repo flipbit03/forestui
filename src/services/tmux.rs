@@ -276,9 +276,27 @@ pub fn claude_base_window_name(name: &str, yolo: bool, custom_prefix: Option<&st
     }
 }
 
+/// The name a Claude window opens with.
+///
+/// A resumed session keeps its own name verbatim: the window name and the
+/// session name are one string, so re-applying a prefix here would accrete
+/// (`claude:yolo:thing`) a little more on every resume. A fresh session has no
+/// name yet, so it gets forestui's opening name instead.
+pub fn opening_window_name(
+    seed: Option<&str>,
+    worktree_name: &str,
+    yolo: bool,
+    custom_prefix: Option<&str>,
+) -> String {
+    match seed {
+        Some(name) => name.to_string(),
+        None => claude_base_window_name(worktree_name, yolo, custom_prefix),
+    }
+}
+
 /// Create a tmux window running Claude Code. Returns the window name.
 pub fn create_claude_window(
-    name: &str,
+    base_name: &str,
     path: &str,
     resume_session_id: Option<&str>,
     yolo: bool,
@@ -287,8 +305,7 @@ pub fn create_claude_window(
 ) -> Option<String> {
     current_session()?;
 
-    let base = claude_base_window_name(name, yolo, custom_prefix);
-    let window_name = find_unique_window_name(&base);
+    let window_name = find_unique_window_name(base_name);
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
     let shell_cmd = claude_shell_command(
@@ -339,29 +356,34 @@ mod tests {
         assert_eq!(most_active_in_group(clients, "ours", "$1"), "$2");
     }
 
-    /// The title-sync hook recovers the session name by dropping everything up
-    /// to the first colon of the window name. That only holds while window
-    /// names are built as `<prefix>:<name>`, and the hook is a shell script no
-    /// Rust change can break loudly — so pin both halves of the contract here.
+    /// The window name and the session name are one string. Resuming must not
+    /// re-apply a prefix, or a session resumed a few times ends up called
+    /// `claude:claude:claude:thing`.
     #[test]
-    fn the_window_name_prefix_round_trips() {
-        // What assets/claude-plugin/tmux-title.sh does, in Rust.
-        let strip = |window: &str| {
-            window
-                .split_once(':')
-                .map(|(_, rest)| rest)
-                .unwrap_or(window)
-                .to_string()
-        };
+    fn a_resumed_session_keeps_its_name_verbatim() {
+        assert_eq!(
+            opening_window_name(Some("yolo:forestuiNAMESYNC"), "repo:wt", false, None),
+            "yolo:forestuiNAMESYNC"
+        );
+        assert_eq!(
+            opening_window_name(Some("retry loop"), "repo:wt", true, Some("opus")),
+            "retry loop"
+        );
 
-        // A session name may itself contain a colon, so only the first one
-        // separates the prefix.
-        for name in ["retry loop", "API: rework", "demo:wt"] {
-            for (yolo, prefix) in [(false, None), (true, None), (false, Some("opus"))] {
-                let window = claude_base_window_name(name, yolo, prefix);
-                assert_eq!(strip(&window), name, "round trip through {window:?}");
-            }
-        }
+        // Resuming the same session again is a fixed point.
+        let once = opening_window_name(Some("claude:demo:wt"), "demo:wt", false, None);
+        let twice = opening_window_name(Some(&once), "demo:wt", false, None);
+        assert_eq!(once, twice);
+
+        // A session with no name of its own still gets forestui's opening name.
+        assert_eq!(
+            opening_window_name(None, "repo:wt", true, None),
+            "yolo:repo:wt"
+        );
+        assert_eq!(
+            opening_window_name(None, "repo:wt", false, Some("opus")),
+            "opus:repo:wt"
+        );
     }
 
     #[test]

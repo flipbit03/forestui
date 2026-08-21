@@ -468,9 +468,14 @@ impl App {
         custom: Option<CustomClaudeButton>,
         seed_name: Option<String>,
     ) {
-        let name = seed_name.unwrap_or_else(|| self.state.tmux_window_name(path));
+        let opening_name = tmux::opening_window_name(
+            seed_name.as_deref(),
+            &self.state.tmux_window_name(path),
+            yolo,
+            custom.as_ref().map(|b| b.prefix.as_str()),
+        );
         let window = tmux::create_claude_window(
-            &name,
+            &opening_name,
             path,
             resume_session_id,
             yolo,

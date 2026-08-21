@@ -46,6 +46,15 @@ fn main() -> anyhow::Result<()> {
     result
 }
 
+fn jq_available() -> bool {
+    std::process::Command::new("jq")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 /// `--claude-plugin status|install|uninstall`.
 ///
 /// Prints the plugin's directory and every file involved before doing anything,
@@ -77,6 +86,12 @@ fn run_claude_plugin_action(action: cli::ClaudePluginAction) -> anyhow::Result<(
             claude_plugin::install(false).map_err(|e| anyhow::anyhow!(e))?;
             println!();
             println!("Installed. It takes effect in Claude sessions started from now on.");
+            if !jq_available() {
+                println!();
+                println!("Note: `jq` is not on PATH. The hook reads the session's own name");
+                println!("with it, so until jq is installed the sync does nothing at all");
+                println!("rather than half of it.");
+            }
             println!("Renaming a forestui tab now renames the Claude session in it.");
             println!("To stop that, uninstall — there is no per-tab switch to remember.");
         }

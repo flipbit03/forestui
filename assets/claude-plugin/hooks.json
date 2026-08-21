@@ -5,6 +5,9 @@
     ],
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/tmux-title.sh UserPromptSubmit" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/tmux-title.sh Stop" } ] }
     ]
   }
 }
