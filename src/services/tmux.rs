@@ -339,6 +339,31 @@ mod tests {
         assert_eq!(most_active_in_group(clients, "ours", "$1"), "$2");
     }
 
+    /// The title-sync hook recovers the session name by dropping everything up
+    /// to the first colon of the window name. That only holds while window
+    /// names are built as `<prefix>:<name>`, and the hook is a shell script no
+    /// Rust change can break loudly — so pin both halves of the contract here.
+    #[test]
+    fn the_window_name_prefix_round_trips() {
+        // What assets/claude-plugin/tmux-title.sh does, in Rust.
+        let strip = |window: &str| {
+            window
+                .split_once(':')
+                .map(|(_, rest)| rest)
+                .unwrap_or(window)
+                .to_string()
+        };
+
+        // A session name may itself contain a colon, so only the first one
+        // separates the prefix.
+        for name in ["retry loop", "API: rework", "demo:wt"] {
+            for (yolo, prefix) in [(false, None), (true, None), (false, Some("opus"))] {
+                let window = claude_base_window_name(name, yolo, prefix);
+                assert_eq!(strip(&window), name, "round trip through {window:?}");
+            }
+        }
+    }
+
     #[test]
     fn tui_editor_detection() {
         assert!(is_tui_editor("vim"));
