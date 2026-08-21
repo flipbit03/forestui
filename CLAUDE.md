@@ -89,8 +89,11 @@ forestui/
 │       ├── git.rs            # Async git operations
 │       ├── tmux.rs           # tmux window management
 │       ├── github.rs         # gh CLI integration
+│       ├── claude_plugin.rs  # Installing the Claude Code title-sync plugin
 │       ├── claude_session.rs # Claude Code session tracking
 │       └── settings.rs       # User preferences + runtime forest path
+├── assets/
+│   └── claude-plugin/        # The Claude Code plugin, embedded in the binary
 ├── Makefile                  # Development commands
 ├── install.sh                # Installation script
 └── README.md
@@ -226,6 +229,47 @@ fast switching between editor, app, and Claude windows.
 
 The re-exec uses `std::env::current_exe()`, so a `cargo run` build re-launches
 itself rather than whatever `forestui` happens to be on `PATH`.
+
+### Session names follow tmux window names
+
+A tmux window forestui opened and the Claude session running in it carry the
+same name, in both directions: renaming the tab renames the session, and
+`/rename` renames the tab. The two are **one string, verbatim** — nothing is
+added, stripped or parsed. A window called `yolo:thing` holds a session called
+`yolo:thing`. Prefixes are forestui's opening move when it creates a window,
+not a format anything reads back.
+
+It is carried by a Claude Code **plugin** — a directory under the Claude config
+dir, which Claude discovers on its own. Installing therefore writes nothing to
+the user's `settings.json`, and hooks they configured themselves are never
+parsed or rewritten; plugin hooks and settings hooks both run. Enabling and
+disabling is Claude's own business (`claude plugin enable|disable`), which is
+why nothing here edits `enabledPlugins`. Install it with
+`forestui --claude-plugin install`; `status` prints every path an install would
+write without writing any of them.
+
+Three pieces make it work, and each is load-bearing:
+
+- **`@claude_birth_name`**, a tmux window option stamped when the window is
+  created, answers one question: did forestui open this window? A window the
+  user made by hand carries none and is left alone, as is a bare `claude` in a
+  plain terminal. It is written from *inside* the window, in a prelude ahead of
+  the command that needs it — stamping it from forestui after `new-window`
+  returns is a separate tmux call, and a fast-starting Claude could reach its
+  first hook before it lands.
+- **`@claude_synced_name`** records the last agreed name. Two-way sync cannot
+  tell which side moved from one value: equal names are ambiguous between
+  nobody changing and both changing alike, and unequal names do not say who is
+  stale. When both moved, the tab wins.
+- **Window names reach a shell**, so they are quoted literally with single
+  quotes rather than by any escaping heuristic. A session title can be set by a
+  `SessionStart` hook in a repository's own `.claude/settings.json`, so by the
+  time a name gets here it is not necessarily the user's own text. These
+  commands run through `-ic`, an *interactive* shell, where double quotes would
+  not even stop zsh history expansion.
+
+There is deliberately no off switch, per window or global. Installed means the
+two names agree; not wanting that is an uninstall.
 
 ### Self-update
 forestui keeps itself current the way the Python build did — automatically, on

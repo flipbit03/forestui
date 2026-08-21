@@ -162,15 +162,12 @@ pub fn find_window(name: &str) -> Option<String> {
 /// alone. Stamped whether or not the plugin is installed: it is one string on a
 /// window that tmux discards when the window closes, and writing it eagerly
 /// means installing the plugin later also works for windows already open.
-pub fn stamp_birth_name(window_name: &str) -> bool {
-    let Some(id) = find_window(window_name) else {
-        return false;
-    };
+pub fn stamp_birth_name(window_id: &str, window_name: &str) -> bool {
     tmux(&[
         "set-option",
         "-w",
         "-t",
-        &id,
+        window_id,
         "@claude_birth_name",
         window_name,
     ])
@@ -199,15 +196,31 @@ pub fn unique_name_among(base_name: &str, existing: &[String]) -> String {
 
 /// Create a window and select it. `shell_command` runs instead of a shell, so
 /// the window closes when the command exits.
-fn new_window(name: &str, path: &str, shell_command: Option<&str>) -> bool {
-    let Some(session) = current_session() else {
-        return false;
-    };
-    let mut args: Vec<&str> = vec!["new-window", "-t", &session, "-n", name, "-c", path];
+/// Create a window and return its id.
+///
+/// The id, not the name: a name is only unique at the moment it is chosen, and
+/// the title-sync hook renames windows behind us, so anything that acts on the
+/// window afterwards has to hold something that cannot come to mean a
+/// different window.
+fn new_window(name: &str, path: &str, shell_command: Option<&str>) -> Option<String> {
+    let session = current_session()?;
+    let mut args: Vec<&str> = vec![
+        "new-window",
+        "-t",
+        &session,
+        "-n",
+        name,
+        "-c",
+        path,
+        "-P",
+        "-F",
+        "#{window_id}",
+    ];
     if let Some(cmd) = shell_command {
         args.push(cmd);
     }
-    tmux(&args).is_some()
+    let id = tmux(&args)?.trim().to_string();
+    (!id.is_empty()).then_some(id)
 }
 
 /// Open the editor in a tmux window named `edit:<worktree_name>`, reusing an
@@ -221,7 +234,7 @@ pub fn create_editor_window(worktree_name: &str, worktree_path: &str, editor: &s
     if let Some(existing) = find_window(&window_name) {
         return tmux(&["select-window", "-t", &existing]).is_some();
     }
-    new_window(&window_name, worktree_path, Some(&format!("{editor} .")))
+    new_window(&window_name, worktree_path, Some(&format!("{editor} ."))).is_some()
 }
 
 /// Create a shell window named `term:<name>` (always a new window).
@@ -230,7 +243,7 @@ pub fn create_shell_window(name: &str, path: &str) -> bool {
         return false;
     }
     let window_name = find_unique_window_name(&format!("term:{name}"));
-    new_window(&window_name, path, None)
+    new_window(&window_name, path, None).is_some()
 }
 
 /// Create a Midnight Commander window named `files:<name>` (always new).
@@ -239,19 +252,33 @@ pub fn create_mc_window(name: &str, path: &str) -> bool {
         return false;
     }
     let window_name = find_unique_window_name(&format!("files:{name}"));
-    new_window(&window_name, path, Some("mc"))
+    new_window(&window_name, path, Some("mc")).is_some()
 }
 
 /// Build the shell command used for a Claude window.
 ///
 /// Wrapped in an interactive shell so user aliases resolve; the inner command
 /// is quoted to keep custom commands from breaking out.
+/// A string the shell will read back verbatim, whatever is in it.
+///
+/// Single quotes are the only shell quoting with no escapes inside them: no
+/// `$`, no backtick, and — since these commands run through `-ic`, an
+/// *interactive* shell — no `!` history expansion either, which double quotes
+/// would not stop in zsh. This matters because window names now come from
+/// session titles, and a session title can be set by a `SessionStart` hook in a
+/// repository's own `.claude/settings.json`, so it is not the user's own text
+/// by the time it reaches here.
+fn sh_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 pub fn claude_shell_command(
     resume_session_id: Option<&str>,
     yolo: bool,
     custom_command: Option<&str>,
     custom_prefix: Option<&str>,
     shell: &str,
+    window_name: &str,
 ) -> String {
     let mut cmd = custom_command.unwrap_or("claude").to_string();
     // The YOLO flag belongs to the built-in YOLO button only, never to a custom one.
@@ -261,10 +288,17 @@ pub fn claude_shell_command(
     if let Some(id) = resume_session_id {
         cmd.push_str(&format!(" -r {id}"));
     }
-    let quoted = shlex::try_quote(&cmd)
-        .map(|c| c.into_owned())
-        .unwrap_or(cmd);
-    format!("{shell} -ic {quoted}")
+    // The birth stamp is written from inside the window, before the command
+    // that needs it runs. Stamping from forestui after new-window returns is a
+    // separate tmux call, so a fast-starting Claude could reach its first hook
+    // first and be read as a window forestui never opened. Ordering it here
+    // makes that impossible rather than merely unlikely; a failure to stamp
+    // still falls through to the command.
+    let cmd = format!(
+        "tmux set-option -w @claude_birth_name {}; {cmd}",
+        sh_quote(window_name)
+    );
+    format!("{shell} -ic {}", sh_quote(&cmd))
 }
 
 /// Window name for a Claude session, before uniquifying.
@@ -314,14 +348,14 @@ pub fn create_claude_window(
         custom_command,
         custom_prefix,
         &shell,
+        &window_name,
     );
 
-    if new_window(&window_name, path, Some(&shell_cmd)) {
-        stamp_birth_name(&window_name);
-        Some(window_name)
-    } else {
-        None
-    }
+    let id = new_window(&window_name, path, Some(&shell_cmd))?;
+    // Belt and braces: the prelude above is what orders the stamp correctly,
+    // this covers a shell that never ran it. Same value either way.
+    stamp_birth_name(&id, &window_name);
+    Some(window_name)
 }
 
 #[cfg(test)]
@@ -417,30 +451,78 @@ mod tests {
         );
     }
 
+    /// What the shell actually receives, with both layers of quoting undone.
+    fn decoded(built: &str, shell: &str) -> String {
+        let payload = built
+            .strip_prefix(&format!("{shell} -ic "))
+            .unwrap_or_else(|| panic!("unexpected shape: {built}"));
+        let mut parts = shlex::split(payload).expect("a single quoted argument");
+        assert_eq!(parts.len(), 1, "not one argument: {payload}");
+        parts.remove(0)
+    }
+
     #[test]
     fn claude_command_building() {
+        let stamp = "tmux set-option -w @claude_birth_name 'claude:wt'";
+        let build = |resume, yolo, cmd, prefix| {
+            decoded(
+                &claude_shell_command(resume, yolo, cmd, prefix, "/bin/zsh", "claude:wt"),
+                "/bin/zsh",
+            )
+        };
+
+        assert_eq!(build(None, false, None, None), format!("{stamp}; claude"));
         assert_eq!(
-            claude_shell_command(None, false, None, None, "/bin/zsh"),
-            "/bin/zsh -ic claude"
+            build(None, true, None, None),
+            format!("{stamp}; claude --dangerously-skip-permissions")
         );
         assert_eq!(
-            claude_shell_command(None, true, None, None, "/bin/zsh"),
-            "/bin/zsh -ic 'claude --dangerously-skip-permissions'"
-        );
-        assert_eq!(
-            claude_shell_command(Some("abc123"), false, None, None, "/bin/zsh"),
-            "/bin/zsh -ic 'claude -r abc123'"
+            build(Some("abc123"), false, None, None),
+            format!("{stamp}; claude -r abc123")
         );
         // A custom button never gets the YOLO flag appended.
         assert_eq!(
-            claude_shell_command(
-                None,
-                true,
-                Some("claude --model opus"),
-                Some("opus"),
-                "/bin/zsh"
-            ),
-            "/bin/zsh -ic 'claude --model opus'"
+            build(None, true, Some("claude --model opus"), Some("opus")),
+            format!("{stamp}; claude --model opus")
+        );
+    }
+
+    /// Window names come from session titles, and a session title can be set by
+    /// a `SessionStart` hook living in a repository's own `.claude/settings.json`
+    /// — so cloning a repository must not be able to run code here. Proven by
+    /// handing each name to a real shell and reading back what it made of it.
+    #[test]
+    fn a_hostile_window_name_stays_data() {
+        for hostile in [
+            "$(touch /tmp/forestui-pwned)",
+            "`touch /tmp/forestui-pwned`",
+            "'; touch /tmp/forestui-pwned; '",
+            "it's",
+            "a!b",
+            "back\\slash",
+            "claude:wt",
+        ] {
+            let out = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!("printf %s {}", sh_quote(hostile)))
+                .output()
+                .expect("the shell runs");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                hostile,
+                "{hostile:?} did not survive as literal text"
+            );
+        }
+        assert!(
+            !std::path::Path::new("/tmp/forestui-pwned").exists(),
+            "a window name executed a command"
+        );
+
+        // And the name is still literal after the second layer of quoting.
+        let built = claude_shell_command(None, false, None, None, "/bin/sh", "$(id); rm -rf /");
+        assert_eq!(
+            decoded(&built, "/bin/sh"),
+            "tmux set-option -w @claude_birth_name '$(id); rm -rf /'; claude"
         );
     }
 }

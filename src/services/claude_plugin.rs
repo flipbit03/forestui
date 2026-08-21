@@ -144,7 +144,13 @@ pub fn uninstall_in(dir: &Path) -> Result<(), String> {
     }
     let manifest = std::fs::read_to_string(dir.join(".claude-plugin/plugin.json"))
         .map_err(|_| format!("{} is not a forestui plugin directory", dir.display()))?;
-    if !manifest.contains(PLUGIN_NAME) {
+    // Parsed, not substring-matched: this guards a recursive delete, and
+    // "forestui-tmux-title-fork" contains our name without being ours.
+    let named_ours = serde_json::from_str::<serde_json::Value>(&manifest)
+        .ok()
+        .and_then(|v| v.get("name")?.as_str().map(str::to_string))
+        .is_some_and(|name| name == PLUGIN_NAME);
+    if !named_ours {
         return Err(format!(
             "{} holds a different plugin; refusing to remove it",
             dir.display()
@@ -224,6 +230,23 @@ mod tests {
 
         install_in(&dir, true).expect("an explicit overwrite is allowed");
         assert_eq!(status_in(&dir), Status::Installed);
+    }
+
+    /// A recursive delete guarded by a substring match would take
+    /// "forestui-tmux-title-fork" with it.
+    #[test]
+    fn uninstall_refuses_a_plugin_whose_name_merely_contains_ours() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("forestui-tmux-title-fork");
+        std::fs::create_dir_all(dir.join(".claude-plugin")).unwrap();
+        std::fs::write(
+            dir.join(".claude-plugin/plugin.json"),
+            "{\"name\":\"forestui-tmux-title-fork\"}",
+        )
+        .unwrap();
+
+        uninstall_in(&dir).expect_err("must refuse a different plugin");
+        assert!(dir.exists());
     }
 
     #[test]

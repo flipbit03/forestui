@@ -81,6 +81,23 @@ day, so this is not a network call on every launch, and a build from source
 > your repositories, worktrees, and settings carry over untouched. Remove the
 > old install so the new binary wins: `uv tool uninstall forestui`.
 
+## Claude session names
+
+forestui can keep each tmux tab and the Claude session inside it under one
+name. Rename the tab and the session follows; `/rename` inside Claude renames
+the tab. The name is used verbatim — no prefix is added or stripped.
+
+```bash
+forestui --claude-plugin status      # what an install would write
+forestui --claude-plugin install
+forestui --claude-plugin uninstall
+```
+
+This installs a Claude Code plugin as its own directory. Your
+`~/.claude/settings.json` is not modified and your existing hooks are
+untouched. Only windows forestui opened are affected — a `claude` you start
+yourself, in or out of tmux, is left alone.
+
 ## Usage
 
 ```bash

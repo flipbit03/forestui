@@ -45,13 +45,16 @@ command -v jq >/dev/null 2>&1 || exit 0
 birth=$(tmux show-options -wqv -t "$TMUX_PANE" @claude_birth_name 2>/dev/null) || exit 0
 [ -n "$birth" ] || exit 0
 
-window=$(tmux display-message -p -t "$TMUX_PANE" '#{window_name}' 2>/dev/null) || exit 0
+# Control characters are stripped from both names before anything is done with
+# them: a newline inside a JSON string is invalid JSON, so a window somebody
+# renamed with one would turn every prompt into a hook error.
+window=$(tmux display-message -p -t "$TMUX_PANE" '#{window_name}' 2>/dev/null | tr -d '\000-\037') || exit 0
 [ -n "$window" ] || exit 0
 
 # Empty when the session has no name. Generated titles are not reported here,
 # only names set deliberately, which is why an auto-titled session never
 # renames its tab.
-title=$(printf '%s' "$input" | jq -r '.session_title // empty' 2>/dev/null)
+title=$(printf '%s' "$input" | jq -r '.session_title // empty' 2>/dev/null | tr -d '\000-\037')
 synced=$(tmux show-options -wqv -t "$TMUX_PANE" @claude_synced_name 2>/dev/null)
 
 mode=none
@@ -67,7 +70,13 @@ if [ -z "$synced" ]; then
   fi
 elif [ "$window" != "$synced" ]; then
   mode=push
-elif [ -n "$title" ] && [ "$title" != "$synced" ]; then
+elif [ -z "$title" ]; then
+  # The window agrees with the last sync but the session has no name. Either a
+  # new session started in a window an earlier one used, or a push was recorded
+  # and never took. Pushing again covers both and costs nothing when the name
+  # is already right, because Claude ignores a title equal to the current one.
+  mode=push
+elif [ "$title" != "$synced" ]; then
   mode=adopt
 fi
 
