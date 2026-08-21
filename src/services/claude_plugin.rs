@@ -35,13 +35,23 @@ const ASSETS: &[(&str, &str)] = &[
 /// The only file that has to be executable — Claude runs it as a command.
 const EXECUTABLE: &str = "hooks/tmux-title.sh";
 
+/// Bumped whenever a shipped file changes, so an install by an older forestui
+/// is recognised as old rather than reported as the user having edited it.
+const SHIPPED_VERSION: &str = "2";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
     NotInstalled,
     /// Every shipped file is present and byte-identical to this build's copy.
     Installed,
-    /// Installed, but these files differ from what this build ships — either a
-    /// hand edit or an older forestui. Never overwritten without being asked.
+    /// An older forestui installed this. Upgrading is not overwriting the
+    /// user's work, so it needs no confirmation — which is the whole reason
+    /// this is a separate state from drift.
+    Outdated {
+        installed: String,
+    },
+    /// Installed at this build's version, but these files differ from what it
+    /// ships. That is a hand edit, and it is never overwritten unasked.
     Drifted(Vec<String>),
 }
 
@@ -50,6 +60,9 @@ impl Status {
         match self {
             Status::NotInstalled => "Not installed".to_string(),
             Status::Installed => "Installed".to_string(),
+            Status::Outdated { installed } => {
+                format!("Installed at version {installed}, this build ships {SHIPPED_VERSION}")
+            }
             Status::Drifted(files) => format!("Installed, {} file(s) modified", files.len()),
         }
     }
@@ -77,6 +90,12 @@ pub fn status_in(dir: &Path) -> Status {
     if !dir.join(".claude-plugin/plugin.json").exists() {
         return Status::NotInstalled;
     }
+    if installed_version(dir).as_deref() != Some(SHIPPED_VERSION) {
+        return Status::Outdated {
+            installed: installed_version(dir).unwrap_or_else(|| "unknown".to_string()),
+        };
+    }
+
     let drifted: Vec<String> = ASSETS
         .iter()
         .filter(|(rel, shipped)| {
@@ -92,6 +111,12 @@ pub fn status_in(dir: &Path) -> Status {
     } else {
         Status::Drifted(drifted)
     }
+}
+
+fn installed_version(dir: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(dir.join(".claude-plugin/plugin.json")).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    Some(parsed.get("version")?.as_str()?.to_string())
 }
 
 /// The paths an install touches, for showing the user before it happens.
@@ -202,6 +227,29 @@ mod tests {
         assert!(!dir.exists());
         // Uninstalling what is not there is a no-op, not a failure.
         uninstall_in(&dir).expect("second uninstall");
+    }
+
+    /// An install by an older forestui is not the user's work. Reporting it as
+    /// drift would make every upgrade look like something to be careful about.
+    #[test]
+    fn an_older_install_is_outdated_not_drifted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(PLUGIN_NAME);
+        install_in(&dir, false).unwrap();
+
+        let manifest = dir.join(".claude-plugin/plugin.json");
+        let old = std::fs::read_to_string(&manifest)
+            .unwrap()
+            .replace(SHIPPED_VERSION, "1");
+        std::fs::write(&manifest, old).unwrap();
+
+        match status_in(&dir) {
+            Status::Outdated { installed } => assert_eq!(installed, "1"),
+            other => panic!("expected Outdated, got {other:?}"),
+        }
+        // Upgrading is not clobbering, so it needs no overwrite flag.
+        install_in(&dir, false).expect("an upgrade installs without confirmation");
+        assert_eq!(status_in(&dir), Status::Installed);
     }
 
     /// A hand-edited hook is the user's work. Reporting it and stopping is the
