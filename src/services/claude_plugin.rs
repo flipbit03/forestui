@@ -125,6 +125,14 @@ pub fn planned_paths() -> Vec<PathBuf> {
     ASSETS.iter().map(|(rel, _)| dir.join(rel)).collect()
 }
 
+/// The shipped files, relative to the plugin directory. Shown under the
+/// directory rather than as absolute paths: three absolute paths that differ
+/// only in their last component are three identical lines once a dialog has
+/// truncated them.
+pub fn asset_names() -> Vec<&'static str> {
+    ASSETS.iter().map(|(rel, _)| *rel).collect()
+}
+
 pub fn install(overwrite_drift: bool) -> Result<(), String> {
     install_in(&plugin_dir(), overwrite_drift)
 }

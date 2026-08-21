@@ -8,8 +8,9 @@
 
 use crate::app::{App, Direction, HitTarget, ModalClick};
 use crate::modal::{
-    AddRepositoryModal, AddWorktreeModal, ConfirmModal, CreateFromIssueModal, CustomButtonsModal,
-    EDITORS, EditButtonModal, Modal, SPINNER, SettingsModal, ThemePickerModal,
+    AddRepositoryModal, AddWorktreeModal, ClaudeIntegrationModal, ConfirmModal,
+    CreateFromIssueModal, CustomButtonsModal, EDITORS, EditButtonModal, Modal, SPINNER,
+    SettingsModal, ThemePickerModal,
 };
 use crate::theme;
 use crate::ui::widgets::{self, BUTTON_HEIGHT, TextInput};
@@ -77,6 +78,7 @@ pub fn render_modal(frame: &mut Frame, modal: &Modal, area: Rect) -> Hits {
         Modal::CustomButtons(m) => custom_buttons(frame, m, area, &mut hits),
         Modal::EditButton(m) => edit_button(frame, m, area, &mut hits),
         Modal::ThemePicker(m) => theme_picker(frame, m, area, &mut hits),
+        Modal::ClaudeIntegration(m) => claude_integration(frame, m, area, &mut hits),
         Modal::Confirm(m) => confirm(frame, m, area, &mut hits),
     }
     hits
@@ -695,8 +697,9 @@ fn create_from_issue(frame: &mut Frame, modal: &CreateFromIssueModal, area: Rect
 // ------------------------------------------------------------------ Settings
 
 fn settings(frame: &mut Frame, modal: &SettingsModal, area: Rect, hits: &mut Hits) {
-    // Three labelled controls, then the buttons section, the gap and the buttons.
-    let rect = widgets::centered_rect(WIDE, CHROME + 21, area);
+    // Three labelled controls, the custom-button and integration sections, then
+    // the gap and the buttons.
+    let rect = widgets::centered_rect(WIDE, CHROME + 26, area);
     let mut column = dialog(frame, rect, "Settings", theme::title());
 
     let editor = EDITORS
@@ -747,6 +750,24 @@ fn settings(frame: &mut Frame, modal: &SettingsModal, area: Rect, hits: &mut Hit
             modal.focus == SettingsModal::FOCUS_MANAGE,
             theme::Variant::Normal,
             SettingsModal::FOCUS_MANAGE,
+        )],
+        false,
+    );
+    column.gap();
+    column.line(frame, widgets::section("CLAUDE CODE INTEGRATION"));
+    column.text(
+        frame,
+        crate::services::claude_plugin::status().label(),
+        theme::muted(),
+    );
+    column.controls(
+        frame,
+        hits,
+        vec![control(
+            "Session Name Sync...",
+            modal.focus == SettingsModal::FOCUS_INTEGRATION,
+            theme::Variant::Normal,
+            SettingsModal::FOCUS_INTEGRATION,
         )],
         false,
     );
@@ -983,6 +1004,83 @@ fn theme_picker(frame: &mut Frame, modal: &ThemePickerModal, area: Rect, hits: &
     );
 }
 
+// -------------------------------------------------- Claude Code integration
+
+fn claude_integration(
+    frame: &mut Frame,
+    modal: &ClaudeIntegrationModal,
+    area: Rect,
+    hits: &mut Hits,
+) {
+    use crate::services::claude_plugin::{self, Status};
+
+    let names = claude_plugin::asset_names();
+    let drifted = match &modal.status {
+        Status::Drifted(files) => files.len(),
+        _ => 0,
+    };
+    let height = CHROME + 13 + names.len() as u16 + drifted as u16 + modal.message.is_some() as u16;
+    let rect = widgets::centered_rect(WIDTH, height, area);
+    let mut column = dialog(frame, rect, "Session Name Sync", theme::primary());
+
+    column.text(
+        frame,
+        "Names each Claude session after the tmux window it runs in, and keeps".to_string(),
+        theme::secondary(),
+    );
+    column.text(
+        frame,
+        "the two in step: rename either and the other follows.".to_string(),
+        theme::secondary(),
+    );
+    column.gap();
+    column.text(frame, modal.status.label(), theme::primary());
+    if let Status::Drifted(files) = &modal.status {
+        for file in files {
+            column.text(frame, format!("  edited: {file}"), theme::muted());
+        }
+    }
+    if let Some(message) = &modal.message {
+        column.text(frame, message.clone(), theme::muted());
+    }
+    column.gap();
+    // Said plainly, because "installs a plugin" is the part that deserves to
+    // be specific: this writes one directory and nothing else.
+    column.text(
+        frame,
+        "Installs a Claude Code plugin. Your settings.json is not touched.".to_string(),
+        theme::secondary(),
+    );
+    // `~` rather than the absolute home, which is the half that pushes the
+    // interesting end of the path off the dialog.
+    let home = crate::util::home_dir();
+    let dir = claude_plugin::plugin_dir();
+    let shown = match dir.strip_prefix(&home) {
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => dir.display().to_string(),
+    };
+    column.text(frame, format!("  {shown}/"), theme::muted());
+    for name in &names {
+        column.text(frame, format!("    {name}"), theme::muted());
+    }
+    column.gap();
+
+    let controls: Vec<_> = modal
+        .actions()
+        .iter()
+        .enumerate()
+        .map(|(index, action)| {
+            let variant = if action.is_destructive() {
+                theme::Variant::Destructive
+            } else {
+                theme::Variant::Normal
+            };
+            control(action.label(), modal.focus == index, variant, index)
+        })
+        .collect();
+    column.controls(frame, hits, controls, true);
+}
+
 // ------------------------------------------------------------------ Confirm
 
 fn confirm(frame: &mut Frame, modal: &ConfirmModal, area: Rect, hits: &mut Hits) {
@@ -1145,6 +1243,10 @@ mod tests {
                 "Settings",
             ),
             (
+                Modal::ClaudeIntegration(ClaudeIntegrationModal::new()),
+                "Session Name Sync",
+            ),
+            (
                 Modal::CustomButtons(CustomButtonsModal::new(vec![button("Opus")])),
                 "Custom Claude Buttons",
             ),
@@ -1186,20 +1288,26 @@ mod tests {
         for (modal, title) in every_modal() {
             // Not every dialog has a button row — the list editors drive
             // themselves from a key hint instead. Ask a roomy render which ones
-            // do, so this cannot quietly pass by checking nothing.
-            if !render(&modal, 160, 40).contains("Cancel") {
+            // do, so this cannot quietly pass by checking nothing. The dismiss
+            // button is Cancel everywhere except the integration dialog, whose
+            // actions apply as they are taken, leaving nothing to cancel.
+            let roomy = render(&modal, 160, 40);
+            let Some(dismiss) = ["Cancel", "Close"]
+                .into_iter()
+                .find(|label| roomy.contains(label))
+            else {
                 continue;
-            }
+            };
             checked += 1;
             let (screen, hits) = render_with_hits(&modal, 80, 24);
             assert!(
-                screen.contains("Cancel"),
+                screen.contains(dismiss),
                 "{title}: button row fell off an 80x24 terminal:\n{screen}"
             );
-            let cell = cell_of(&screen, "Cancel");
+            let cell = cell_of(&screen, dismiss);
             assert!(
                 index_at(&hits, cell).is_some(),
-                "{title}: Cancel drawn but not clickable at 80x24:\n{screen}"
+                "{title}: {dismiss} drawn but not clickable at 80x24:\n{screen}"
             );
         }
         assert!(checked >= 4, "expected several modals to have buttons");
@@ -1344,6 +1452,7 @@ mod tests {
             ("feat/", SettingsModal::FOCUS_PREFIX),
             ("│ Forest Dark… │", SettingsModal::FOCUS_THEME),
             ("│ Manage Custom Buttons... │", SettingsModal::FOCUS_MANAGE),
+            ("│ Session Name Sync... │", SettingsModal::FOCUS_INTEGRATION),
             // Short labels are padded out to Textual's `min-width: 10`.
             ("│  Save  │", SettingsModal::FOCUS_SAVE),
             ("│ Cancel │", SettingsModal::FOCUS_CANCEL),

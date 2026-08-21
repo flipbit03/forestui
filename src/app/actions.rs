@@ -8,11 +8,11 @@
 use super::{Action, App, Field};
 use crate::event::Severity;
 use crate::event::{AppEvent, BranchTarget, EventTx};
-use crate::modal::ModalOutcome;
 use crate::modal::{
     AddWorktreeModal, ConfirmAction, ConfirmModal, CreateFromIssueModal, Modal, ModalEffect,
     ModalResult,
 };
+use crate::modal::{IntegrationAction, ModalOutcome};
 use crate::models::{CustomClaudeButton, Repository, Worktree};
 use crate::services::{claude_session, git, github, settings as settings_service, tmux};
 use std::path::{Path, PathBuf};
@@ -62,8 +62,52 @@ impl App {
         }
     }
 
+    /// Install, upgrade, overwrite or remove the plugin, then leave the dialog
+    /// showing what happened.
+    ///
+    /// Synchronous on purpose: this writes three small files inside the user's
+    /// own config directory, and a dialog that reported "Installed" from a
+    /// background task could just as easily report it before the write landed.
+    fn run_claude_plugin_action(&mut self, action: IntegrationAction) {
+        use crate::services::claude_plugin;
+
+        let outcome = match action {
+            IntegrationAction::Install | IntegrationAction::Upgrade => {
+                claude_plugin::install(false)
+                    .map(|()| "Sessions started from now on are named after their tab.".to_string())
+            }
+            // Reinstall writes the same bytes back; overwrite is the only path
+            // that discards a hand edit, and it is only reachable from a dialog
+            // whose button says so.
+            IntegrationAction::Reinstall => {
+                claude_plugin::install(false).map(|()| "Shipped files rewritten.".to_string())
+            }
+            IntegrationAction::Overwrite => {
+                claude_plugin::install(true).map(|()| "Local edits replaced.".to_string())
+            }
+            IntegrationAction::Uninstall => claude_plugin::uninstall()
+                .map(|()| "Removed. Sessions already running keep their names.".to_string()),
+            IntegrationAction::Close => return,
+        };
+
+        let message = match outcome {
+            Ok(done) => {
+                self.notify(done.clone(), Severity::Information);
+                done
+            }
+            Err(error) => {
+                self.notify(error.clone(), Severity::Error);
+                error
+            }
+        };
+        if let Some(Modal::ClaudeIntegration(modal)) = self.modals.last_mut() {
+            modal.refresh(message);
+        }
+    }
+
     fn run_modal_effect(&mut self, effect: ModalEffect) {
         match effect {
+            ModalEffect::ClaudePlugin(action) => self.run_claude_plugin_action(action),
             ModalEffect::Fetch(repo_path) => {
                 let repo_id = self.state.selection.repository_id.unwrap_or_default();
                 let tx = self.tx.clone();
