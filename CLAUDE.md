@@ -2,6 +2,31 @@
 
 This file provides context for AI assistants (like Claude) working on forestui.
 
+## Never touch the user's live tmux
+
+**This rule applies to every task in this repo, not just testing.**
+
+The user is almost certainly running their own forestui inside tmux *right
+now*. A bare `tmux` command from a shell talks to their live server, and the
+very next command is always the one that renames, kills, or reorders a window
+they are actually using. This has gone wrong repeatedly.
+
+- **Never run a bare `tmux` command** — not to look, not to list, not "just
+  once". `tmux list-sessions` is as dangerous as `tmux kill-server`, because
+  it is the step that convinces you the next call is safe.
+- **Drive tmux only through `tu`**, with `TMUX_TMPDIR` pointed at a throwaway
+  directory. The `test-forestui` skill has the exact invocation.
+- **Exploring tmux behaviour is not an exception.** Learning what a tmux
+  command does, probing options or hooks, reproducing something from the
+  docs — all of it goes on an isolated server under `tu`. A separate `-L`
+  socket is not a sanctioned workaround: one forgotten flag hits the live
+  server.
+
+The `test-forestui` skill carries the full harness recipe, but it only loads
+when a task *looks* like forestui testing. Tasks that do not look like
+testing — spikes, doc research, "just checking how tmux options work" — are
+exactly where this rule gets broken, which is why it lives here instead.
+
 ## Project Overview
 
 forestui is a terminal UI for managing Git worktrees, built with Rust and
@@ -359,6 +384,9 @@ section fell back to its empty state. Keep that guard honest when adding cases.
 The harness waits on screen conditions, never fixed sleeps — Textual repaints
 far slower than ratatui, and fixed sleeps produced false mismatches. Anything
 added to the sweep must use `await <regex>`.
+
+All of the below runs under the isolation rule at the top of this file: tmux
+is driven through `tu` with `TMUX_TMPDIR`, never directly.
 
 Note that `ensure_tmux` re-executes the binary, so for `tu` runs you must
 build first and pass the built binary's path as the sweep's command argument
