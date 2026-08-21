@@ -18,17 +18,17 @@ event="${1:-}"
 input=$(cat)
 [ -n "$event" ] || exit 0
 
-# Not in tmux, or the user switched the whole thing off.
+# There is deliberately no per-window or global off switch. Installed means
+# tabs and sessions agree; not wanting that is an uninstall, which is one
+# decision made in one place instead of a lever to remember per tab.
+#
+# Three guards, narrowing. Not inside tmux at all — a bare `claude` in a plain
+# terminal — stops here, before tmux is ever invoked.
 [ -n "${TMUX_PANE:-}" ] || exit 0
-[ -f "${HOME:-}/.forestui-no-title-sync" ] && exit 0
 
-# Per-window opt-out. Anything other than an explicit off means carry on.
-case $(tmux show-options -wqv -t "$TMUX_PANE" @claude_title_sync 2>/dev/null) in
-  0 | off | no) exit 0 ;;
-esac
-
+# No stamp means forestui did not open this window, so its name is not ours to
+# read: a tmux window the user made themselves is left alone.
 birth=$(tmux show-options -wqv -t "$TMUX_PANE" @claude_birth_name 2>/dev/null) || exit 0
-# No stamp means forestui did not open this window, so its name is not ours.
 [ -n "$birth" ] || exit 0
 
 window=$(tmux display-message -p -t "$TMUX_PANE" '#{window_name}' 2>/dev/null) || exit 0

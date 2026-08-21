@@ -77,8 +77,8 @@ fn run_claude_plugin_action(action: cli::ClaudePluginAction) -> anyhow::Result<(
             claude_plugin::install(false).map_err(|e| anyhow::anyhow!(e))?;
             println!();
             println!("Installed. It takes effect in Claude sessions started from now on.");
-            println!("Turn it off for one tmux window with:");
-            println!("  tmux set-option -w @claude_title_sync 0");
+            println!("Renaming a forestui tab now renames the Claude session in it.");
+            println!("To stop that, uninstall — there is no per-tab switch to remember.");
         }
         cli::ClaudePluginAction::Uninstall => {
             claude_plugin::uninstall().map_err(|e| anyhow::anyhow!(e))?;
