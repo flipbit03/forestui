@@ -42,6 +42,12 @@ fn tmux(args: &[&str]) -> Option<String> {
 /// Sessions in a group genuinely share their windows, so there any member is a
 /// correct target; the activity scan still runs in that case, so the window
 /// opens in whichever terminal the user is actually looking at.
+///
+/// There is deliberately no fallback for a missing `TMUX_PANE`. The previous
+/// implementation ended in "first attached session, else any session", and
+/// guessing is what put windows in the wrong forestui: a caller that cannot
+/// identify its own pane cannot identify its own session either, and failing
+/// the action visibly beats acting on somebody else's session.
 pub fn current_session() -> Option<String> {
     if !is_inside_tmux() {
         return None;
