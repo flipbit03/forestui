@@ -212,14 +212,14 @@ impl Speaker {
 }
 
 /// One side speaking, for the preview on a session card.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionTurn {
     pub speaker: Speaker,
     pub text: String,
 }
 
 /// A Claude Code session discovered on disk.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaudeSession {
     pub id: String,
     /// What to show in the list: the name Claude records, else the first prompt.

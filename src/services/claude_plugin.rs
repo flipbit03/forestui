@@ -192,6 +192,18 @@ pub fn uninstall_in(dir: &Path) -> Result<(), String> {
     std::fs::remove_dir_all(dir).map_err(|e| format!("could not remove {}: {e}", dir.display()))
 }
 
+/// The hook reads the session's own name with `jq`. Without it the sync does
+/// nothing at all rather than half of it, so this is worth saying out loud
+/// wherever the plugin is installed.
+pub fn jq_available() -> bool {
+    std::process::Command::new("jq")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 fn digest(contents: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(contents.as_bytes());

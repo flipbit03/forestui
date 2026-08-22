@@ -799,6 +799,12 @@ pub struct SettingsModal {
     legacy_theme: String,
     pub branch_prefix: TextInput,
     pub custom_buttons: Vec<CustomClaudeButton>,
+    /// Snapshot, not a live read. The renderer runs on every frame, and asking
+    /// on each one meant three file reads and three digests per repaint — I/O
+    /// in a draw path, which stutters visibly on a slow or networked home.
+    /// Refreshed when this dialog opens and whenever the integration dialog it
+    /// opens is dismissed.
+    pub integration_status: crate::services::claude_plugin::Status,
     /// One of the `FOCUS_*` constants; see [`SettingsModal`].
     pub focus: usize,
 }
@@ -830,6 +836,7 @@ impl SettingsModal {
             legacy_theme: settings.legacy_theme.clone(),
             branch_prefix: TextInput::new(settings.branch_prefix.clone()).with_placeholder("feat/"),
             custom_buttons: settings.custom_buttons.clone(),
+            integration_status: crate::services::claude_plugin::status(),
             focus: Self::FOCUS_EDITOR,
         }
     }

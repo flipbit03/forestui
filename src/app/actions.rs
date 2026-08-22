@@ -48,7 +48,15 @@ impl App {
         match modal.handle_key(key) {
             ModalOutcome::None => {}
             ModalOutcome::Close => {
-                self.modals.pop();
+                let closed = self.modals.pop();
+                // The integration dialog installs and removes the plugin, so
+                // the Settings section that opened it has to re-read the status
+                // it snapshotted — including on Esc, which reports nothing.
+                if matches!(closed, Some(Modal::ClaudeIntegration(_)))
+                    && let Some(Modal::Settings(parent)) = self.modals.last_mut()
+                {
+                    parent.integration_status = crate::services::claude_plugin::status();
+                }
             }
             ModalOutcome::Push(child) => self.modals.push(*child),
             ModalOutcome::Effect(effect) => self.run_modal_effect(effect),

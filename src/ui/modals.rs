@@ -755,11 +755,7 @@ fn settings(frame: &mut Frame, modal: &SettingsModal, area: Rect, hits: &mut Hit
     );
     column.gap();
     column.line(frame, widgets::section("CLAUDE CODE INTEGRATION"));
-    column.text(
-        frame,
-        crate::services::claude_plugin::status().label(),
-        theme::muted(),
-    );
+    column.text(frame, modal.integration_status.label(), theme::muted());
     column.controls(
         frame,
         hits,
@@ -1019,7 +1015,12 @@ fn claude_integration(
         Status::Drifted(files) => files.len(),
         _ => 0,
     };
-    let height = CHROME + 13 + names.len() as u16 + drifted as u16 + modal.message.is_some() as u16;
+    let height = CHROME
+        + 13
+        + names.len() as u16
+        + drifted as u16
+        + modal.message.is_some() as u16
+        + if claude_plugin::jq_available() { 0 } else { 3 };
     let rect = widgets::centered_rect(WIDTH, height, area);
     let mut column = dialog(frame, rect, "Session Name Sync", theme::primary());
 
@@ -1062,6 +1063,19 @@ fn claude_integration(
     column.text(frame, format!("  {shown}/"), theme::muted());
     for name in &names {
         column.text(frame, format!("    {name}"), theme::muted());
+    }
+    if !claude_plugin::jq_available() {
+        column.gap();
+        column.text(
+            frame,
+            "jq is not on PATH. The hook reads the session's own name with it,".to_string(),
+            theme::destructive(),
+        );
+        column.text(
+            frame,
+            "so until jq is installed this does nothing at all.".to_string(),
+            theme::destructive(),
+        );
     }
     column.gap();
 

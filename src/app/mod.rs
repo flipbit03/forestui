@@ -772,7 +772,14 @@ impl App {
 
         if self.last_session_refresh.elapsed() >= SESSION_REFRESH_INTERVAL {
             self.last_session_refresh = Instant::now();
-            self.refresh_visible_sessions();
+            // The directory walk only — not the per-card refresh. A cached scan
+            // costs a fraction of a millisecond and repaints nothing when it
+            // finds nothing, whereas the per-card pass raises a spinner on
+            // every card, and one that clears before the next frame is a
+            // flicker every ten seconds with nothing to wait for.
+            if let Some(path) = self.state.selected_path() {
+                self.scan_sessions(&path);
+            }
         }
 
         if self.last_issue_refresh.elapsed() >= ISSUE_REFRESH_INTERVAL {
@@ -814,7 +821,10 @@ impl App {
         // sweep almost always finds nothing, and its fold claims a repaint
         // itself when it changes something.
         if !mouse::is_pointer_motion(&event)
-            && !matches!(event, AppEvent::Tick | AppEvent::WorktreesScanned { .. })
+            && !matches!(
+                event,
+                AppEvent::Tick | AppEvent::WorktreesScanned { .. } | AppEvent::Sessions { .. }
+            )
         {
             self.redraw = true;
         }
@@ -828,8 +838,10 @@ impl App {
                 self.sessions_refreshing.remove(&id);
                 // A result for a selection the user has already left is not
                 // wrong, just irrelevant — and folding it would put another
-                // path's conversation into this pane.
-                if self.state.selected_path().as_deref() != Some(path.as_str()) {
+                // path's conversation into this pane. Keyed on the pane's own
+                // path, as the directory scan is: two notions of "current"
+                // eventually disagree.
+                if path != self.meta.path {
                     return;
                 }
                 if let Some(list) = self.sessions.as_mut() {
@@ -855,8 +867,13 @@ impl App {
                 // empty *successful* scan is real content and lands normally.
                 if let Some(sessions) = sessions
                     && path == self.meta.path
+                    && self.sessions.as_deref() != Some(sessions.as_slice())
                 {
+                    // Claims its own repaint, like the worktree sweep: this runs
+                    // on a timer and almost always finds exactly what is already
+                    // on screen.
                     self.sessions = Some(sessions);
+                    self.redraw = true;
                 }
             }
             AppEvent::Issues { path, issues } => {
@@ -1868,11 +1885,50 @@ mod tests {
             "focus return did not re-read the cards on screen"
         );
 
-        // And the tick keeps doing it while forestui just sits there.
+        // The tick keeps the list current too, but with the directory walk
+        // alone: a per-card pass raises a spinner on every card, and one that
+        // clears before the next frame is a flicker every ten seconds.
         app.sessions_refreshing.clear();
+        app.sessions_in_flight.clear();
         app.last_session_refresh = Instant::now() - SESSION_REFRESH_INTERVAL;
         app.handle_event(AppEvent::Tick);
-        assert_eq!(app.sessions_refreshing.len(), 2, "the periodic refresh");
+        assert!(
+            app.sessions_refreshing.is_empty(),
+            "the tick must not raise per-card spinners"
+        );
+        assert!(
+            !app.sessions_in_flight.is_empty(),
+            "the tick did not scan for new or removed sessions"
+        );
+    }
+
+    /// The scan runs on a timer and almost always finds what is already on
+    /// screen. Repainting for that is what the tick's whole design is against.
+    #[tokio::test]
+    async fn a_scan_that_changes_nothing_does_not_repaint() {
+        let (_dir, mut app) = app_with_fixture();
+        // The fold keys on the pane's own path, which is what a late result for
+        // a selection the user has left is checked against.
+        let path = app.state.selected_path().expect("a selection");
+        app.meta.path = path.clone();
+        let sessions = vec![a_session("one")];
+        app.sessions = Some(sessions.clone());
+
+        app.redraw = false;
+        app.handle_event(AppEvent::Sessions {
+            path: path.clone(),
+            sessions: Some(sessions),
+        });
+        assert!(!app.redraw, "an unchanged scan repainted");
+
+        app.handle_event(AppEvent::Sessions {
+            path,
+            sessions: Some(vec![a_session("one"), a_session("two")]),
+        });
+        assert!(
+            app.redraw,
+            "a scan that found a new session did not repaint"
+        );
     }
 
     /// Each card lands on its own, so the fold replaces one entry and leaves
@@ -1882,6 +1938,7 @@ mod tests {
     async fn a_refreshed_session_replaces_its_own_card_and_reorders() {
         let (_dir, mut app) = app_with_fixture();
         let path = app.state.selected_path().expect("a selection");
+        app.meta.path = path.clone();
         let mut older = a_session("one");
         older.last_timestamp = chrono::Utc::now() - chrono::Duration::hours(2);
         app.sessions = Some(vec![a_session("two"), older]);
@@ -1910,6 +1967,7 @@ mod tests {
     async fn a_session_that_vanished_loses_its_card() {
         let (_dir, mut app) = app_with_fixture();
         let path = app.state.selected_path().expect("a selection");
+        app.meta.path = path.clone();
         app.sessions = Some(vec![a_session("one"), a_session("two")]);
         app.sessions_refreshing.insert("one".to_string());
 
