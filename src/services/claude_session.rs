@@ -212,6 +212,24 @@ fn title_field(data: &serde_json::Value, key: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
+/// Whether a `user` record is something the person actually sent.
+///
+/// `user` is the transport, not the author: tool results come back as `user`
+/// records, and so do messages the system injects — a background agent
+/// reporting in, a task notification. `origin.kind` separates them. A record
+/// with no `origin` predates the field, so it is taken at face value rather
+/// than dropped, which would erase the older half of a long conversation.
+fn is_from_the_user(data: &serde_json::Value) -> bool {
+    match data
+        .get("origin")
+        .and_then(|o| o.get("kind"))
+        .and_then(|k| k.as_str())
+    {
+        Some(kind) => kind == "human",
+        None => true,
+    }
+}
+
 pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
     let session_id = file_path.file_stem()?.to_string_lossy().to_string();
     let raw = std::fs::read_to_string(file_path).ok()?;
@@ -252,19 +270,23 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
 
         let is_user = data.get("type").and_then(|t| t.as_str()) == Some("user")
             || data.get("role").and_then(|r| r.as_str()) == Some("user");
-        if is_user {
+        // Everything below counts turns the person took, so the count and the
+        // preview agree with each other and with what they remember saying. It
+        // used to count every `user` record, which on a long conversation is
+        // mostly tool results: 5528 where 335 messages were sent.
+        if is_user
+            && is_from_the_user(&data)
+            && let Some(content) = text_content(&data)
+            && !content.is_empty()
+            && !content.starts_with('<')
+        {
             message_count += 1;
-            if let Some(content) = text_content(&data)
-                && !content.is_empty()
-                && !content.starts_with('<')
-            {
-                let normalized = collapse_blank_lines(&content);
-                let clipped: String = normalized.chars().take(100).collect();
-                if first_prompt.is_empty() {
-                    first_prompt = clipped.clone();
-                }
-                last_message = clipped;
+            let normalized = collapse_blank_lines(&content);
+            let clipped: String = normalized.chars().take(100).collect();
+            if first_prompt.is_empty() {
+                first_prompt = clipped.clone();
             }
+            last_message = clipped;
         }
     }
 
@@ -368,6 +390,41 @@ mod tests {
 
     /// The session list is only useful if it shows the name the user gave the
     /// session. The first prompt is the last resort, not the first choice.
+    /// `user` is the transport, not the author. A long conversation is mostly
+    /// tool results — one real session showed 5528 `user` records against 335
+    /// messages actually sent — and the system injects `user` records too, so
+    /// the preview could show a background agent reporting in rather than
+    /// anything the person wrote.
+    #[test]
+    fn only_what_the_person_sent_is_counted_or_previewed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sess-turns.jsonl");
+        let lines = [
+            // Typed.
+            r#"{"type":"user","timestamp":"2026-08-01T10:00:00Z","origin":{"kind":"human"},"message":{"content":"first thing I said"}}"#,
+            // A tool result: content is a block array, not text.
+            r#"{"type":"user","timestamp":"2026-08-01T10:00:01Z","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#,
+            // Injected by the system, not by the person.
+            r#"{"type":"user","timestamp":"2026-08-01T10:00:02Z","origin":{"kind":"peer"},"message":{"content":"Background agent finished"}}"#,
+            r#"{"type":"user","timestamp":"2026-08-01T10:00:03Z","origin":{"kind":"task-notification"},"message":{"content":"a task completed"}}"#,
+            // A reminder the harness wraps in a tag.
+            r#"{"type":"user","timestamp":"2026-08-01T10:00:04Z","origin":{"kind":"human"},"message":{"content":"<system-reminder>ignore me</system-reminder>"}}"#,
+            // Typed again — this is the last thing the person said.
+            r#"{"type":"user","timestamp":"2026-08-01T10:00:05Z","origin":{"kind":"human"},"message":{"content":"last thing I said"}}"#,
+            // No origin at all: an older transcript, taken at face value.
+            r#"{"type":"user","timestamp":"2026-08-01T10:00:06Z","message":{"content":"from before origin existed"}}"#,
+        ];
+        std::fs::write(&file, lines.join("\n") + "\n").unwrap();
+
+        let session = parse_session_file(&file).expect("a session");
+        assert_eq!(
+            session.message_count, 3,
+            "counted something the person did not send"
+        );
+        assert_eq!(session.last_message, "from before origin existed");
+        assert_eq!(session.title, "first thing I said");
+    }
+
     #[test]
     fn title_prefers_the_recorded_name_over_the_first_prompt() {
         let dir = tempfile::tempdir().unwrap();
