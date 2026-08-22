@@ -9,11 +9,12 @@
 //! subcommand, which is where this differs from `lineark` and `terminal-use`:
 //!
 //! - It never blocks the UI. The check runs on a background task after the
-//!   terminal is up. Success shows one notification; network failures stay
-//!   silent (offline is the common case, not the user's problem); only a
-//!   *persistent local* failure — an unwritable install dir — surfaces as an
-//!   error, and is remembered in the cache so the download is not re-spent on
-//!   every launch.
+//!   terminal is up, on every launch — nothing is cached, so a release is
+//!   picked up as soon as it exists. Success shows one notification; anything
+//!   the network is responsible for stays silent (offline is the common case,
+//!   not the user's problem); only a *persistent local* failure — an
+//!   unwritable install dir — surfaces as an error, and is remembered for an
+//!   hour so the download is not re-spent on every launch meanwhile.
 //! - It only ever replaces a binary that came from a release. A `cargo install`
 //!   build defers to cargo, and a source build (version `0.0.0`) does nothing at
 //!   all, so `cargo run` in a checkout is never overwritten.
@@ -22,12 +23,20 @@
 //!   checksums for the updater to accept it.
 
 use anyhow::{Context, Result};
+#[cfg(any(feature = "binary-release", test))]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "binary-release")]
 use std::path::PathBuf;
+#[cfg(feature = "binary-release")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const GITHUB_REPO: &str = "flipbit03/forestui";
-const CACHE_TTL_SECS: u64 = 24 * 60 * 60;
+/// How long a failed install is taken at its word before the download is spent
+/// again. Short enough that an install dir the user has since made writable
+/// heals on its own, long enough that a persistent failure is not re-downloaded
+/// every time forestui is opened.
+#[cfg(any(feature = "binary-release", test))]
+const INSTALL_RETRY_SECS: u64 = 60 * 60;
 const USER_AGENT: &str = "forestui-self-update";
 
 /// The compiled-in version, stamped from the git tag by the release workflow.
@@ -57,32 +66,46 @@ pub fn is_newer(current: &str, latest: &str) -> bool {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct VersionCache {
-    checked_at: u64,
-    latest_version: String,
-    /// Set when downloading or installing `latest_version` failed after a
-    /// successful lookup. Remembered so the next launch does not re-spend the
-    /// multi-MB download on a failure that will repeat (an unwritable install
-    /// dir fails identically every time); cleared by expiry, a newer release,
-    /// or a successful install.
+/// The only thing worth carrying between launches.
+///
+/// The version lookup is not: it runs on every launch, so a release reaches the
+/// user the next time they open forestui rather than up to a day later. A
+/// failed install is, because it repeats — an unwritable install dir fails
+/// identically every time, and rediscovering that costs a multi-MB download.
+///
+/// The filename is kept from when this cached the lookup itself: an older build
+/// reading it simply fails to parse and looks the version up, which is now the
+/// behaviour anyway, and nothing is left littering the config dir.
+#[cfg(any(feature = "binary-release", test))]
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct UpdateMemo {
+    /// Set when downloading or installing a known-newer version failed for a
+    /// local reason; cleared by the retry cooldown, a newer release, or a
+    /// successful install.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     install_failed: Option<InstallFailure>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg(any(feature = "binary-release", test))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct InstallFailure {
     version: String,
     reason: String,
+    /// When it happened. The memo saves bandwidth, it is not a verdict: past
+    /// the cooldown the install is tried again.
+    #[serde(default)]
+    failed_at: u64,
 }
 
-fn cache_path() -> PathBuf {
+#[cfg(feature = "binary-release")]
+fn memo_path() -> PathBuf {
     crate::util::home_dir()
         .join(".config")
         .join("forestui")
         .join("latest_version_check.json")
 }
 
+#[cfg(feature = "binary-release")]
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -90,55 +113,29 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-fn read_cache() -> Option<VersionCache> {
-    serde_json::from_str(&std::fs::read_to_string(cache_path()).ok()?).ok()
+#[cfg(feature = "binary-release")]
+fn read_memo() -> Option<UpdateMemo> {
+    serde_json::from_str(&std::fs::read_to_string(memo_path()).ok()?).ok()
 }
 
-fn write_cache(cache: &VersionCache) {
-    let path = cache_path();
+#[cfg(feature = "binary-release")]
+fn write_memo(memo: &UpdateMemo) {
+    let path = memo_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(json) = serde_json::to_string_pretty(cache) {
-        // Atomic like the config files: the cache now carries the install
-        // failure memo and is shared by concurrent instances, so a torn write
-        // must not be able to silently drop it.
+    if let Ok(json) = serde_json::to_string_pretty(memo) {
+        // Atomic like the config files: the memo is shared by concurrent
+        // instances, so a torn write must not be able to silently drop it.
         let _ = crate::util::write_atomically(&path, &json);
-    }
-}
-
-/// The newest published version, from cache when it is under a day old.
-///
-/// The cache is what keeps this from calling GitHub on every launch. forestui is
-/// opened many times a day, and a per-launch network round trip is the part of
-/// the Python build's behaviour worth not reproducing.
-pub async fn latest_version() -> Option<String> {
-    if let Some(cache) = read_cache()
-        && now_secs().saturating_sub(cache.checked_at) < CACHE_TTL_SECS
-    {
-        return Some(cache.latest_version);
-    }
-
-    match fetch_latest_version().await {
-        Ok(version) => {
-            write_cache(&VersionCache {
-                checked_at: now_secs(),
-                latest_version: version.clone(),
-                install_failed: None,
-            });
-            Some(version)
-        }
-        // Offline is the common case, not an error worth surfacing: fall back to
-        // whatever was last seen rather than nagging.
-        Err(_) => read_cache().map(|c| c.latest_version),
     }
 }
 
 async fn fetch_latest_version() -> Result<String> {
     let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
     // Without a timeout, a network that accepts the connection but never
-    // answers parks this task forever — and with it the whole check, since a
-    // hung lookup is cached by nobody.
+    // answers parks this task forever — and with it the whole check, which now
+    // runs on every launch with nothing cached to fall back on.
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(10))
@@ -378,11 +375,20 @@ impl UpdateStatus {
 }
 
 /// Bring the installed binary up to date.
+///
+/// The lookup happens on every launch. It runs on a background task with the
+/// UI already up, so nobody waits on the round trip, and the reward is that a
+/// release lands the next time forestui is opened instead of whenever a cached
+/// answer happened to expire.
+///
+/// A lookup that fails is not an answer, and there is no remembered version to
+/// act on in its place: offline, a rate-limited API, DNS that never came back
+/// — every one of them is silence, not a notification.
 pub async fn update_if_stale() -> UpdateStatus {
     if is_dev_build() {
         return UpdateStatus::Silent;
     }
-    let Some(latest) = latest_version().await else {
+    let Ok(latest) = fetch_latest_version().await else {
         return UpdateStatus::Silent;
     };
     if !is_newer(current_version(), &latest) {
@@ -399,28 +405,24 @@ pub async fn update_if_stale() -> UpdateStatus {
     }
 }
 
+/// A failed install of `latest` still inside its cooldown: the same attempt
+/// would fail the same way, so it is reported from memory rather than
+/// re-downloaded. Past the cooldown — or for any other version — there is
+/// nothing standing and the install is tried again.
+#[cfg(any(feature = "binary-release", test))]
+fn standing_failure(memo: Option<&UpdateMemo>, latest: &str, now: u64) -> Option<InstallFailure> {
+    memo.and_then(|m| m.install_failed.clone())
+        .filter(|f| f.version == latest && now.saturating_sub(f.failed_at) < INSTALL_RETRY_SECS)
+}
+
 #[cfg(feature = "binary-release")]
 async fn install_update(latest: &str) -> UpdateStatus {
-    // One read, threaded through the guard and the memo writes: the cache file
-    // is read-modify-write state shared with concurrent instances, and every
+    // One read, threaded through the guard and the writes below: the file is
+    // read-modify-write state shared with concurrent instances, and every
     // extra read widens the race.
-    let cache = read_cache();
-    let fresh = cache
-        .as_ref()
-        .is_some_and(|c| now_secs().saturating_sub(c.checked_at) < CACHE_TTL_SECS);
-    // A version the lookup could not refresh is the offline fallback.
-    // Downloading on that signal would fail — and nag — on every launch until
-    // the network returns; offline stays silent.
-    if !fresh {
-        return UpdateStatus::Silent;
-    }
+    let memo = read_memo();
 
-    // A remembered failed install of this same version would fail the same way
-    // — surface the standing failure without re-spending the bandwidth.
-    // Retried when the cache expires or a newer release appears.
-    if let Some(failure) = cache.as_ref().and_then(|c| c.install_failed.clone())
-        && failure.version == latest
-    {
+    if let Some(failure) = standing_failure(memo.as_ref(), latest, now_secs()) {
         return UpdateStatus::InstallFailed {
             version: failure.version,
             reason: failure.reason,
@@ -446,11 +448,8 @@ async fn install_update(latest: &str) -> UpdateStatus {
         Ok(false) => UpdateStatus::Silent,
         Ok(true) => {
             // Clear a memo left by an older release's failed install.
-            if let Some(mut cache) = cache
-                && cache.install_failed.is_some()
-            {
-                cache.install_failed = None;
-                write_cache(&cache);
+            if memo.is_some_and(|m| m.install_failed.is_some()) {
+                write_memo(&UpdateMemo::default());
             }
             UpdateStatus::Installed(latest.to_string())
         }
@@ -465,13 +464,13 @@ async fn install_update(latest: &str) -> UpdateStatus {
             // What remains is local and will repeat identically (an unwritable
             // install dir): remember it and say so.
             let reason = format!("{error:#}");
-            if let Some(mut cache) = cache {
-                cache.install_failed = Some(InstallFailure {
+            write_memo(&UpdateMemo {
+                install_failed: Some(InstallFailure {
                     version: latest.to_string(),
                     reason: reason.clone(),
-                });
-                write_cache(&cache);
-            }
+                    failed_at: now_secs(),
+                }),
+            });
             UpdateStatus::InstallFailed {
                 version: latest.to_string(),
                 reason,
@@ -803,6 +802,49 @@ mod tests {
         );
         assert_eq!(std::fs::read(&target).expect("read back"), b"old version");
         assert_no_leftovers(dir.path());
+    }
+
+    /// The memo exists to save a repeat download, not to give up on the
+    /// version: it applies to that version alone and expires, so an install
+    /// dir the user has since fixed heals without waiting for a new release.
+    #[test]
+    fn a_failed_install_is_remembered_until_the_cooldown_passes() {
+        let now = 10 * INSTALL_RETRY_SECS;
+        let memo = UpdateMemo {
+            install_failed: Some(InstallFailure {
+                version: "2.0.0".into(),
+                reason: "read-only file system".into(),
+                failed_at: now,
+            }),
+        };
+
+        let standing = standing_failure(Some(&memo), "2.0.0", now).expect("still standing");
+        assert_eq!(standing.reason, "read-only file system");
+
+        assert!(
+            standing_failure(Some(&memo), "2.0.0", now + INSTALL_RETRY_SECS - 1).is_some(),
+            "inside the cooldown the download must not be re-spent"
+        );
+        assert!(
+            standing_failure(Some(&memo), "2.0.0", now + INSTALL_RETRY_SECS).is_none(),
+            "past the cooldown the install is tried again"
+        );
+        assert!(
+            standing_failure(Some(&memo), "2.0.1", now).is_none(),
+            "a newer release is a different install"
+        );
+        assert!(standing_failure(None, "2.0.0", now).is_none());
+        assert!(standing_failure(Some(&UpdateMemo::default()), "2.0.0", now).is_none());
+    }
+
+    /// A memo written before `failed_at` existed defaults to the epoch, which
+    /// must read as expired rather than as a failure that never retries.
+    #[test]
+    fn a_memo_without_a_timestamp_has_already_expired() {
+        let memo: UpdateMemo =
+            serde_json::from_str(r#"{"install_failed":{"version":"2.0.0","reason":"denied"}}"#)
+                .expect("an older memo still parses");
+        assert!(standing_failure(Some(&memo), "2.0.0", 10 * INSTALL_RETRY_SECS).is_none());
     }
 
     #[tokio::test]

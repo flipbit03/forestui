@@ -382,9 +382,11 @@ once the terminal is up. Success shows one notification after the new version
 is already in place; network failures (offline, a download that dropped, a
 release whose assets have not finished uploading) stay silent and retry next
 launch. Only a *persistent local* failure — an unwritable install dir — shows
-an error notification, and is remembered in the version cache
-(`install_failed`) so the multi-MB download is not re-spent on every launch
-while it would fail identically.
+an error notification, and is remembered for an hour in
+`~/.config/forestui/latest_version_check.json` (`install_failed`) so the
+multi-MB download is not re-spent on every launch while it would fail
+identically. That memo is the *only* thing that file now holds, and the only
+state that survives a launch.
 
 What it does depends on how the binary got there:
 
@@ -401,9 +403,13 @@ What it does depends on how the binary got there:
 - **From source** (version `0.0.0`) — nothing at all, which is what stops
   `cargo run` in a checkout from overwriting itself.
 
-`--no-self-update` skips the check. The answer is cached for 24h in
-`~/.config/forestui/latest_version_check.json`, so this is not a network call on
-every launch.
+**The version lookup is not cached.** GitHub is asked on every launch, so a
+release reaches the user the next time they open forestui rather than whenever
+a TTL happened to lapse — the check is already off the UI thread, so nobody
+waits on the round trip. The corollary is that a failed lookup has nothing to
+fall back on, which is the point: there is no remembered version to act on, so
+offline is silence rather than a doomed download or a nag.
+`--no-self-update` skips the check entirely.
 
 `release_asset_url` must keep producing `forestui_<os>_<arch>`, matching
 `install.sh` and the release workflow. Drift there is a silent 404 on every
