@@ -424,10 +424,14 @@ impl Pane {
         let mut x = inset.saturating_add(lead_width).saturating_add(pad);
         let mut lead = lead;
         lead.push(blank(pad));
+        // The lead rides the *last* of the three rows a boxed control occupies,
+        // so a card's meta line sits along its bottom edge. On the middle row it
+        // lands level with the button labels, which reads as text floating in
+        // the middle of the card rather than as a caption under its content.
         let mut rows = [
             vec![blank(lead_width.saturating_add(pad))],
-            lead,
             vec![blank(lead_width.saturating_add(pad))],
+            lead,
         ];
 
         for (index, control) in controls.iter().enumerate() {
