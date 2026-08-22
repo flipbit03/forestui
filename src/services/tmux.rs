@@ -3,6 +3,7 @@
 //! Every call shells out to the `tmux` binary. The commands are short-lived and
 //! synchronous — the same blocking behaviour the libtmux-based build had.
 
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const TUI_EDITORS: [&str; 10] = [
@@ -333,29 +334,44 @@ pub fn create_mc_window(name: &str, path: &str) -> bool {
     new_window(&window_name, path, Some("mc")).is_some()
 }
 
-/// Build the shell command used for a Claude window.
-///
-/// Wrapped in an interactive shell so user aliases resolve; the inner command
-/// is quoted to keep custom commands from breaking out.
 /// A string the shell will read back verbatim, whatever is in it.
 ///
 /// Single quotes are the only shell quoting with no escapes inside them: no
-/// `$`, no backtick, and — since these commands run through `-ic`, an
-/// *interactive* shell — no `!` history expansion either, which double quotes
-/// would not stop in zsh. This matters because window names now come from
-/// session titles, and a session title can be set by a `SessionStart` hook in a
-/// repository's own `.claude/settings.json`, so it is not the user's own text
-/// by the time it reaches here.
+/// `$`, no backtick, and — since this is typed into the window's *interactive*
+/// shell — no `!` history expansion either, which double quotes would not stop
+/// in zsh. This matters because window names now come from session titles, and
+/// a session title can be set by a `SessionStart` hook in a repository's own
+/// `.claude/settings.json`, so it is not the user's own text by the time it
+/// reaches here.
 fn sh_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-pub fn claude_shell_command(
+/// Everything that is not text, removed.
+///
+/// The line ends up as one line of a file the shell reads, so a control
+/// character in it is not a character: a newline inside a window name would
+/// end the line and leave the rest standing as a command of its own. Names
+/// arrive from session titles, which are not the user's own text, so they are
+/// stripped here as well as by the hook that adopts them.
+fn single_line(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
+}
+
+/// The command line a Claude window runs.
+///
+/// It runs as a job of the window's own interactive shell rather than as the
+/// window's command, and that is the point. A window whose only process is
+/// Claude has nothing underneath it: Ctrl-C leaves a dead pane, and Claude's
+/// own Ctrl-Z suspend stops the process with no shell left to `fg` it back —
+/// the session is unreachable and the window is closed to be rid of it.
+/// Running Claude as a job makes both land at a prompt, where `fg` resumes and
+/// the up arrow restarts.
+pub fn claude_command_line(
     resume_session_id: Option<&str>,
     yolo: bool,
     custom_command: Option<&str>,
     custom_prefix: Option<&str>,
-    shell: &str,
     window_name: &str,
 ) -> String {
     let mut cmd = custom_command.unwrap_or("claude").to_string();
@@ -376,17 +392,176 @@ pub fn claude_shell_command(
         // but never drawn.
         cmd.push_str(&format!(" -n {}", sh_quote(window_name)));
     }
-    // The birth stamp is written from inside the window, before the command
-    // that needs it runs. Stamping from forestui after new-window returns is a
-    // separate tmux call, so a fast-starting Claude could reach its first hook
-    // first and be read as a window forestui never opened. Ordering it here
-    // makes that impossible rather than merely unlikely; a failure to stamp
-    // still falls through to the command.
-    let cmd = format!(
-        "tmux set-option -w @claude_birth_name {}; {cmd}",
+    single_line(&cmd)
+}
+
+/// The tail every generated startup file ends with.
+///
+/// `set -m` is the load-bearing line. Without it a command run from a startup
+/// file is not a job: bash hands it the shell's own ignored `SIGTSTP`, so
+/// Ctrl-Z does nothing at all and — because the shell is not waiting for a
+/// stoppable child either — the window wedges with no way back. With it, the
+/// command is a job in its own process group, which is what makes Ctrl-Z leave
+/// a stopped job and a prompt, and `fg` bring it back. zsh already runs
+/// interactive shells this way; saying so costs nothing and makes the file
+/// mean the same thing everywhere.
+///
+/// The birth stamp is written here, from inside the window, for the reason it
+/// always was: the shell starts Claude on its own, so a stamp forestui sends
+/// after `new-window` returns is a separate tmux call that a fast-starting
+/// Claude can beat to its first hook.
+fn startup_tail(window_name: &str, line: &str) -> String {
+    format!(
+        "tmux set-option -w @claude_birth_name {} >/dev/null 2>&1\nset -m\n{line}\n",
         sh_quote(window_name)
-    );
-    format!("{shell} -ic {}", sh_quote(&cmd))
+    )
+}
+
+/// The user's own startup files, as the generated ones have to name them.
+struct ShellHome {
+    home: String,
+    zdotdir: Option<String>,
+    env_file: Option<String>,
+}
+
+impl ShellHome {
+    fn from_env() -> Self {
+        Self {
+            home: std::env::var("HOME").unwrap_or_default(),
+            zdotdir: std::env::var("ZDOTDIR").ok().filter(|v| !v.is_empty()),
+            env_file: std::env::var("ENV").ok().filter(|v| !v.is_empty()),
+        }
+    }
+}
+
+/// A shell that has been pointed at a startup file forestui wrote.
+struct Startup {
+    /// Files to write before the window is created, in order.
+    files: Vec<(PathBuf, String)>,
+    /// The command tmux runs for the window.
+    command: String,
+}
+
+/// Point `shell` at a startup file that runs `line`, or `None` if this shell
+/// has no hook we know.
+///
+/// Every one of these hooks *replaces* one of the user's own files rather than
+/// adding to it — a new `ZDOTDIR` hides `.zshenv` and `.zshrc`, `--rcfile`
+/// stands in for `.bashrc`, `ENV` for whatever `ENV` already named — so each
+/// generated file sources the file it displaced. What the window ends up with
+/// is the environment `$SHELL -ic` used to give it: the same interactive,
+/// non-login startup, with the command running as a job at the end of it.
+///
+/// The generated files delete themselves as soon as the shell has read what it
+/// needs, so a window that is never closed does not leave one behind.
+fn startup_for(
+    shell: &str,
+    dir: &Path,
+    home: &ShellHome,
+    window_name: &str,
+    line: &str,
+) -> Option<Startup> {
+    let base = Path::new(shell).file_name()?.to_str()?;
+    let dir_str = dir.to_str()?;
+    // Typing the command used to put it in the shell's history for free, and
+    // that is worth keeping: after Ctrl-C the up arrow is the shortest way
+    // back into a session. Only the shells with a builtin for it get one.
+    let remembered = match base {
+        "zsh" => format!("print -s -- {}\n", sh_quote(line)),
+        "bash" => format!("history -s {}\n", sh_quote(line)),
+        _ => String::new(),
+    };
+    let tail = format!("{remembered}{}", startup_tail(window_name, line));
+    let tail = tail.as_str();
+    let sweep = format!("rm -rf {}\n", sh_quote(dir_str));
+    let source = |path: String| {
+        let quoted = sh_quote(&path);
+        format!("[ -f {quoted} ] && . {quoted}\n")
+    };
+
+    match base {
+        "zsh" => {
+            // `.zshenv` is read for every shell and `.zshrc` for interactive
+            // ones, so both are hidden by the new ZDOTDIR and both come back
+            // here. ZDOTDIR itself is restored before the user's `.zshrc` runs
+            // — a configuration that keys a cache or a plugin directory off it
+            // must not see forestui's temporary one.
+            let zdot = home.zdotdir.clone().unwrap_or_else(|| home.home.clone());
+            let files = vec![
+                (dir.join(".zshenv"), source(format!("{zdot}/.zshenv"))),
+                (
+                    dir.join(".zshrc"),
+                    format!(
+                        "ZDOTDIR={}\n{sweep}{}{tail}",
+                        sh_quote(&zdot),
+                        source(format!("{zdot}/.zshrc"))
+                    ),
+                ),
+            ];
+            Some(Startup {
+                files,
+                command: format!("env ZDOTDIR={} {} -i", sh_quote(dir_str), sh_quote(shell)),
+            })
+        }
+        "bash" => {
+            let rc = dir.join("rc");
+            let rc_str = rc.to_str()?.to_string();
+            Some(Startup {
+                files: vec![(
+                    rc,
+                    format!("{sweep}{}{tail}", source(format!("{}/.bashrc", home.home))),
+                )],
+                command: format!("{} --rcfile {} -i", sh_quote(shell), sh_quote(&rc_str)),
+            })
+        }
+        // The POSIX interactive startup file, which is whatever `ENV` names.
+        "sh" | "dash" | "ash" | "ksh" | "ksh93" | "mksh" | "loksh" | "yash" => {
+            let rc = dir.join("rc");
+            let rc_str = rc.to_str()?.to_string();
+            let inherited = home.env_file.clone().map(source).unwrap_or_default();
+            Some(Startup {
+                files: vec![(rc, format!("{sweep}{inherited}{tail}"))],
+                command: format!("env ENV={} {} -i", sh_quote(&rc_str), sh_quote(shell)),
+            })
+        }
+        // fish, nushell and friends: no hook here that has been tested, so the
+        // line is typed into a plain shell instead. Nothing is lost but the
+        // typing.
+        _ => None,
+    }
+}
+
+/// Write the startup files for this launch, or `None` to fall back to typing.
+fn prepare_startup(window_name: &str, line: &str) -> Option<Startup> {
+    let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty())?;
+    let dir = std::env::temp_dir().join(format!(
+        "forestui-launch-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let startup = startup_for(&shell, &dir, &ShellHome::from_env(), window_name, line)?;
+
+    // A launch that cannot write its files is not an error to show anyone:
+    // typing the line still works, so fall back to it.
+    std::fs::create_dir_all(&dir).ok()?;
+    for (path, contents) in &startup.files {
+        std::fs::write(path, contents).ok()?;
+    }
+    Some(startup)
+}
+
+/// Type a line into a window's shell and run it.
+///
+/// The fallback for a shell with no startup hook of its own. Two calls, because
+/// `-l` sends its arguments as literal characters — the only way to keep a
+/// command line from being read as key names — and `Enter` is precisely a key
+/// name.
+fn send_line(window_id: &str, line: &str) -> bool {
+    tmux(&["send-keys", "-t", window_id, "-l", "--", line]).is_some()
+        && tmux(&["send-keys", "-t", window_id, "Enter"]).is_some()
 }
 
 /// Window name for a Claude session, before uniquifying.
@@ -428,22 +603,36 @@ pub fn create_claude_window(
     current_session()?;
 
     let window_name = find_unique_window_name(base_name);
-
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    let shell_cmd = claude_shell_command(
+    let line = claude_command_line(
         resume_session_id,
         yolo,
         custom_command,
         custom_prefix,
-        &shell,
         &window_name,
     );
 
-    let id = new_window(&window_name, path, Some(&shell_cmd))?;
-    // Belt and braces: the prelude above is what orders the stamp correctly,
-    // this covers a shell that never ran it. Same value either way.
-    stamp_birth_name(&id, &window_name);
-    Some(window_name)
+    match prepare_startup(&window_name, &line) {
+        // The window's command is the user's shell, interactive, reading a
+        // startup file that ends in the Claude command. Nothing is typed, so
+        // there is nothing to race the shell's startup.
+        Some(startup) => {
+            let id = new_window(&window_name, path, Some(&startup.command))?;
+            // Belt and braces: the stamp inside the startup file is what
+            // orders it correctly, this covers a shell that never read it.
+            // Same value either way.
+            stamp_birth_name(&id, &window_name);
+            Some(window_name)
+        }
+        // A shell with no startup hook we know. The window runs the plain
+        // default shell and the line is typed into it — stamped first, which
+        // orders it: Claude cannot reach its first hook until keys that have
+        // not been sent yet arrive.
+        None => {
+            let id = new_window(&window_name, path, None)?;
+            stamp_birth_name(&id, &window_name);
+            send_line(&id, &line).then_some(window_name)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -539,43 +728,22 @@ mod tests {
         );
     }
 
-    /// What the shell actually receives, with both layers of quoting undone.
-    fn decoded(built: &str, shell: &str) -> String {
-        let payload = built
-            .strip_prefix(&format!("{shell} -ic "))
-            .unwrap_or_else(|| panic!("unexpected shape: {built}"));
-        let mut parts = shlex::split(payload).expect("a single quoted argument");
-        assert_eq!(parts.len(), 1, "not one argument: {payload}");
-        parts.remove(0)
-    }
-
     #[test]
     fn claude_command_building() {
-        let stamp = "tmux set-option -w @claude_birth_name 'claude:wt'";
-        let build = |resume, yolo, cmd, prefix| {
-            decoded(
-                &claude_shell_command(resume, yolo, cmd, prefix, "/bin/zsh", "claude:wt"),
-                "/bin/zsh",
-            )
-        };
+        let build =
+            |resume, yolo, cmd, prefix| claude_command_line(resume, yolo, cmd, prefix, "claude:wt");
 
         // A fresh session is named at launch; a resumed one keeps its own name.
-        assert_eq!(
-            build(None, false, None, None),
-            format!("{stamp}; claude -n 'claude:wt'")
-        );
+        assert_eq!(build(None, false, None, None), "claude -n 'claude:wt'");
         assert_eq!(
             build(None, true, None, None),
-            format!("{stamp}; claude --dangerously-skip-permissions -n 'claude:wt'")
+            "claude --dangerously-skip-permissions -n 'claude:wt'"
         );
-        assert_eq!(
-            build(Some("abc123"), false, None, None),
-            format!("{stamp}; claude -r abc123")
-        );
+        assert_eq!(build(Some("abc123"), false, None, None), "claude -r abc123");
         // A custom button never gets the YOLO flag appended.
         assert_eq!(
             build(None, true, Some("claude --model opus"), Some("opus")),
-            format!("{stamp}; claude --model opus -n 'claude:wt'")
+            "claude --model opus -n 'claude:wt'"
         );
     }
 
@@ -610,13 +778,118 @@ mod tests {
             "a window name executed a command"
         );
 
-        // And the name is still literal after the second layer of quoting.
-        let built = claude_shell_command(None, false, None, None, "/bin/sh", "$(id); rm -rf /");
+        // And the name is still literal in the line the window is given.
         assert_eq!(
-            decoded(&built, "/bin/sh"),
-            "tmux set-option -w @claude_birth_name '$(id); rm -rf /'; \
-             claude -n '$(id); rm -rf /'"
-                .replace("\\\n             ", "")
+            claude_command_line(None, false, None, None, "$(id); rm -rf /"),
+            "claude -n '$(id); rm -rf /'"
         );
+    }
+
+    /// The line becomes one line of a file a shell reads, so a newline in it
+    /// would end that line and leave the rest standing as a command of its
+    /// own — from a window name forestui did not write. Control characters
+    /// never survive that far.
+    #[test]
+    fn a_newline_in_a_name_cannot_smuggle_a_command() {
+        let built = claude_command_line(None, false, None, None, "wt'\nrm -rf /\n#");
+        assert!(!built.contains('\n'), "a newline survived: {built:?}");
+        assert_eq!(built, "claude -n 'wt'\\''rm -rf /#'");
+    }
+
+    fn home() -> ShellHome {
+        ShellHome {
+            home: "/home/u".into(),
+            zdotdir: None,
+            env_file: None,
+        }
+    }
+
+    /// Each hook replaces one of the user's own startup files, so each
+    /// generated file has to source the file it displaced. Getting this wrong
+    /// is invisible until someone's aliases or PATH quietly stop applying in
+    /// Claude windows only.
+    #[test]
+    fn a_generated_startup_file_sources_the_one_it_replaced() {
+        let dir = Path::new("/tmp/launch");
+        let tail = startup_tail("claude:wt", "claude");
+        let tail = tail.as_str();
+
+        let zsh =
+            startup_for("/usr/bin/zsh", dir, &home(), "claude:wt", "claude").expect("zsh is known");
+        assert_eq!(zsh.command, "env ZDOTDIR='/tmp/launch' '/usr/bin/zsh' -i");
+        let names: Vec<_> = zsh.files.iter().map(|(p, _)| p.clone()).collect();
+        assert_eq!(names, vec![dir.join(".zshenv"), dir.join(".zshrc")]);
+        assert!(zsh.files[0].1.contains("'/home/u/.zshenv'"));
+        // ZDOTDIR is put back before the user's own file runs.
+        assert!(zsh.files[1].1.starts_with("ZDOTDIR='/home/u'\n"));
+        assert!(zsh.files[1].1.contains("'/home/u/.zshrc'"));
+        assert!(zsh.files[1].1.ends_with(tail));
+
+        let bash =
+            startup_for("/bin/bash", dir, &home(), "claude:wt", "claude").expect("bash is known");
+        assert_eq!(bash.command, "'/bin/bash' --rcfile '/tmp/launch/rc' -i");
+        assert!(bash.files[0].1.contains("'/home/u/.bashrc'"));
+        assert!(bash.files[0].1.ends_with(tail));
+
+        let sh =
+            startup_for("/bin/dash", dir, &home(), "claude:wt", "claude").expect("dash is known");
+        assert_eq!(sh.command, "env ENV='/tmp/launch/rc' '/bin/dash' -i");
+        assert!(sh.files[0].1.ends_with(tail));
+
+        // The command lands in the shell's history where there is a builtin
+        // for it, so the up arrow restarts a session that was interrupted.
+        assert!(zsh.files[1].1.contains("print -s -- 'claude'"));
+        assert!(bash.files[0].1.contains("history -s 'claude'"));
+        assert!(!sh.files[0].1.contains("history"));
+
+        // A shell whose ENV already names a file keeps reading it.
+        let inherited = ShellHome {
+            env_file: Some("/home/u/.shinit".into()),
+            ..home()
+        };
+        let sh =
+            startup_for("/bin/sh", dir, &inherited, "claude:wt", "claude").expect("sh is known");
+        assert!(sh.files[0].1.contains("'/home/u/.shinit'"));
+    }
+
+    /// Every generated file removes itself once the shell has it, so a session
+    /// left open for a week does not leave one behind.
+    #[test]
+    fn a_generated_startup_file_sweeps_itself_up() {
+        let dir = Path::new("/tmp/launch");
+        for shell in ["/usr/bin/zsh", "/bin/bash", "/bin/sh"] {
+            let startup =
+                startup_for(shell, dir, &home(), "claude:wt", "claude").expect("a known shell");
+            let last = &startup.files.last().expect("a file").1;
+            assert!(
+                last.contains("rm -rf '/tmp/launch'"),
+                "{shell} leaves its startup file behind: {last:?}"
+            );
+        }
+    }
+
+    /// An unknown shell is not a failure — the line is typed into a plain
+    /// shell instead, which needs no hook at all.
+    #[test]
+    fn an_unknown_shell_falls_back_to_typing() {
+        let call = |shell| startup_for(shell, Path::new("/tmp/l"), &home(), "claude:wt", "claude");
+        assert!(call("/usr/bin/fish").is_none());
+        assert!(call("/usr/bin/nu").is_none());
+    }
+
+    /// The stamp goes in ahead of the command, from inside the window: the
+    /// shell starts Claude on its own, so a stamp sent after `new-window`
+    /// returns can lose the race to Claude's first hook.
+    #[test]
+    fn the_startup_file_stamps_before_it_launches() {
+        let tail = startup_tail("yolo:wt", "claude -n 'yolo:wt'");
+        let stamp = tail.find("@claude_birth_name").expect("a stamp");
+        let monitor = tail.find("set -m").expect("job control");
+        let launch = tail.find("claude -n").expect("the command");
+        assert!(
+            stamp < monitor && monitor < launch,
+            "out of order: {tail:?}"
+        );
+        assert!(tail.contains("@claude_birth_name 'yolo:wt'"));
     }
 }

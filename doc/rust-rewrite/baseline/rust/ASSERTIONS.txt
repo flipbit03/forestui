@@ -5,6 +5,7 @@ PASS UC-90     mouse-enabled                                  expected=on       
 PASS UC-90     any-motion-for-hover                           expected=yes                          actual=yes
 PASS UC-97     claude-stub-ran                                expected=yes                          actual=yes
 PASS UC-97     window-stamped-with-its-name                   expected=claude:alpha:wt-a            actual=claude:alpha:wt-a
+PASS UC-98     shell-outlives-claude                          expected=yes                          actual=yes
 PASS UC-78     wt-name                                        expected=wt-a-renamed                 actual=wt-a-renamed
 PASS UC-78     wt-dir-exists                                  expected=yes                          actual=yes
 PASS UC-78     old-dir-gone                                   expected=yes                          actual=yes

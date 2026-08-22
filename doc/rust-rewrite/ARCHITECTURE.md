@@ -658,9 +658,12 @@ build) asserting `serde_json::Value` equality after a round trip is the check th
   terminal/files/claude windows are *always new*. Snapshot-test this — the project's own testing
   note calls out "wrong window names" as a real regression class.
 - **Claude command construction.** `$SHELL -ic <quoted cmd>` (`tmux.py:352`) so shell aliases work,
-  with `shlex.quote` on the command. Rust equivalent: pass the command as a single argv element to
-  `-c`, and quote with a `shell_quote` helper — do **not** build one big string and let a shell
-  re-split it.
+  with `shlex.quote` on the command. The Rust build keeps the quoting and drops the wrapper: the
+  window runs the same interactive, non-login shell, but reads the command from a startup file
+  forestui generates for it (`ZDOTDIR` / `--rcfile` / `ENV`), under `set -m`. Aliases still
+  resolve and Claude is a job the shell can be handed back from. A window whose own process is
+  Claude has nothing underneath it — Ctrl-C leaves a dead pane and Claude's Ctrl-Z suspend strands
+  the session with no shell to `fg` it.
 - **YOLO flag suppression for custom buttons.** `--dangerously-skip-permissions` is appended only
   for the built-in YOLO button, never for a custom one (`tmux.py:345`), even though a custom command
   may contain the flag itself (which is what turns the button red).

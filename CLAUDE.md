@@ -267,10 +267,10 @@ window instead.
 - **`@claude_birth_name`**, a tmux window option stamped when the window is
   created, answers one question: did forestui open this window? A window the
   user made by hand carries none and is left alone, as is a bare `claude` in a
-  plain terminal. It is written from *inside* the window, in a prelude ahead of
-  the command that needs it — stamping it from forestui after `new-window`
-  returns is a separate tmux call, and a fast-starting Claude could reach its
-  first hook before it lands.
+  plain terminal. It is written from *inside* the window, ahead of the command
+  that needs it — stamping it from forestui after `new-window` returns is a
+  separate tmux call, and a fast-starting Claude could reach its first hook
+  before it lands.
 - **`@claude_synced_name`** records the last agreed name. Two-way sync cannot
   tell which side moved from one value: equal names are ambiguous between
   nobody changing and both changing alike, and unequal names do not say who is
@@ -278,9 +278,9 @@ window instead.
 - **Window names reach a shell**, so they are quoted literally with single
   quotes rather than by any escaping heuristic. A session title can be set by a
   `SessionStart` hook in a repository's own `.claude/settings.json`, so by the
-  time a name gets here it is not necessarily the user's own text. These
-  commands run through `-ic`, an *interactive* shell, where double quotes would
-  not even stop zsh history expansion.
+  time a name gets here it is not necessarily the user's own text. The shell
+  reading it is *interactive*, where double quotes would not even stop zsh
+  history expansion.
 
 There is deliberately no off switch, per window or global. Installed means the
 two names agree; not wanting that is an uninstall.
@@ -311,6 +311,69 @@ client on that server, and it used to stay on long after forestui exited.
 option rather than in memory, so a run that is killed before its cleanup does
 not strand the setting forever — the next run adopts it and hands it back. A
 user who set the option themselves keeps it, marker absent.
+
+### Claude runs inside a shell, not as the window's command
+
+A tmux window forestui opens for Claude runs the user's shell, interactively,
+and Claude is one of its *jobs* — not the window's own process.
+
+That is the whole point. A window whose only process is Claude has nothing
+underneath it: Ctrl-C leaves a dead pane, and Claude's own Ctrl-Z suspend stops
+the process with no shell left to `fg` it back, so the session is unreachable
+and the window gets closed to be rid of it — a lost conversation. With a shell
+underneath, both land at a prompt: `fg` resumes a suspended session, the up
+arrow restarts an exited one, and nothing has to be thrown away.
+
+The command is **not typed into the window**. It is written into a startup file
+that forestui generates and points the shell at, so it is already there when
+the shell reads it — nothing to race, nothing to arrive half-read. Each shell
+has exactly one such hook, and each hook *replaces* one of the user's own files
+rather than adding to it, so the generated file sources the file it displaced:
+
+| shell | pointed at with | replaces, so sources back |
+|---|---|---|
+| zsh | `ZDOTDIR=<dir>` | `.zshenv` and `.zshrc` |
+| bash | `--rcfile <file>` | `.bashrc` |
+| sh, dash, ksh, mksh, ash, yash | `ENV=<file>` | whatever `ENV` already named |
+
+The shell is started interactive and non-login, which is exactly what
+`$SHELL -ic` gave before, so a Claude window's environment is unchanged from
+the build that ran Claude directly. `startup_for` is pure and tested; the file
+deletes itself once read, so nothing accumulates in the temp dir.
+
+Three things in the generated file are load-bearing:
+
+- **`set -m`.** Without it a command run from a startup file is not a job:
+  bash hands it the shell's own ignored `SIGTSTP`, so Ctrl-Z does nothing at
+  all and the window wedges with no way back. zsh already runs interactive
+  shells this way; saying so costs nothing and makes the file mean the same
+  thing under every shell.
+- **The birth stamp goes in ahead of the command**, from inside the window, for
+  the reason it always did: the shell starts Claude by itself, so a stamp
+  forestui sends after `new-window` returns is a separate tmux call a
+  fast-starting Claude can beat to its first hook.
+- **The command is pushed into the shell's history** (`print -s`, `history -s`)
+  where the shell has a builtin for it. Typing it used to do that for free, and
+  after an accidental Ctrl-C the up arrow is the shortest way back.
+
+A shell with no hook we have tested — fish, nushell — falls back to typing the
+line into a plain shell with `send-keys`. That path is a real fallback, not a
+leftover: it needs no per-shell knowledge at all. Its one weakness is why it is
+not the default — keystrokes sent before the shell is ready wait in the
+terminal for it, and a startup that *consumes* input (zsh-newuser-install in a
+bare `HOME` is a real example) eats them. Because it is keystrokes, the line
+must be one line of text: `send-keys -l` sends literal characters and `Enter`
+is a separate key name, which is why it is two calls.
+
+Either way the line itself is built by `claude_command_line` and stripped of
+control characters by `single_line`. A newline in a window name would be an
+Enter key on one path and a second line of the startup file on the other — and
+window names come from session titles, which a repository's own
+`.claude/settings.json` can set.
+
+The cost of all this is that the window no longer closes when Claude exits; it
+drops to a prompt, like any other terminal. That is the trade, and it is the
+right way round.
 
 ### Self-update
 forestui keeps itself current the way the Python build did — automatically, on

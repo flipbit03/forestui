@@ -267,7 +267,7 @@ modules are stubs totalling 18 lines.
 | Window names `edit:` `term:` `files:` `claude:` `yolo:` `<custom prefix>:` + `repo[:worktree]` | Identical | `src/services/tmux.rs:185-277`, `src/state.rs:165-177`, tested at `src/services/tmux.rs:298-306` and `src/state.rs:232-242` |
 | `:2`, `:3` uniquifying, counter starts at 2 | Identical | `src/services/tmux.rs:151-168`, tested at `:292-296` |
 | `edit:` reuses an existing window; the others always create | Identical | `src/services/tmux.rs:191-194` vs `:202`, `:211`, `:261` |
-| `$SHELL -ic <quoted cmd>` for Claude | Identical | `src/services/tmux.rs:219-238`, tested at `:309-327` |
+| `$SHELL -ic <quoted cmd>` for Claude | **Diverges**: same interactive, non-login startup, but the command reaches the shell through a generated startup file (`ZDOTDIR` / `--rcfile` / `ENV`) and runs under `set -m`, so Claude is a job with a shell behind it — Ctrl-C and Claude's own Ctrl-Z suspend land at a prompt instead of killing the window or stranding the session | `src/services/tmux.rs`, `startup_for` / `create_claude_window` |
 | `--dangerously-skip-permissions` only for the built-in YOLO button | Identical | `src/services/tmux.rs:227-229` ↔ `tmux.py:345` |
 | `-r <session_id>` appended on resume | Identical | `src/services/tmux.rs:231-233` |
 | Target session = most recently active client in our session group, with both fallbacks | Identical | `src/services/tmux.rs:35-91` ↔ `tmux.py:56-107` — the behaviour UC-40 pins |
