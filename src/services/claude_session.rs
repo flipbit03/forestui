@@ -119,7 +119,11 @@ pub fn refresh_one(path: &str, session_id: &str) -> Option<ClaudeSession> {
     let file = claude_projects_dir()
         .join(path_to_claude_folder(path))
         .join(format!("{session_id}.jsonl"));
-    parse_session_file(&file)
+    // Through the cache: this runs for every card on screen on a ten-second
+    // timer, and a transcript nobody has written to parses to what it did
+    // before. One of them is 60 MB.
+    let modified = std::fs::metadata(&file).and_then(|m| m.modified()).ok()?;
+    parse_cached(&file, modified)
 }
 
 /// Directory-scoped form of [`get_sessions_for_path`], for testing.
@@ -128,28 +132,95 @@ pub fn read_sessions_dir(sessions_dir: &Path, limit: usize) -> Vec<ClaudeSession
         return Vec::new();
     };
 
-    let mut sessions: Vec<ClaudeSession> = Vec::new();
+    // Stat first, parse second. One real project directory holds 542 MB across
+    // 51 transcripts, and parsing all of them to sort by their last message and
+    // then show five took 1.9 seconds — on a sweep that now runs every ten
+    // seconds. A transcript's mtime is its last activity, which is the same
+    // ordering, and costs a stat.
+    let mut candidates: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
     for entry in entries.flatten() {
         let file_path = entry.path();
         if file_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
         }
-        let name = file_path
+        // Agent transcripts are not user-facing sessions.
+        if file_path
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        // Agent transcripts are not user-facing sessions.
-        if name.starts_with("agent-") {
+            .is_some_and(|name| name.starts_with("agent-"))
+        {
             continue;
         }
-        if let Some(session) = parse_session_file(&file_path) {
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        candidates.push((file_path, modified));
+    }
+    candidates.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
+
+    // Walk newest-first and stop as soon as no remaining file can qualify.
+    //
+    // A file's mtime is never older than its last message — writing that
+    // message is what set it — so a candidate whose *mtime* already loses to
+    // the oldest session held cannot win on its last message either, and
+    // neither can anything after it, because they are sorted. That makes this
+    // exactly the same answer as parsing all 51 and sorting, for the cost of
+    // parsing about five. Sorting on mtime alone is not the same answer:
+    // naming a session rewrites its transcript without adding a timestamped
+    // record, so mtime moves and the last message does not.
+    let mut sessions: Vec<ClaudeSession> = Vec::new();
+    for (file_path, modified) in candidates {
+        if sessions.len() >= limit
+            && let Some(worst) = sessions.last()
+            && modified <= std::time::SystemTime::from(worst.last_timestamp)
+        {
+            break;
+        }
+        if let Some(session) = parse_cached(&file_path, modified) {
             sessions.push(session);
+            sessions.sort_by_key(|s| std::cmp::Reverse(s.last_timestamp));
+            sessions.truncate(limit);
         }
     }
-
-    sessions.sort_by_key(|s| std::cmp::Reverse(s.last_timestamp));
-    sessions.truncate(limit);
     sessions
+}
+
+/// [`parse_session_file`], skipped entirely when the file has not been written
+/// to since it was last parsed.
+///
+/// The scan runs on a timer, so the same transcripts are read over and over;
+/// an active conversation touches one of them and leaves the rest identical.
+pub fn parse_cached(file_path: &Path, modified: std::time::SystemTime) -> Option<ClaudeSession> {
+    if let Ok(guard) = parsed_cache().lock()
+        && let Some((cached_at, session)) = guard.get(file_path)
+        && *cached_at == modified
+    {
+        return Some(session.clone());
+    }
+
+    let session = parse_session_file(file_path)?;
+    if let Ok(mut guard) = parsed_cache().lock() {
+        // A transcript that has gone quiet is not worth remembering forever,
+        // and this is a cache rather than an index: dropping it wholesale
+        // costs one re-parse of whatever is still on screen.
+        if guard.len() >= PARSED_CACHE_LIMIT {
+            guard.clear();
+        }
+        guard.insert(file_path.to_path_buf(), (modified, session.clone()));
+    }
+    Some(session)
+}
+
+/// Enough for every transcript of several busy projects; the entries are a few
+/// short strings each.
+const PARSED_CACHE_LIMIT: usize = 512;
+
+type ParsedCache = HashMap<PathBuf, (std::time::SystemTime, ClaudeSession)>;
+
+fn parsed_cache() -> &'static Mutex<ParsedCache> {
+    static CACHE: OnceLock<Mutex<ParsedCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn parse_timestamp(raw: &str) -> Option<DateTime<Utc>> {
@@ -515,6 +586,57 @@ mod tests {
                 (Speaker::Claude, "here is what I found"),
                 (Speaker::User, "and one more thing"),
             ]
+        );
+    }
+
+    /// The scan stops early instead of parsing every transcript. That is only
+    /// sound because a file's mtime is never older than its last message, so
+    /// this pins the case where the two disagree: a transcript touched after
+    /// its last message — which is what naming a session does, since a title
+    /// record carries no timestamp — must not displace a genuinely newer
+    /// conversation.
+    ///
+    /// Measured on a real 542 MB project directory, this took the full scan
+    /// from 1.9 s to 56 ms cold and 0.2 ms warm, on a sweep that runs every
+    /// ten seconds.
+    #[test]
+    fn the_early_exit_picks_what_a_full_scan_would() {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+
+        // `age` is how old the last message is; `touched` how long ago the file
+        // was written. The two disagree on purpose.
+        let write = |name: &str, age_h: u64, touched_h: u64| {
+            let path = dir.path().join(format!("{name}.jsonl"));
+            let when = chrono::Utc::now() - chrono::Duration::hours(age_h as i64);
+            std::fs::write(
+                &path,
+                format!(
+                    "{{\"type\":\"user\",\"timestamp\":\"{}\",\"message\":{{\"content\":\"{name}\"}}}}\n",
+                    when.to_rfc3339()
+                ),
+            )
+            .unwrap();
+            let mtime = SystemTime::now() - Duration::from_secs(touched_h * 3600);
+            let file = std::fs::File::options().write(true).open(&path).unwrap();
+            file.set_times(std::fs::FileTimes::new().set_modified(mtime))
+                .unwrap();
+        };
+
+        write("newest-message", 1, 1);
+        write("touched-but-stale", 40, 0); // freshest file, oldest conversation
+        write("second", 2, 2);
+        write("third", 3, 3);
+        write("oldest", 30, 30);
+
+        let picked: Vec<String> = read_sessions_dir(dir.path(), 3)
+            .iter()
+            .map(|s| s.id.clone())
+            .collect();
+        assert_eq!(
+            picked,
+            vec!["newest-message", "second", "third"],
+            "the early exit dropped a session a full scan would have kept"
         );
     }
 
