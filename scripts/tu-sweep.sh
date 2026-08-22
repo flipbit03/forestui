@@ -20,6 +20,17 @@
 # The sweep builds its own throwaway forest, HOME and tmux server, and stubs
 # vim/mc/claude so the window-creating hotkeys produce windows that stay alive
 # long enough to be named. It never touches the caller's ~/forest or tmux.
+#
+# SHELL is pinned rather than inherited. forestui opens its windows with
+# `$SHELL -ic <command>`, and the fixture HOME is empty — so on a machine whose
+# shell is zsh, every one of those windows was taken over by zsh-newuser-install
+# ("you have no zsh startup files") and the command never ran. The windows still
+# existed and were still named, so every frame assertion passed while the stubs
+# had never once been executed.
+#
+# /bin/sh specifically, because it reads no startup files for a non-login
+# interactive shell: bash would pull in the system-wide /etc/bash.bashrc, whose
+# banner differs per distribution and would land in committed frames.
 
 set -uo pipefail
 
@@ -56,6 +67,21 @@ for stub in vim mc claude; do
   printf '#!/bin/sh\necho "%s stub $*"\nexec sleep 600\n' "$stub" > "$ROOT/bin/$stub"
   chmod +x "$ROOT/bin/$stub"
 done
+
+# The Claude stub also records the birth stamp of the window it was started in.
+# That stamp is what tells the title-sync hook a window is forestui's, and it is
+# invisible in a screenshot — a build that stopped writing it would render an
+# identical frame. Read with show-options rather than a #{@...} format: a
+# server-scoped value of the same name shadows the window's one in formats.
+cat > "$ROOT/bin/claude" <<STUB
+#!/bin/sh
+echo "claude stub \$*"
+printf '%s\t%s\n' \
+  "\$(tmux display-message -p '#{window_name}' 2>/dev/null)" \
+  "\$(tmux show-options -wqv @claude_birth_name 2>/dev/null)" >> "$ROOT/birth.txt"
+exec sleep 600
+STUB
+chmod +x "$ROOT/bin/claude"
 
 # A `gh` that answers the four calls both builds make. Without it the GitHub
 # section renders "No issues found" on both sides and the issue rows — card,
@@ -258,6 +284,7 @@ tu run --name "$SESS" --size 140x44 \
   --env HOME="$ROOT/home" \
   --env PATH="$CMD_DIR:$ROOT/bin:$(dirname "$(command -v tmux)"):/usr/bin:/bin:/usr/sbin:/sbin" \
   --env FORESTUI_NO_AUTO_UPDATE=1 \
+  --env SHELL=/bin/sh \
   --cwd "$REPO" \
   -- env -u TMUX "${FUI_CMD[@]}" "$ROOT/forest" >/dev/null 2>&1
 sleep 6
@@ -331,6 +358,15 @@ for spec in "e:UC-60:window-editor:edit:alpha" \
   sleep 1.0
   capture "$id" "$slug"
 done
+
+# UC-97: a Claude window forestui opens carries a birth stamp equal to its own
+# name. The title-sync hook treats an unstamped window as somebody else's and
+# leaves it alone, so losing the stamp disables the feature silently while every
+# frame stays identical. This also proves the stubs run at all — the assertion
+# is written by the stub itself.
+birth_line="$(head -1 "$ROOT/birth.txt" 2>/dev/null)"
+assert UC-97 claude-stub-ran "yes" "$([ -n "$birth_line" ] && echo yes || echo no)"
+assert UC-97 window-stamped-with-its-name "${birth_line%%	*}" "${birth_line##*	}"
 
 # Editor reuses its window; terminal always opens a new, uniquified one.
 focus_app; press e
@@ -469,6 +505,7 @@ tu run --name "$SESS2" --size 140x44 \
   --env HOME="$ROOT/home" \
   --env PATH="$CMD_DIR:$ROOT/bin:$(dirname "$(command -v tmux)"):/usr/bin:/bin:/usr/sbin:/sbin" \
   --env FORESTUI_NO_AUTO_UPDATE=1 \
+  --env SHELL=/bin/sh \
   --cwd "$REPO" \
   -- env -u TMUX "${FUI_CMD[@]}" "$ROOT/forest" >/dev/null 2>&1
 sleep 7
@@ -510,6 +547,7 @@ tu run --name "$SESS3" --size 140x44 \
   --env HOME="$ROOT/home" \
   --env PATH="$CMD_DIR:$ROOT/bin:$(dirname "$(command -v tmux)"):/usr/bin:/bin:/usr/sbin:/sbin" \
   --env FORESTUI_NO_AUTO_UPDATE=1 \
+  --env SHELL=/bin/sh \
   --cwd "$REPO" \
   -- env -u TMUX bash --noprofile --norc >/dev/null 2>&1
 sleep 2
