@@ -11,6 +11,7 @@
 //! tested against.
 
 use super::App;
+use crate::models::Speaker;
 use crate::theme;
 use ratatui::style::Style;
 
@@ -406,6 +407,9 @@ fn custom_controls<'a>(
         })
 }
 
+/// Shared by the issue header and the per-session refresh indicator.
+const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
+
 fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
     nodes.push(DetailNode::Section("RECENT SESSIONS"));
     let Some(list) = app.sessions.as_deref() else {
@@ -420,32 +424,53 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
     // which is Textual's `.session-item { margin: 0 2 1 0 }` seen from above.
     for (index, session) in list.iter().enumerate() {
         nodes.push(DetailNode::Blank);
-        nodes.push(DetailNode::CardStart { padded: true });
+        // Unpadded: the card's own top and bottom blanks cost two rows per
+        // session, and with five cards on screen that is ten rows of nothing.
+        // The name carries the separation instead, where it does some work.
+        nodes.push(DetailNode::CardStart { padded: false });
         text(
             nodes,
             crate::util::truncate(&session.title, 60),
             theme::primary(),
         );
-        if !session.last_message.is_empty() && session.last_message != session.title {
+        // The name is what you scan the list for, so it gets the whitespace —
+        // everything below it reads as one block of detail about that name.
+        nodes.push(DetailNode::Blank);
+        // The exchange the conversation stopped on. A turn identical to the
+        // name is not worth a line of its own — that happens on an unnamed
+        // session, whose name *is* its first message.
+        for turn in session
+            .recent_turns
+            .iter()
+            .filter(|turn| turn.text != session.title)
+        {
+            let style = match turn.speaker {
+                Speaker::User => theme::secondary(),
+                Speaker::Claude => theme::muted(),
+            };
             text(
                 nodes,
-                format!("> {}", crate::util::truncate(&session.last_message, 40)),
-                theme::secondary(),
+                format!(
+                    "{} {}",
+                    turn.speaker.label(),
+                    crate::util::truncate(&turn.text, 60)
+                ),
+                style,
             );
         }
-        // `.session-preview { margin-bottom: 1 }` — the meta line is spaced
-        // away from the message preview above it.
-        nodes.push(DetailNode::Blank);
-        text(
-            nodes,
+        // A card being re-read says so on its meta line. Without it a
+        // conversation that moved on while forestui was in the background just
+        // sits at its old turn count and then changes with no explanation.
+        let count = session.message_count;
+        let msgs = if count == 1 { "msg" } else { "msgs" };
+        let meta = if app.sessions_refreshing.contains(&session.id) {
             format!(
-                "{} • {} msgs",
-                session.relative_time(),
-                session.message_count
-            ),
-            theme::muted(),
-        );
-
+                "{} refreshing • {count} {msgs}",
+                SPINNER[app.spinner_index % SPINNER.len()],
+            )
+        } else {
+            format!("{} • {count} {msgs}", session.relative_time())
+        };
         let mut row = vec![
             ControlSpec::new(
                 Action::ResumeSession(index),
@@ -462,7 +487,13 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
             button,
             session: index,
         }));
-        controls(nodes, row);
+        // The meta rides the button row rather than taking one of its own, as
+        // the issue cards already do. It costs no height and fills the empty
+        // stretch the buttons leave to their left.
+        nodes.push(DetailNode::Controls {
+            lead: Some((format!("{meta}  "), theme::muted())),
+            controls: row,
+        });
         nodes.push(DetailNode::CardEnd);
     }
 }
@@ -470,7 +501,6 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
 fn issues(nodes: &mut Vec<DetailNode>, app: &App) {
     // The refresh control rides the header line and doubles as the loading
     // spinner — Textual's `.refresh-btn` was flat, `height: 1; border: none`.
-    const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
     nodes.push(DetailNode::Blank);
     nodes.push(DetailNode::IssuesHeader {
         glyph: match app.issues {

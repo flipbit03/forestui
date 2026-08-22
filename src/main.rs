@@ -19,6 +19,12 @@ use std::io::Write;
 fn main() -> anyhow::Result<()> {
     let args = cli::Args::parse();
 
+    // A one-shot maintenance action: report and exit, before anything
+    // re-executes into tmux or paints a UI.
+    if let Some(action) = args.claude_plugin {
+        return run_claude_plugin_action(action);
+    }
+
     // Re-executes into tmux and never returns when we are outside one.
     cli::ensure_tmux(&args)?;
 
@@ -38,6 +44,78 @@ fn main() -> anyhow::Result<()> {
         report_crash(error);
     }
     result
+}
+
+/// `--claude-plugin status|install|uninstall`.
+///
+/// Prints the plugin's directory and every file involved before doing anything,
+/// so this is also the way to see exactly what an install writes without
+/// running one.
+fn run_claude_plugin_action(action: cli::ClaudePluginAction) -> anyhow::Result<()> {
+    use services::claude_plugin::{self, Status};
+    use std::fmt::Write as _;
+
+    let dir = claude_plugin::plugin_dir();
+    let mut out = String::new();
+    let _ = writeln!(out, "plugin:  {}", claude_plugin::PLUGIN_NAME);
+    let _ = writeln!(out, "path:    {}", dir.display());
+    let _ = writeln!(out, "status:  {}", claude_plugin::status().label());
+
+    let result = match action {
+        cli::ClaudePluginAction::Status => {
+            if let Status::Drifted(files) = claude_plugin::status() {
+                for file in files {
+                    let _ = writeln!(out, "modified: {file}");
+                }
+            }
+            let _ = writeln!(out);
+            let _ = writeln!(
+                out,
+                "An install writes only these files. Your settings.json is not touched;"
+            );
+            let _ = writeln!(out, "Claude discovers plugin directories on its own.");
+            for path in claude_plugin::planned_paths() {
+                let _ = writeln!(out, "  {}", path.display());
+            }
+            Ok(())
+        }
+        cli::ClaudePluginAction::Install => claude_plugin::install(false).map(|()| {
+            let _ = writeln!(out);
+            let _ = writeln!(
+                out,
+                "Installed. It takes effect in Claude sessions started from now on."
+            );
+            let _ = writeln!(
+                out,
+                "Renaming a forestui tab now renames the Claude session in it."
+            );
+            let _ = writeln!(
+                out,
+                "To stop that, uninstall — there is no per-tab switch to remember."
+            );
+            if !claude_plugin::jq_available() {
+                let _ = writeln!(out);
+                let _ = writeln!(
+                    out,
+                    "Note: `jq` is not on PATH. The hook reads the session's own name"
+                );
+                let _ = writeln!(
+                    out,
+                    "with it, so until jq is installed the sync does nothing at all"
+                );
+                let _ = writeln!(out, "rather than half of it.");
+            }
+        }),
+        cli::ClaudePluginAction::Uninstall => claude_plugin::uninstall().map(|()| {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "Removed.");
+        }),
+    };
+
+    // Written once, and a write error is dropped: piping this into `head`
+    // closes the pipe, and `println!` turns that into a panic.
+    let _ = std::io::stdout().write_all(out.as_bytes());
+    result.map_err(|e| anyhow::anyhow!(e))
 }
 
 async fn run(self_update: bool) -> anyhow::Result<()> {
@@ -86,13 +164,25 @@ async fn run(self_update: bool) -> anyhow::Result<()> {
 /// one repaint and sliding around inside it costs none.
 ///
 /// `?1006h` asks for SGR coordinates so columns past 223 still resolve.
+///
+/// `?1004h` asks for focus reporting, and without it the terminal never sends
+/// focus in/out at all — so `Event::FocusGained` never arrived and everything
+/// hung off it was dead code. `ensure_focus_events` turning on tmux's
+/// `focus-events` is only half of the handshake: tmux forwards the sequences
+/// to a pane that asked for them, and this is the asking.
+/// Kept as one string so a test can pin it: a mode dropped from here fails
+/// silently and takes a whole feature with it, which is how focus reporting
+/// went missing and left `Event::FocusGained` unable to fire at all.
+const TERMINAL_MODES_ON: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1004h";
+const TERMINAL_MODES_OFF: &str = "\x1b[?1004l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+
 fn enable_mouse() {
-    print!("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
+    print!("{TERMINAL_MODES_ON}");
     let _ = std::io::stdout().flush();
 }
 
 fn disable_mouse() {
-    print!("\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l");
+    print!("{TERMINAL_MODES_OFF}");
     let _ = std::io::stdout().flush();
 }
 
@@ -109,4 +199,35 @@ fn report_crash(error: &anyhow::Error) {
     let _ = std::io::stderr().flush();
     let mut discard = String::new();
     let _ = std::io::stdin().read_line(&mut discard);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Both of these are load-bearing and neither fails loudly.
+    ///
+    /// Without `?1003h` the terminal never reports a bare pointer move, so
+    /// hover cannot work. Without `?1004h` it never reports focus at all, so
+    /// `Event::FocusGained` never arrives and everything hanging off it —
+    /// refreshing sessions and worktrees when the user comes back — is dead
+    /// code that still compiles and still has passing tests.
+    #[test]
+    fn the_terminal_modes_we_depend_on_are_requested() {
+        for (mode, why) in [
+            ("?1003h", "any-motion, for hover"),
+            ("?1004h", "focus reporting, for refresh on return"),
+            ("?1006h", "SGR coordinates, for columns past 223"),
+        ] {
+            assert!(
+                TERMINAL_MODES_ON.contains(mode),
+                "{mode} ({why}) is not requested"
+            );
+            let off = mode.replace('h', "l");
+            assert!(
+                TERMINAL_MODES_OFF.contains(&off),
+                "{mode} ({why}) is requested but never turned off"
+            );
+        }
+    }
 }

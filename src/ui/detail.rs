@@ -28,7 +28,9 @@ const CARD_INSET: u16 = 2;
 /// Cells left clear on the right of a card or a rule, from the `margin: 0 2 1 0`
 /// Textual gave `.session-item` and `.issue-row` and the `margin: 1 2 1 0` it
 /// gave `Rule.-horizontal`. Without it they run into the edge of the pane.
-const RIGHT_MARGIN: u16 = 2;
+/// Columns kept clear to the right of every card. Three rather than two so a
+/// card stops short of the scrollbar instead of running into it.
+const RIGHT_MARGIN: u16 = 3;
 
 /// Rows a control occupies, from Textual's `Button { border: solid; height: 3 }`:
 /// its top border, its label, and its bottom border.
@@ -422,10 +424,14 @@ impl Pane {
         let mut x = inset.saturating_add(lead_width).saturating_add(pad);
         let mut lead = lead;
         lead.push(blank(pad));
+        // The lead rides the *last* of the three rows a boxed control occupies,
+        // so a card's meta line sits along its bottom edge. On the middle row it
+        // lands level with the button labels, which reads as text floating in
+        // the middle of the card rather than as a caption under its content.
         let mut rows = [
             vec![blank(lead_width.saturating_add(pad))],
-            lead,
             vec![blank(lead_width.saturating_add(pad))],
+            lead,
         ];
 
         for (index, control) in controls.iter().enumerate() {
@@ -645,9 +651,10 @@ mod tests {
 
     fn a_session() -> ClaudeSession {
         ClaudeSession {
+            custom_title: None,
             id: "abc".into(),
             title: "Refactor the detail pane".into(),
-            last_message: "and then some".into(),
+            recent_turns: Vec::new(),
             last_timestamp: Utc::now(),
             message_count: 12,
         }
@@ -786,7 +793,13 @@ mod tests {
         // inside that, so the card's edge lands short of the screen edge.
         let right = buffer.area.width - PANE_PAD_X - RIGHT_MARGIN - 1;
 
-        for label in ["Refactor the detail pane", "#42 Fix login bug"] {
+        // A session card is unpadded — its name carries the separation instead,
+        // so its top border sits directly above the name — while an issue card
+        // keeps `padding: 1` and a blank row between the two.
+        for (label, padded) in [
+            ("Refactor the detail pane", false),
+            ("#42 Fix login bug", true),
+        ] {
             let (x, y) = find_cell(&buffer, label);
             let cell = |x: u16, y: u16| {
                 buffer
@@ -795,16 +808,17 @@ mod tests {
             };
 
             let left = x - CARD_INSET;
-            // `padding: 1` puts a blank card row between the top edge and the
-            // first line of content.
-            assert_eq!(cell(left, y - 2).symbol(), "┌", "{label}: top left");
-            assert_eq!(cell(right, y - 2).symbol(), "┐", "{label}: top right");
-            assert_eq!(cell(left, y - 1).symbol(), "│", "{label}: padding row");
-            assert_eq!(
-                cell(x, y - 1).bg,
-                theme::active().bg_elevated,
-                "{label}: padding row is filled",
-            );
+            let top = if padded { y - 2 } else { y - 1 };
+            assert_eq!(cell(left, top).symbol(), "┌", "{label}: top left");
+            assert_eq!(cell(right, top).symbol(), "┐", "{label}: top right");
+            if padded {
+                assert_eq!(cell(left, y - 1).symbol(), "│", "{label}: padding row");
+                assert_eq!(
+                    cell(x, y - 1).bg,
+                    theme::active().bg_elevated,
+                    "{label}: padding row is filled",
+                );
+            }
             assert_eq!(cell(left, y).symbol(), "│", "{label}: left border");
             assert_eq!(cell(right, y).symbol(), "│", "{label}: right border");
             assert_eq!(

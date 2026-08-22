@@ -8,11 +8,11 @@
 use super::{Action, App, Field};
 use crate::event::Severity;
 use crate::event::{AppEvent, BranchTarget, EventTx};
-use crate::modal::ModalOutcome;
 use crate::modal::{
     AddWorktreeModal, ConfirmAction, ConfirmModal, CreateFromIssueModal, Modal, ModalEffect,
     ModalResult,
 };
+use crate::modal::{IntegrationAction, ModalOutcome};
 use crate::models::{CustomClaudeButton, Repository, Worktree};
 use crate::services::{claude_session, git, github, settings as settings_service, tmux};
 use std::path::{Path, PathBuf};
@@ -48,7 +48,15 @@ impl App {
         match modal.handle_key(key) {
             ModalOutcome::None => {}
             ModalOutcome::Close => {
-                self.modals.pop();
+                let closed = self.modals.pop();
+                // The integration dialog installs and removes the plugin, so
+                // the Settings section that opened it has to re-read the status
+                // it snapshotted — including on Esc, which reports nothing.
+                if matches!(closed, Some(Modal::ClaudeIntegration(_)))
+                    && let Some(Modal::Settings(parent)) = self.modals.last_mut()
+                {
+                    parent.integration_status = crate::services::claude_plugin::status();
+                }
             }
             ModalOutcome::Push(child) => self.modals.push(*child),
             ModalOutcome::Effect(effect) => self.run_modal_effect(effect),
@@ -62,8 +70,52 @@ impl App {
         }
     }
 
+    /// Install, upgrade, overwrite or remove the plugin, then leave the dialog
+    /// showing what happened.
+    ///
+    /// Synchronous on purpose: this writes three small files inside the user's
+    /// own config directory, and a dialog that reported "Installed" from a
+    /// background task could just as easily report it before the write landed.
+    fn run_claude_plugin_action(&mut self, action: IntegrationAction) {
+        use crate::services::claude_plugin;
+
+        let outcome = match action {
+            IntegrationAction::Install | IntegrationAction::Upgrade => {
+                claude_plugin::install(false)
+                    .map(|()| "Sessions started from now on are named after their tab.".to_string())
+            }
+            // Reinstall writes the same bytes back; overwrite is the only path
+            // that discards a hand edit, and it is only reachable from a dialog
+            // whose button says so.
+            IntegrationAction::Reinstall => {
+                claude_plugin::install(false).map(|()| "Shipped files rewritten.".to_string())
+            }
+            IntegrationAction::Overwrite => {
+                claude_plugin::install(true).map(|()| "Local edits replaced.".to_string())
+            }
+            IntegrationAction::Uninstall => claude_plugin::uninstall()
+                .map(|()| "Removed. Sessions already running keep their names.".to_string()),
+            IntegrationAction::Close => return,
+        };
+
+        let message = match outcome {
+            Ok(done) => {
+                self.notify(done.clone(), Severity::Information);
+                done
+            }
+            Err(error) => {
+                self.notify(error.clone(), Severity::Error);
+                error
+            }
+        };
+        if let Some(Modal::ClaudeIntegration(modal)) = self.modals.last_mut() {
+            modal.refresh(message);
+        }
+    }
+
     fn run_modal_effect(&mut self, effect: ModalEffect) {
         match effect {
+            ModalEffect::ClaudePlugin(action) => self.run_claude_plugin_action(action),
             ModalEffect::Fetch(repo_path) => {
                 let repo_id = self.state.selection.repository_id.unwrap_or_default();
                 let tx = self.tx.clone();
@@ -290,6 +342,16 @@ impl App {
             .map(|s| s.id.clone())
     }
 
+    /// The name the user gave this session, if any. Resuming a named session
+    /// names its window after the session, so the tab says which conversation
+    /// it holds rather than repeating the worktree already selected on screen.
+    fn session_window_name(&self, index: usize) -> Option<String> {
+        self.sessions
+            .as_ref()
+            .and_then(|s| s.get(index))
+            .and_then(|s| s.custom_title.clone())
+    }
+
     pub fn run_action(&mut self, action: Action) {
         let Some(path) = self.state.selected_path() else {
             return;
@@ -324,28 +386,31 @@ impl App {
             Action::Editor => self.open_in_editor(&path),
             Action::Terminal => self.open_in_terminal(&path),
             Action::Files => self.open_in_file_manager(&path),
-            Action::ClaudeNew => self.start_claude(&path, None, false, None),
-            Action::ClaudeYolo => self.start_claude(&path, None, true, None),
+            Action::ClaudeNew => self.start_claude(&path, None, false, None, None),
+            Action::ClaudeYolo => self.start_claude(&path, None, true, None, None),
             Action::ClaudeCustom(index) => {
                 if let Some(button) = self.custom_button(index) {
-                    self.start_claude(&path, None, false, Some(button));
+                    self.start_claude(&path, None, false, Some(button), None);
                 }
             }
             Action::ResumeSession(index) => {
                 if let Some(id) = self.session_id(index) {
-                    self.start_claude(&path, Some(&id), false, None);
+                    let seed = self.session_window_name(index);
+                    self.start_claude(&path, Some(&id), false, None, seed);
                 }
             }
             Action::ResumeYolo(index) => {
                 if let Some(id) = self.session_id(index) {
-                    self.start_claude(&path, Some(&id), true, None);
+                    let seed = self.session_window_name(index);
+                    self.start_claude(&path, Some(&id), true, None, seed);
                 }
             }
             Action::ResumeCustom { button, session } => {
                 if let (Some(id), Some(button)) =
                     (self.session_id(session), self.custom_button(button))
                 {
-                    self.start_claude(&path, Some(&id), false, Some(button));
+                    let seed = self.session_window_name(session);
+                    self.start_claude(&path, Some(&id), false, Some(button), seed);
                 }
             }
             Action::RefreshIssues => {
@@ -453,10 +518,16 @@ impl App {
         resume_session_id: Option<&str>,
         yolo: bool,
         custom: Option<CustomClaudeButton>,
+        seed_name: Option<String>,
     ) {
-        let name = self.state.tmux_window_name(path);
+        let opening_name = tmux::opening_window_name(
+            seed_name.as_deref(),
+            &self.state.tmux_window_name(path),
+            yolo,
+            custom.as_ref().map(|b| b.prefix.as_str()),
+        );
         let window = tmux::create_claude_window(
-            &name,
+            &opening_name,
             path,
             resume_session_id,
             yolo,

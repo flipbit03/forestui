@@ -3,7 +3,7 @@
 //! Claude Code stores one JSONL file per session under
 //! `~/.claude/projects/<path-with-slashes-replaced-by-dashes>/`.
 
-use crate::models::ClaudeSession;
+use crate::models::{ClaudeSession, SessionTurn, Speaker};
 use chrono::{DateTime, TimeZone, Utc};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,8 +17,21 @@ use std::sync::{Mutex, OnceLock};
 /// entry another consumer peeks.
 type SessionCacheKey = (String, usize);
 
-fn cache() -> &'static Mutex<HashMap<SessionCacheKey, Vec<ClaudeSession>>> {
-    static CACHE: OnceLock<Mutex<HashMap<SessionCacheKey, Vec<ClaudeSession>>>> = OnceLock::new();
+/// What the directory looked like when a cached answer was built: how many
+/// transcripts there were and the newest modification time among them.
+///
+/// This is what makes a frequent refresh affordable. Parsing is the expensive
+/// half — every transcript is read whole and every line JSON-parsed, and a busy
+/// conversation runs to megabytes — while listing the directory and stat-ing it
+/// is not. An unchanged fingerprint means an unchanged answer, so the sweep
+/// costs one `readdir` on the overwhelmingly common tick where nobody has said
+/// anything.
+type Fingerprint = (usize, Option<std::time::SystemTime>);
+
+type CacheEntry = (Fingerprint, Vec<ClaudeSession>);
+
+fn cache() -> &'static Mutex<HashMap<SessionCacheKey, CacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<SessionCacheKey, CacheEntry>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -29,7 +42,38 @@ pub fn peek_sessions(path: &str, limit: usize) -> Option<Vec<ClaudeSession>> {
         .lock()
         .ok()?
         .get(&(path.to_string(), limit))
-        .cloned()
+        .map(|(_, sessions)| sessions.clone())
+}
+
+/// Count of transcripts and the newest mtime among them. Agent transcripts are
+/// skipped here for the same reason the scan skips them, so one starting does
+/// not read as a change.
+fn fingerprint(sessions_dir: &Path) -> Fingerprint {
+    let Ok(entries) = std::fs::read_dir(sessions_dir) else {
+        return (0, None);
+    };
+    let mut count = 0usize;
+    let mut newest: Option<std::time::SystemTime> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("agent-"))
+        {
+            continue;
+        }
+        count += 1;
+        if let Ok(modified) = entry.metadata().and_then(|m| m.modified())
+            && newest.is_none_or(|prev| modified > prev)
+        {
+            newest = Some(modified);
+        }
+    }
+    (count, newest)
 }
 
 /// Convert a filesystem path to Claude's folder naming convention.
@@ -45,11 +89,41 @@ pub fn claude_projects_dir() -> PathBuf {
 /// Sessions for a path, newest first, capped at `limit`.
 pub fn get_sessions_for_path(path: &str, limit: usize) -> Vec<ClaudeSession> {
     let sessions_dir = claude_projects_dir().join(path_to_claude_folder(path));
+    let key = (path.to_string(), limit);
+    let current = fingerprint(&sessions_dir);
+
+    // Nothing in the directory has changed since the cached answer was built,
+    // so re-reading every transcript would produce the same list.
+    if let Ok(guard) = cache().lock()
+        && let Some((cached, sessions)) = guard.get(&key)
+        && *cached == current
+    {
+        return sessions.clone();
+    }
+
     let sessions = read_sessions_dir(&sessions_dir, limit);
     if let Ok(mut guard) = cache().lock() {
-        guard.insert((path.to_string(), limit), sessions.clone());
+        guard.insert(key, (current, sessions.clone()));
     }
     sessions
+}
+
+/// Re-read one transcript. `None` means it is gone or no longer has any
+/// messages, which is how a session that was deleted while forestui was in the
+/// background leaves the list.
+///
+/// This is the per-card refresh: five transcripts re-read concurrently answer
+/// far sooner than one walk of a directory that may hold dozens, and each card
+/// updates the moment its own read lands rather than all of them together.
+pub fn refresh_one(path: &str, session_id: &str) -> Option<ClaudeSession> {
+    let file = claude_projects_dir()
+        .join(path_to_claude_folder(path))
+        .join(format!("{session_id}.jsonl"));
+    // Through the cache: this runs for every card on screen on a ten-second
+    // timer, and a transcript nobody has written to parses to what it did
+    // before. One of them is 60 MB.
+    let modified = std::fs::metadata(&file).and_then(|m| m.modified()).ok()?;
+    parse_cached(&file, modified)
 }
 
 /// Directory-scoped form of [`get_sessions_for_path`], for testing.
@@ -58,28 +132,95 @@ pub fn read_sessions_dir(sessions_dir: &Path, limit: usize) -> Vec<ClaudeSession
         return Vec::new();
     };
 
-    let mut sessions: Vec<ClaudeSession> = Vec::new();
+    // Stat first, parse second. One real project directory holds 542 MB across
+    // 51 transcripts, and parsing all of them to sort by their last message and
+    // then show five took 1.9 seconds — on a sweep that now runs every ten
+    // seconds. A transcript's mtime is its last activity, which is the same
+    // ordering, and costs a stat.
+    let mut candidates: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
     for entry in entries.flatten() {
         let file_path = entry.path();
         if file_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
         }
-        let name = file_path
+        // Agent transcripts are not user-facing sessions.
+        if file_path
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        // Agent transcripts are not user-facing sessions.
-        if name.starts_with("agent-") {
+            .is_some_and(|name| name.starts_with("agent-"))
+        {
             continue;
         }
-        if let Some(session) = parse_session_file(&file_path) {
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        candidates.push((file_path, modified));
+    }
+    candidates.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
+
+    // Walk newest-first and stop as soon as no remaining file can qualify.
+    //
+    // A file's mtime is never older than its last message — writing that
+    // message is what set it — so a candidate whose *mtime* already loses to
+    // the oldest session held cannot win on its last message either, and
+    // neither can anything after it, because they are sorted. That makes this
+    // exactly the same answer as parsing all 51 and sorting, for the cost of
+    // parsing about five. Sorting on mtime alone is not the same answer:
+    // naming a session rewrites its transcript without adding a timestamped
+    // record, so mtime moves and the last message does not.
+    let mut sessions: Vec<ClaudeSession> = Vec::new();
+    for (file_path, modified) in candidates {
+        if sessions.len() >= limit
+            && let Some(worst) = sessions.last()
+            && modified <= std::time::SystemTime::from(worst.last_timestamp)
+        {
+            break;
+        }
+        if let Some(session) = parse_cached(&file_path, modified) {
             sessions.push(session);
+            sessions.sort_by_key(|s| std::cmp::Reverse(s.last_timestamp));
+            sessions.truncate(limit);
         }
     }
-
-    sessions.sort_by_key(|s| std::cmp::Reverse(s.last_timestamp));
-    sessions.truncate(limit);
     sessions
+}
+
+/// [`parse_session_file`], skipped entirely when the file has not been written
+/// to since it was last parsed.
+///
+/// The scan runs on a timer, so the same transcripts are read over and over;
+/// an active conversation touches one of them and leaves the rest identical.
+pub fn parse_cached(file_path: &Path, modified: std::time::SystemTime) -> Option<ClaudeSession> {
+    if let Ok(guard) = parsed_cache().lock()
+        && let Some((cached_at, session)) = guard.get(file_path)
+        && *cached_at == modified
+    {
+        return Some(session.clone());
+    }
+
+    let session = parse_session_file(file_path)?;
+    if let Ok(mut guard) = parsed_cache().lock() {
+        // A transcript that has gone quiet is not worth remembering forever,
+        // and this is a cache rather than an index: dropping it wholesale
+        // costs one re-parse of whatever is still on screen.
+        if guard.len() >= PARSED_CACHE_LIMIT {
+            guard.clear();
+        }
+        guard.insert(file_path.to_path_buf(), (modified, session.clone()));
+    }
+    Some(session)
+}
+
+/// Enough for every transcript of several busy projects; the entries are a few
+/// short strings each.
+const PARSED_CACHE_LIMIT: usize = 512;
+
+type ParsedCache = HashMap<PathBuf, (std::time::SystemTime, ClaudeSession)>;
+
+fn parsed_cache() -> &'static Mutex<ParsedCache> {
+    static CACHE: OnceLock<Mutex<ParsedCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn parse_timestamp(raw: &str) -> Option<DateTime<Utc>> {
@@ -91,24 +232,6 @@ fn parse_timestamp(raw: &str) -> Option<DateTime<Utc>> {
                 .ok()
                 .map(|naive| Utc.from_utc_datetime(&naive))
         })
-}
-
-/// Collapse runs of 3+ newlines to 2, preserving single blank lines.
-fn collapse_blank_lines(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut newline_run = 0usize;
-    for ch in text.chars() {
-        if ch == '\n' {
-            newline_run += 1;
-            if newline_run <= 2 {
-                out.push(ch);
-            }
-        } else {
-            newline_run = 0;
-            out.push(ch);
-        }
-    }
-    out
 }
 
 fn text_content(data: &serde_json::Value) -> Option<String> {
@@ -135,12 +258,72 @@ fn text_content(data: &serde_json::Value) -> Option<String> {
     None
 }
 
+/// A non-empty string field, trimmed. Claude re-appends title records, so the
+/// last one wins; an empty value is treated as no name at all.
+fn title_field(data: &serde_json::Value, key: &str) -> Option<String> {
+    let value = data.get(key)?.as_str()?.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+/// Whether a `user` record is something the person actually sent.
+///
+/// `user` is the transport, not the author: tool results come back as `user`
+/// records, and so do messages the system injects — a background agent
+/// reporting in, a task notification. `origin.kind` separates them. A record
+/// with no `origin` predates the field, so it is taken at face value rather
+/// than dropped, which would erase the older half of a long conversation.
+fn is_from_the_user(data: &serde_json::Value) -> bool {
+    match data
+        .get("origin")
+        .and_then(|o| o.get("kind"))
+        .and_then(|k| k.as_str())
+    {
+        Some(kind) => kind == "human",
+        None => true,
+    }
+}
+
+/// One line of preview text.
+///
+/// Whitespace is flattened before clipping because a card draws a turn as a
+/// single line: a real message whose first line ended a sentence came out as
+/// `painho:**Repo` — two words from different lines with nothing between them.
+fn clip(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(100)
+        .collect()
+}
+
+/// Record a turn, keeping only the last two.
+///
+/// Consecutive records from the same speaker are one turn: a single answer is
+/// usually several `assistant` records — text, a tool call, more text — and one
+/// real session had runs of up to 77 of them. Taken as separate turns they
+/// would fill both lines and hide the question they answer, which is the half
+/// that identifies the conversation.
+fn push_turn(turns: &mut Vec<SessionTurn>, speaker: Speaker, text: String) {
+    match turns.last_mut() {
+        Some(last) if last.speaker == speaker => last.text = text,
+        _ => {
+            turns.push(SessionTurn { speaker, text });
+            if turns.len() > 2 {
+                turns.remove(0);
+            }
+        }
+    }
+}
+
 pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
     let session_id = file_path.file_stem()?.to_string_lossy().to_string();
     let raw = std::fs::read_to_string(file_path).ok()?;
 
-    let mut title = String::new();
-    let mut last_message = String::new();
+    let mut first_prompt = String::new();
+    let mut custom_title: Option<String> = None;
+    let mut ai_title: Option<String> = None;
+    let mut turns: Vec<SessionTurn> = Vec::new();
     let mut last_timestamp: Option<DateTime<Utc>> = None;
     let mut message_count = 0usize;
 
@@ -160,21 +343,44 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
             last_timestamp = Some(ts);
         }
 
+        // The names Claude itself records. A forked transcript carries the
+        // parent's entries verbatim, so only entries stamped with this file's
+        // own session id are allowed to name it.
+        if data.get("sessionId").and_then(|s| s.as_str()) == Some(session_id.as_str()) {
+            match data.get("type").and_then(|t| t.as_str()) {
+                Some("custom-title") => custom_title = title_field(&data, "customTitle"),
+                Some("ai-title") => ai_title = title_field(&data, "aiTitle"),
+                _ => {}
+            }
+        }
+
         let is_user = data.get("type").and_then(|t| t.as_str()) == Some("user")
             || data.get("role").and_then(|r| r.as_str()) == Some("user");
-        if is_user {
+        // Everything below counts turns the person took, so the count and the
+        // preview agree with each other and with what they remember saying. It
+        // used to count every `user` record, which on a long conversation is
+        // mostly tool results: 5528 where 335 messages were sent.
+        if is_user
+            && is_from_the_user(&data)
+            && let Some(content) = text_content(&data)
+            && !content.is_empty()
+            && !content.starts_with('<')
+        {
             message_count += 1;
-            if let Some(content) = text_content(&data)
-                && !content.is_empty()
-                && !content.starts_with('<')
-            {
-                let normalized = collapse_blank_lines(&content);
-                let clipped: String = normalized.chars().take(100).collect();
-                if title.is_empty() {
-                    title = clipped.clone();
-                }
-                last_message = clipped;
+            let clipped = clip(&content);
+            if first_prompt.is_empty() {
+                first_prompt = clipped.clone();
             }
+            push_turn(&mut turns, Speaker::User, clipped);
+        }
+
+        // Assistant records with no text only called tools; they leave the
+        // previous answer standing, which is the readable one anyway.
+        if data.get("type").and_then(|t| t.as_str()) == Some("assistant")
+            && let Some(content) = text_content(&data)
+            && !content.is_empty()
+        {
+            push_turn(&mut turns, Speaker::Claude, clip(&content));
         }
     }
 
@@ -190,6 +396,13 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
             .unwrap_or_else(|_| Utc::now())
     });
 
+    let title = custom_title
+        .clone()
+        .or(ai_title)
+        .unwrap_or(first_prompt)
+        .trim()
+        .to_string();
+
     Some(ClaudeSession {
         id: session_id,
         title: if title.is_empty() {
@@ -197,7 +410,8 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
         } else {
             title
         },
-        last_message,
+        custom_title,
+        recent_turns: turns,
         last_timestamp,
         message_count,
     })
@@ -268,6 +482,214 @@ mod tests {
         assert!(folder.starts_with('-') || folder.contains("tmp"));
     }
 
+    /// The session list is only useful if it shows the name the user gave the
+    /// session. The first prompt is the last resort, not the first choice.
+    /// `user` is the transport, not the author. A long conversation is mostly
+    /// tool results — one real session showed 5528 `user` records against 335
+    /// messages actually sent — and the system injects `user` records too, so
+    /// the preview could show a background agent reporting in rather than
+    /// anything the person wrote.
+    #[test]
+    fn only_what_the_person_sent_is_counted_or_previewed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sess-turns.jsonl");
+        let lines = [
+            // Typed.
+            r#"{"type":"user","timestamp":"2026-08-01T10:00:00Z","origin":{"kind":"human"},"message":{"content":"first thing I said"}}"#,
+            // A tool result: content is a block array, not text.
+            r#"{"type":"user","timestamp":"2026-08-01T10:00:01Z","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#,
+            // Injected by the system, not by the person.
+            r#"{"type":"user","timestamp":"2026-08-01T10:00:02Z","origin":{"kind":"peer"},"message":{"content":"Background agent finished"}}"#,
+            r#"{"type":"user","timestamp":"2026-08-01T10:00:03Z","origin":{"kind":"task-notification"},"message":{"content":"a task completed"}}"#,
+            // A reminder the harness wraps in a tag.
+            r#"{"type":"user","timestamp":"2026-08-01T10:00:04Z","origin":{"kind":"human"},"message":{"content":"<system-reminder>ignore me</system-reminder>"}}"#,
+            // Typed again — this is the last thing the person said.
+            r#"{"type":"user","timestamp":"2026-08-01T10:00:05Z","origin":{"kind":"human"},"message":{"content":"last thing I said"}}"#,
+            // No origin at all: an older transcript, taken at face value.
+            r#"{"type":"user","timestamp":"2026-08-01T10:00:06Z","message":{"content":"from before origin existed"}}"#,
+        ];
+        std::fs::write(&file, lines.join("\n") + "\n").unwrap();
+
+        let session = parse_session_file(&file).expect("a session");
+        assert_eq!(
+            session.message_count, 3,
+            "counted something the person did not send"
+        );
+        assert_eq!(
+            session.recent_turns.last().map(|t| t.text.as_str()),
+            Some("from before origin existed")
+        );
+        assert_eq!(session.title, "first thing I said");
+    }
+
+    /// The card shows the exchange a conversation stopped on, whichever way
+    /// round it happens to be — and a single answer split across several
+    /// `assistant` records is one turn, not several. Real sessions have runs of
+    /// dozens; counted separately they would fill both lines and hide the
+    /// question, which is the half that identifies the conversation.
+    #[test]
+    fn the_last_two_turns_are_kept_and_same_speaker_runs_collapse() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sess-turns2.jsonl");
+        let user = |text: &str| {
+            format!(
+                r#"{{"type":"user","timestamp":"2026-08-01T10:00:00Z","origin":{{"kind":"human"}},"message":{{"content":"{text}"}}}}"#
+            )
+        };
+        let claude = |text: &str| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-08-01T10:00:00Z","message":{{"content":[{{"type":"text","text":"{text}"}}]}}}}"#
+            )
+        };
+
+        let lines = [
+            user("an older question"),
+            claude("an older answer"),
+            user("what is going on?"),
+            // One answer, three records: text, a tool call, more text.
+            claude("let me look"),
+            r#"{"type":"assistant","timestamp":"2026-08-01T10:00:00Z","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#.to_string(),
+            claude("here is what I found"),
+        ];
+        std::fs::write(&file, lines.join("\n") + "\n").unwrap();
+
+        let session = parse_session_file(&file).expect("a session");
+        let turns: Vec<_> = session
+            .recent_turns
+            .iter()
+            .map(|t| (t.speaker, t.text.as_str()))
+            .collect();
+        assert_eq!(
+            turns,
+            vec![
+                (Speaker::User, "what is going on?"),
+                (Speaker::Claude, "here is what I found"),
+            ]
+        );
+
+        // Ending on a question leaves that question as the newest turn, with
+        // the answer before it — never an older answer pretending to reply.
+        let mut raw = std::fs::read_to_string(&file).unwrap();
+        raw.push_str(&user("and one more thing"));
+        raw.push('\n');
+        std::fs::write(&file, &raw).unwrap();
+
+        let session = parse_session_file(&file).expect("a session");
+        let turns: Vec<_> = session
+            .recent_turns
+            .iter()
+            .map(|t| (t.speaker, t.text.as_str()))
+            .collect();
+        assert_eq!(
+            turns,
+            vec![
+                (Speaker::Claude, "here is what I found"),
+                (Speaker::User, "and one more thing"),
+            ]
+        );
+    }
+
+    /// The scan stops early instead of parsing every transcript. That is only
+    /// sound because a file's mtime is never older than its last message, so
+    /// this pins the case where the two disagree: a transcript touched after
+    /// its last message — which is what naming a session does, since a title
+    /// record carries no timestamp — must not displace a genuinely newer
+    /// conversation.
+    ///
+    /// Measured on a real 542 MB project directory, this took the full scan
+    /// from 1.9 s to 56 ms cold and 0.2 ms warm, on a sweep that runs every
+    /// ten seconds.
+    #[test]
+    fn the_early_exit_picks_what_a_full_scan_would() {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+
+        // `age` is how old the last message is; `touched` how long ago the file
+        // was written. The two disagree on purpose.
+        let write = |name: &str, age_h: u64, touched_h: u64| {
+            let path = dir.path().join(format!("{name}.jsonl"));
+            let when = chrono::Utc::now() - chrono::Duration::hours(age_h as i64);
+            std::fs::write(
+                &path,
+                format!(
+                    "{{\"type\":\"user\",\"timestamp\":\"{}\",\"message\":{{\"content\":\"{name}\"}}}}\n",
+                    when.to_rfc3339()
+                ),
+            )
+            .unwrap();
+            let mtime = SystemTime::now() - Duration::from_secs(touched_h * 3600);
+            let file = std::fs::File::options().write(true).open(&path).unwrap();
+            file.set_times(std::fs::FileTimes::new().set_modified(mtime))
+                .unwrap();
+        };
+
+        write("newest-message", 1, 1);
+        write("touched-but-stale", 40, 0); // freshest file, oldest conversation
+        write("second", 2, 2);
+        write("third", 3, 3);
+        write("oldest", 30, 30);
+
+        let picked: Vec<String> = read_sessions_dir(dir.path(), 3)
+            .iter()
+            .map(|s| s.id.clone())
+            .collect();
+        assert_eq!(
+            picked,
+            vec!["newest-message", "second", "third"],
+            "the early exit dropped a session a full scan would have kept"
+        );
+    }
+
+    #[test]
+    fn title_prefers_the_recorded_name_over_the_first_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sess-name.jsonl");
+        std::fs::write(
+            &file,
+            "{\"type\":\"user\",\"timestamp\":\"2026-08-01T10:00:00Z\",\
+              \"message\":{\"content\":\"please refactor the flaky retry loop\"}}\n\
+             {\"type\":\"ai-title\",\"aiTitle\":\"Refactor the flaky retry loop\",\
+              \"sessionId\":\"sess-name\"}\n",
+        )
+        .unwrap();
+
+        let ai = parse_session_file(&file).expect("a session with an ai title");
+        assert_eq!(ai.title, "Refactor the flaky retry loop");
+        assert_eq!(ai.custom_title, None, "an ai title is not a chosen name");
+
+        // A name the user chose outranks the generated one.
+        let mut raw = std::fs::read_to_string(&file).unwrap();
+        raw.push_str(
+            "{\"type\":\"custom-title\",\"customTitle\":\"retry loop\",\
+              \"sessionId\":\"sess-name\"}\n",
+        );
+        std::fs::write(&file, &raw).unwrap();
+
+        let named = parse_session_file(&file).expect("a named session");
+        assert_eq!(named.title, "retry loop");
+        assert_eq!(named.custom_title.as_deref(), Some("retry loop"));
+    }
+
+    /// A fork copies the parent's transcript verbatim, parent title records
+    /// included. Adopting those would name every fork after its parent.
+    #[test]
+    fn a_forked_transcript_does_not_inherit_the_parent_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("the-fork.jsonl");
+        std::fs::write(
+            &file,
+            "{\"type\":\"user\",\"timestamp\":\"2026-08-01T10:00:00Z\",\
+              \"message\":{\"content\":\"carried over from the parent\"}}\n\
+             {\"type\":\"custom-title\",\"customTitle\":\"the parent name\",\
+              \"sessionId\":\"the-parent\"}\n",
+        )
+        .unwrap();
+
+        let forked = parse_session_file(&file).expect("a forked session");
+        assert_eq!(forked.custom_title, None);
+        assert_eq!(forked.title, "carried over from the parent");
+    }
+
     #[test]
     fn parses_a_session_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -285,7 +707,10 @@ mod tests {
         let session = parse_session_file(&file).unwrap();
         assert_eq!(session.id, "sess-1");
         assert_eq!(session.title, "first question");
-        assert_eq!(session.last_message, "second");
+        assert_eq!(
+            session.recent_turns.last().map(|t| t.text.as_str()),
+            Some("second")
+        );
         assert_eq!(session.message_count, 2);
     }
 
@@ -337,11 +762,5 @@ mod tests {
         migrate_dirs(&old, &new);
         assert!(new.join("a.jsonl").exists());
         assert!(!old.exists());
-    }
-
-    #[test]
-    fn collapse_blank_lines_keeps_single_gap() {
-        assert_eq!(collapse_blank_lines("a\n\n\n\nb"), "a\n\nb");
-        assert_eq!(collapse_blank_lines("a\nb"), "a\nb");
     }
 }

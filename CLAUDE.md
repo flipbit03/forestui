@@ -2,6 +2,41 @@
 
 This file provides context for AI assistants (like Claude) working on forestui.
 
+## Never touch the user's live tmux
+
+**This rule applies to every task in this repo, not just testing.**
+
+Whoever works on forestui is, almost by definition, *running* forestui. That
+is what makes this different from an ordinary "be careful" note: a live tmux
+server is up right now, holding their actual work — editors mid-edit,
+terminals mid-command, Claude sessions mid-conversation, laid out the way they
+left them. It is not a risk to weigh against convenience; it is the default
+state of this repo's development environment, and a bare `tmux` command from a
+shell attaches straight to it.
+
+The session running this task is very likely one of those windows — forestui
+opens Claude sessions in tmux windows, and this is a Claude session. A stray
+`rename-window`, `kill-window` or `kill-server` can destroy the user's work,
+up to and including the conversation that issued the command.
+
+- **Never run a bare `tmux` command** — not to look, not to list, not "just
+  once". `tmux list-sessions` is as dangerous as `tmux kill-server`, because
+  it is the step that convinces you the next call is safe.
+- **Drive tmux only through `tu`**, with `TMUX_TMPDIR` pointed at a throwaway
+  directory. The `test-forestui` skill has the exact invocation.
+- **Exploring tmux behaviour is not an exception.** Learning what a tmux
+  command does, probing options or hooks, reproducing something from the
+  docs — all of it goes on an isolated server under `tu`. A separate `-L`
+  socket looks like it solves this, and it does not: it relies on never once
+  forgetting the flag, against a default that reaches the user's live
+  session.
+
+The `test-forestui` skill carries the full harness recipe, and its description
+asks to be loaded before *any* tmux command, not only before testing — because
+tasks that do not look like testing are exactly where this gets broken: a
+spike, doc research, "just checking how tmux options work". The rule is
+repeated here because this file is always loaded and a skill is not.
+
 ## Project Overview
 
 forestui is a terminal UI for managing Git worktrees, built with Rust and
@@ -55,8 +90,11 @@ forestui/
 │       ├── git.rs            # Async git operations
 │       ├── tmux.rs           # tmux window management
 │       ├── github.rs         # gh CLI integration
+│       ├── claude_plugin.rs  # Installing the Claude Code title-sync plugin
 │       ├── claude_session.rs # Claude Code session tracking
 │       └── settings.rs       # User preferences + runtime forest path
+├── assets/
+│   └── claude-plugin/        # The Claude Code plugin, embedded in the binary
 ├── Makefile                  # Development commands
 ├── install.sh                # Installation script
 └── README.md
@@ -192,6 +230,60 @@ fast switching between editor, app, and Claude windows.
 
 The re-exec uses `std::env::current_exe()`, so a `cargo run` build re-launches
 itself rather than whatever `forestui` happens to be on `PATH`.
+
+### Session names follow tmux window names
+
+A tmux window forestui opened and the Claude session running in it carry the
+same name, in both directions: renaming the tab renames the session, and
+`/rename` renames the tab. The two are **one string, verbatim** — nothing is
+added, stripped or parsed. A window called `yolo:thing` holds a session called
+`yolo:thing`. Prefixes are forestui's opening move when it creates a window,
+not a format anything reads back.
+
+It is carried by a Claude Code **plugin** — a directory under the Claude config
+dir, which Claude discovers on its own. Installing therefore writes nothing to
+the user's `settings.json`, and hooks they configured themselves are never
+parsed or rewritten; plugin hooks and settings hooks both run. Enabling and
+disabling is Claude's own business (`claude plugin enable|disable`), which is
+why nothing here edits `enabledPlugins`. Install it with
+`forestui --claude-plugin install`; `status` prints every path an install would
+write without writing any of them.
+
+Three pieces make it work, and each is load-bearing:
+
+A new session is named at launch, by passing Claude's own `-n` flag with the
+window's name. That is not interchangeable with setting the title from a hook:
+Claude draws the name in the prompt box from the first frame with `-n`, whereas
+a title a hook sets at `SessionStart` is stored and never drawn — the session is
+correctly named and looks unnamed. A hook still names one on its first prompt if
+`-n` never reached it.
+
+**A resumed session is not given `-n`.** It already carries the name it was
+given, and the window's name may have picked up a `:2` from uniquifying against
+a window still open for the same conversation — passing it would overwrite the
+real name with the suffixed one. The hook adopts the stored name onto the
+window instead.
+
+- **`@claude_birth_name`**, a tmux window option stamped when the window is
+  created, answers one question: did forestui open this window? A window the
+  user made by hand carries none and is left alone, as is a bare `claude` in a
+  plain terminal. It is written from *inside* the window, in a prelude ahead of
+  the command that needs it — stamping it from forestui after `new-window`
+  returns is a separate tmux call, and a fast-starting Claude could reach its
+  first hook before it lands.
+- **`@claude_synced_name`** records the last agreed name. Two-way sync cannot
+  tell which side moved from one value: equal names are ambiguous between
+  nobody changing and both changing alike, and unequal names do not say who is
+  stale. When both moved, the tab wins.
+- **Window names reach a shell**, so they are quoted literally with single
+  quotes rather than by any escaping heuristic. A session title can be set by a
+  `SessionStart` hook in a repository's own `.claude/settings.json`, so by the
+  time a name gets here it is not necessarily the user's own text. These
+  commands run through `-ic`, an *interactive* shell, where double quotes would
+  not even stop zsh history expansion.
+
+There is deliberately no off switch, per window or global. Installed means the
+two names agree; not wanting that is an uninstall.
 
 ### Self-update
 forestui keeps itself current the way the Python build did — automatically, on
@@ -359,6 +451,9 @@ section fell back to its empty state. Keep that guard honest when adding cases.
 The harness waits on screen conditions, never fixed sleeps — Textual repaints
 far slower than ratatui, and fixed sleeps produced false mismatches. Anything
 added to the sweep must use `await <regex>`.
+
+All of the below runs under the isolation rule at the top of this file: tmux
+is driven through `tu` with `TMUX_TMPDIR`, never directly.
 
 Note that `ensure_tmux` re-executes the binary, so for `tu` runs you must
 build first and pass the built binary's path as the sweep's command argument

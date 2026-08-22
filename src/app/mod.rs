@@ -31,6 +31,11 @@ pub const ISSUE_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 /// worktrees created or removed outside forestui (an agent's `git worktree
 /// add`, a manual remove) converge into the sidebar without being asked for.
 pub const WORKTREE_SCAN_INTERVAL: Duration = Duration::from_secs(30);
+/// How often the session list is re-scanned while forestui is just sitting
+/// there. Frequent because a conversation in another window moves constantly,
+/// and affordable because an unchanged transcript is never re-parsed. The
+/// per-card refresh does *not* run on this timer — see `App::on_tick`.
+pub const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 pub const SESSION_LIMIT: usize = 5;
 pub const ISSUE_LIMIT: usize = 10;
 /// Lines the detail pane moves per wheel notch, matching Textual's
@@ -140,6 +145,11 @@ pub struct App {
     worktree_scans_in_flight: std::collections::HashSet<Uuid>,
     /// When the last periodic worktree sweep started.
     last_worktree_scan: Instant,
+    /// When the last periodic session refresh started.
+    last_session_refresh: Instant,
+    /// Session ids being re-read right now. Each one draws a spinner on its own
+    /// card, so a slow transcript is visibly working rather than silently old.
+    pub sessions_refreshing: std::collections::HashSet<String>,
     /// Per-repository worktree mutation counter; see
     /// [`AppEvent::WorktreesScanned`]. Missing means 0 — repositories only
     /// enter the map once something about their worktrees changes.
@@ -246,6 +256,8 @@ impl App {
             sessions_in_flight: std::collections::HashSet::new(),
             worktree_scans_in_flight: std::collections::HashSet::new(),
             last_worktree_scan: Instant::now(),
+            last_session_refresh: Instant::now(),
+            sessions_refreshing: std::collections::HashSet::new(),
             worktree_epochs: std::collections::HashMap::new(),
             renames_in_flight: std::collections::HashSet::new(),
             removals_in_flight: std::collections::HashSet::new(),
@@ -311,6 +323,73 @@ impl App {
         self.load_gh_status();
         if self.self_update {
             self.check_for_update();
+        }
+    }
+
+    /// Kick a directory walk for one path's sessions. This is what finds
+    /// sessions that appeared or disappeared; [`Self::refresh_visible_sessions`]
+    /// is what keeps the ones already on screen current.
+    fn scan_sessions(&mut self, path: &str) {
+        // One scan per path at a time: bouncing across the sidebar must not
+        // stack duplicate directory walks for content the cache already shows.
+        if !self.sessions_in_flight.insert(path.to_string()) {
+            return;
+        }
+        let tx = self.tx.clone();
+        let session_path = path.to_string();
+        let event_path = path.to_string();
+        tokio::spawn(async move {
+            let sessions = tokio::task::spawn_blocking(move || {
+                claude_session::get_sessions_for_path(&session_path, SESSION_LIMIT)
+            })
+            .await
+            .ok();
+            tx.send(AppEvent::Sessions {
+                path: event_path,
+                sessions,
+            });
+        });
+    }
+
+    /// Re-read every session card on screen, each in its own task.
+    ///
+    /// Coming back to forestui is exactly when the conversations it lists have
+    /// moved on: turns were taken in other windows while it sat in the
+    /// background. One task per card means each answers as soon as its own
+    /// transcript is read, and the card carries a spinner until it does — so
+    /// the pane fills in rather than sitting still and then blinking.
+    pub fn refresh_visible_sessions(&mut self) {
+        let Some(path) = self.state.selected_path() else {
+            return;
+        };
+        // A directory walk alongside, for sessions that were started or removed
+        // while we were away; the per-card reads cannot see those.
+        self.scan_sessions(&path);
+
+        let Some(sessions) = self.sessions.as_ref() else {
+            return;
+        };
+        for id in sessions.iter().map(|s| s.id.clone()).collect::<Vec<_>>() {
+            if !self.sessions_refreshing.insert(id.clone()) {
+                continue;
+            }
+            let tx = self.tx.clone();
+            let read_path = path.clone();
+            let read_id = id.clone();
+            let event_path = path.clone();
+            tokio::spawn(async move {
+                let session = tokio::task::spawn_blocking(move || {
+                    claude_session::refresh_one(&read_path, &read_id)
+                })
+                .await
+                .ok()
+                .flatten();
+                tx.send(AppEvent::SessionRefreshed {
+                    path: event_path,
+                    id,
+                    session: Box::new(session),
+                });
+            });
         }
     }
 
@@ -576,24 +655,9 @@ impl App {
         // dropping to "Loading…" on every switch with a warm cache in hand —
         // is the flash issue #29 is about.
         self.sessions = claude_session::peek_sessions(&path, SESSION_LIMIT);
-        // One scan per path at a time: bouncing across the sidebar must not
-        // stack duplicate directory walks for content the cache already shows.
-        if self.sessions_in_flight.insert(path.clone()) {
-            let tx = self.tx.clone();
-            let session_path = path.clone();
-            let event_path = path.clone();
-            tokio::spawn(async move {
-                let sessions = tokio::task::spawn_blocking(move || {
-                    claude_session::get_sessions_for_path(&session_path, SESSION_LIMIT)
-                })
-                .await
-                .ok();
-                tx.send(AppEvent::Sessions {
-                    path: event_path,
-                    sessions,
-                });
-            });
-        }
+        // A new selection has nothing of the old one's refreshes to wait for.
+        self.sessions_refreshing.clear();
+        self.scan_sessions(&path);
 
         if is_repository {
             match github::peek_issues(&path) {
@@ -675,7 +739,7 @@ impl App {
     /// paints nothing at all rather than ten frames a second.
     fn on_tick(&mut self) {
         self.spinner_index = self.spinner_index.wrapping_add(1);
-        if self.issue_spinner_visible() {
+        if self.issue_spinner_visible() || !self.sessions_refreshing.is_empty() {
             self.redraw = true;
         }
 
@@ -705,6 +769,18 @@ impl App {
             // No repaint here: a sweep that changes nothing stays invisible,
             // and one that does pays for its own when the fold lands.
             self.scan_all_worktrees();
+        }
+
+        if self.last_session_refresh.elapsed() >= SESSION_REFRESH_INTERVAL {
+            self.last_session_refresh = Instant::now();
+            // The directory walk only — not the per-card refresh. A cached scan
+            // costs a fraction of a millisecond and repaints nothing when it
+            // finds nothing, whereas the per-card pass raises a spinner on
+            // every card, and one that clears before the next frame is a
+            // flicker every ten seconds with nothing to wait for.
+            if let Some(path) = self.state.selected_path() {
+                self.scan_sessions(&path);
+            }
         }
 
         if self.last_issue_refresh.elapsed() >= ISSUE_REFRESH_INTERVAL {
@@ -746,7 +822,10 @@ impl App {
         // sweep almost always finds nothing, and its fold claims a repaint
         // itself when it changes something.
         if !mouse::is_pointer_motion(&event)
-            && !matches!(event, AppEvent::Tick | AppEvent::WorktreesScanned { .. })
+            && !matches!(
+                event,
+                AppEvent::Tick | AppEvent::WorktreesScanned { .. } | AppEvent::Sessions { .. }
+            )
         {
             self.redraw = true;
         }
@@ -756,6 +835,32 @@ impl App {
             AppEvent::GhStatus(status, username) => {
                 self.gh_status = status.display(username.as_deref());
             }
+            AppEvent::SessionRefreshed { path, id, session } => {
+                self.sessions_refreshing.remove(&id);
+                // A result for a selection the user has already left is not
+                // wrong, just irrelevant — and folding it would put another
+                // path's conversation into this pane. Keyed on the pane's own
+                // path, as the directory scan is: two notions of "current"
+                // eventually disagree.
+                if path != self.meta.path {
+                    return;
+                }
+                if let Some(list) = self.sessions.as_mut() {
+                    match *session {
+                        // Gone from disk: drop the card rather than leave a
+                        // Resume button pointing at nothing.
+                        None => list.retain(|s| s.id != id),
+                        Some(fresh) => {
+                            if let Some(slot) = list.iter_mut().find(|s| s.id == id) {
+                                *slot = fresh;
+                            }
+                        }
+                    }
+                    // A turn taken while we were away makes a session the most
+                    // recent one, and the list is ordered newest first.
+                    list.sort_by_key(|s| std::cmp::Reverse(s.last_timestamp));
+                }
+            }
             AppEvent::Sessions { path, sessions } => {
                 // Release the guard even for a result the checks below drop.
                 self.sessions_in_flight.remove(&path);
@@ -763,8 +868,13 @@ impl App {
                 // empty *successful* scan is real content and lands normally.
                 if let Some(sessions) = sessions
                     && path == self.meta.path
+                    && self.sessions.as_deref() != Some(sessions.as_slice())
                 {
+                    // Claims its own repaint, like the worktree sweep: this runs
+                    // on a timer and almost always finds exactly what is already
+                    // on screen.
                     self.sessions = Some(sessions);
+                    self.redraw = true;
                 }
             }
             AppEvent::Issues { path, issues } => {
@@ -1012,7 +1122,11 @@ impl App {
             // which is exactly when an agent in another window may have
             // created or removed a worktree.
             Event::FocusGained => {
-                self.reload_detail();
+                // Not `reload_detail`: that is for a *new* selection and resets
+                // the focus index and scroll, which would yank the pane out
+                // from under someone who just switched back to the window.
+                self.last_session_refresh = Instant::now();
+                self.refresh_visible_sessions();
                 self.scan_all_worktrees();
             }
             _ => {}
@@ -1186,9 +1300,10 @@ mod tests {
         assert_eq!(app.detail_items().len(), baseline + 1);
 
         app.sessions = Some(vec![ClaudeSession {
+            custom_title: None,
             id: "s1".into(),
             title: "t".into(),
-            last_message: String::new(),
+            recent_turns: Vec::new(),
             last_timestamp: chrono::Utc::now(),
             message_count: 1,
         }]);
@@ -1742,6 +1857,155 @@ mod tests {
 
     /// Focus return and the periodic tick are the standing triggers — the
     /// promise that an agent's worktree appears without being asked for.
+    /// A minimal session card for the refresh tests.
+    fn a_session(id: &str) -> ClaudeSession {
+        ClaudeSession {
+            id: id.to_string(),
+            title: format!("session {id}"),
+            custom_title: None,
+            recent_turns: Vec::new(),
+            last_timestamp: chrono::Utc::now(),
+            message_count: 1,
+        }
+    }
+
+    /// Coming back to the window is when the conversations on screen have
+    /// moved on, so each card on screen is re-read and says so while it is.
+    #[tokio::test]
+    async fn focus_return_refreshes_every_session_on_screen() {
+        let (_dir, mut app) = app_with_fixture();
+        app.sessions = Some(vec![a_session("one"), a_session("two")]);
+
+        app.handle_event(AppEvent::Term(
+            ratatui::crossterm::event::Event::FocusGained,
+        ));
+
+        assert_eq!(
+            app.sessions_refreshing.len(),
+            2,
+            "focus return did not re-read the cards on screen"
+        );
+
+        // The tick keeps the list current too, but with the directory walk
+        // alone: a per-card pass raises a spinner on every card, and one that
+        // clears before the next frame is a flicker every ten seconds.
+        app.sessions_refreshing.clear();
+        app.sessions_in_flight.clear();
+        app.last_session_refresh = Instant::now() - SESSION_REFRESH_INTERVAL;
+        app.handle_event(AppEvent::Tick);
+        assert!(
+            app.sessions_refreshing.is_empty(),
+            "the tick must not raise per-card spinners"
+        );
+        assert!(
+            !app.sessions_in_flight.is_empty(),
+            "the tick did not scan for new or removed sessions"
+        );
+    }
+
+    /// The scan runs on a timer and almost always finds what is already on
+    /// screen. Repainting for that is what the tick's whole design is against.
+    #[tokio::test]
+    async fn a_scan_that_changes_nothing_does_not_repaint() {
+        let (_dir, mut app) = app_with_fixture();
+        // The fold keys on the pane's own path, which is what a late result for
+        // a selection the user has left is checked against.
+        let path = app.state.selected_path().expect("a selection");
+        app.meta.path = path.clone();
+        let sessions = vec![a_session("one")];
+        app.sessions = Some(sessions.clone());
+
+        app.redraw = false;
+        app.handle_event(AppEvent::Sessions {
+            path: path.clone(),
+            sessions: Some(sessions),
+        });
+        assert!(!app.redraw, "an unchanged scan repainted");
+
+        app.handle_event(AppEvent::Sessions {
+            path,
+            sessions: Some(vec![a_session("one"), a_session("two")]),
+        });
+        assert!(
+            app.redraw,
+            "a scan that found a new session did not repaint"
+        );
+    }
+
+    /// Each card lands on its own, so the fold replaces one entry and leaves
+    /// the rest alone — and a session that took a turn while we were away
+    /// becomes the newest, which is where the list puts it.
+    #[tokio::test]
+    async fn a_refreshed_session_replaces_its_own_card_and_reorders() {
+        let (_dir, mut app) = app_with_fixture();
+        let path = app.state.selected_path().expect("a selection");
+        app.meta.path = path.clone();
+        let mut older = a_session("one");
+        older.last_timestamp = chrono::Utc::now() - chrono::Duration::hours(2);
+        app.sessions = Some(vec![a_session("two"), older]);
+        app.sessions_refreshing.insert("one".to_string());
+
+        let mut moved_on = a_session("one");
+        moved_on.title = "renamed while we were away".to_string();
+        moved_on.message_count = 99;
+        app.handle_event(AppEvent::SessionRefreshed {
+            path: path.clone(),
+            id: "one".to_string(),
+            session: Box::new(Some(moved_on)),
+        });
+
+        assert!(app.sessions_refreshing.is_empty(), "spinner never cleared");
+        let list = app.sessions.as_ref().expect("sessions");
+        assert_eq!(list.len(), 2, "a refresh must not add or drop cards");
+        assert_eq!(list[0].id, "one", "the session that just moved is newest");
+        assert_eq!(list[0].title, "renamed while we were away");
+        assert_eq!(list[1].id, "two", "the other card is untouched");
+    }
+
+    /// A transcript deleted while forestui was in the background leaves a card
+    /// whose Resume button points at nothing.
+    #[tokio::test]
+    async fn a_session_that_vanished_loses_its_card() {
+        let (_dir, mut app) = app_with_fixture();
+        let path = app.state.selected_path().expect("a selection");
+        app.meta.path = path.clone();
+        app.sessions = Some(vec![a_session("one"), a_session("two")]);
+        app.sessions_refreshing.insert("one".to_string());
+
+        app.handle_event(AppEvent::SessionRefreshed {
+            path,
+            id: "one".to_string(),
+            session: Box::new(None),
+        });
+
+        let list = app.sessions.as_ref().expect("sessions");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "two");
+    }
+
+    /// A late answer for a selection the user has already left must not put
+    /// another path's conversation into this pane.
+    #[tokio::test]
+    async fn a_refresh_for_another_path_is_dropped() {
+        let (_dir, mut app) = app_with_fixture();
+        app.sessions = Some(vec![a_session("one")]);
+        app.sessions_refreshing.insert("one".to_string());
+
+        app.handle_event(AppEvent::SessionRefreshed {
+            path: "/somewhere/else".to_string(),
+            id: "one".to_string(),
+            session: Box::new(Some(a_session("intruder"))),
+        });
+
+        let list = app.sessions.as_ref().expect("sessions");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "one", "another path's result was folded in");
+        assert!(
+            app.sessions_refreshing.is_empty(),
+            "the spinner must clear even for a result that is dropped"
+        );
+    }
+
     #[tokio::test]
     async fn focus_return_and_the_tick_kick_a_sweep() {
         let (_dir, mut app) = app_with_fixture();

@@ -48,6 +48,44 @@ pub enum ModalOutcome {
 pub enum ModalEffect {
     /// `git fetch` in the given repository, then refresh the branch list.
     Fetch(String),
+    /// Install, upgrade, overwrite or remove the Claude Code integration. The
+    /// dialog stays open and re-reads its status, so the result of the action
+    /// is visible where the action was taken.
+    ClaudePlugin(IntegrationAction),
+}
+
+/// What the integration dialog can do, given what is currently on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegrationAction {
+    Install,
+    /// An older forestui installed it; upgrading is not overwriting anyone's
+    /// work, so it is offered plainly rather than as a warning.
+    Upgrade,
+    Reinstall,
+    /// The shipped files were edited by hand. Only ever reached deliberately.
+    Overwrite,
+    Uninstall,
+    Close,
+}
+
+impl IntegrationAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            IntegrationAction::Install => "Install",
+            IntegrationAction::Upgrade => "Upgrade",
+            IntegrationAction::Reinstall => "Reinstall",
+            IntegrationAction::Overwrite => "Overwrite my edits",
+            IntegrationAction::Uninstall => "Uninstall",
+            IntegrationAction::Close => "Close",
+        }
+    }
+
+    pub fn is_destructive(self) -> bool {
+        matches!(
+            self,
+            IntegrationAction::Uninstall | IntegrationAction::Overwrite
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +145,7 @@ pub enum Modal {
     CustomButtons(CustomButtonsModal),
     EditButton(Box<EditButtonModal>),
     ThemePicker(ThemePickerModal),
+    ClaudeIntegration(ClaudeIntegrationModal),
     Confirm(ConfirmModal),
 }
 
@@ -120,6 +159,7 @@ impl Modal {
             Modal::CustomButtons(m) => m.handle_key(key),
             Modal::EditButton(m) => m.handle_key(key),
             Modal::ThemePicker(m) => m.handle_key(key),
+            Modal::ClaudeIntegration(m) => m.handle_key(key),
             Modal::Confirm(m) => m.handle_key(key),
         }
     }
@@ -152,6 +192,7 @@ impl Modal {
             Modal::Settings(m) => m.focus = index.min(SettingsModal::FIELDS - 1),
             Modal::EditButton(m) => m.focus = index.min(EditButtonModal::FIELDS - 1),
             Modal::ThemePicker(m) => m.select(index),
+            Modal::ClaudeIntegration(m) => m.set_focus(index),
             Modal::CustomButtons(m) => {
                 if !m.buttons.is_empty() {
                     m.selected = index.min(m.buttons.len() - 1);
@@ -758,6 +799,12 @@ pub struct SettingsModal {
     legacy_theme: String,
     pub branch_prefix: TextInput,
     pub custom_buttons: Vec<CustomClaudeButton>,
+    /// Snapshot, not a live read. The renderer runs on every frame, and asking
+    /// on each one meant three file reads and three digests per repaint — I/O
+    /// in a draw path, which stutters visibly on a slow or networked home.
+    /// Refreshed when this dialog opens and whenever the integration dialog it
+    /// opens is dismissed.
+    pub integration_status: crate::services::claude_plugin::Status,
     /// One of the `FOCUS_*` constants; see [`SettingsModal`].
     pub focus: usize,
 }
@@ -768,8 +815,9 @@ impl SettingsModal {
     pub const FOCUS_PREFIX: usize = 1;
     pub const FOCUS_THEME: usize = 2;
     pub const FOCUS_MANAGE: usize = 3;
-    pub const FOCUS_SAVE: usize = 4;
-    pub const FOCUS_CANCEL: usize = 5;
+    pub const FOCUS_INTEGRATION: usize = 4;
+    pub const FOCUS_SAVE: usize = 5;
+    pub const FOCUS_CANCEL: usize = 6;
     pub const FIELDS: usize = Self::FOCUS_CANCEL + 1;
 
     pub fn new(settings: &Settings) -> Self {
@@ -788,6 +836,7 @@ impl SettingsModal {
             legacy_theme: settings.legacy_theme.clone(),
             branch_prefix: TextInput::new(settings.branch_prefix.clone()).with_placeholder("feat/"),
             custom_buttons: settings.custom_buttons.clone(),
+            integration_status: crate::services::claude_plugin::status(),
             focus: Self::FOCUS_EDITOR,
         }
     }
@@ -846,6 +895,9 @@ impl SettingsModal {
             (Self::FOCUS_THEME, KeyCode::Enter) => {
                 ModalOutcome::Push(Box::new(Modal::ThemePicker(ThemePickerModal::new())))
             }
+            (Self::FOCUS_INTEGRATION, KeyCode::Enter) => ModalOutcome::Push(Box::new(
+                Modal::ClaudeIntegration(ClaudeIntegrationModal::new()),
+            )),
             (Self::FOCUS_MANAGE, KeyCode::Enter) => ModalOutcome::Push(Box::new(
                 Modal::CustomButtons(CustomButtonsModal::new(self.custom_buttons.clone())),
             )),
@@ -1185,6 +1237,86 @@ impl EditButtonModal {
         match (self.focus, key.code) {
             (Self::FOCUS_CANCEL, KeyCode::Enter) => ModalOutcome::Close,
             (_, KeyCode::Enter) => self.save(),
+            _ => ModalOutcome::None,
+        }
+    }
+}
+
+/// Install and remove the Claude Code integration.
+///
+/// Everything it can do is derived from what is on disk right now, so the
+/// dialog cannot offer an upgrade that is not available or an uninstall of
+/// something that was never installed. The action list is built once and both
+/// the key handler and the renderer walk it, so what is drawn is what fires.
+#[derive(Debug, Clone)]
+pub struct ClaudeIntegrationModal {
+    pub status: crate::services::claude_plugin::Status,
+    /// What the last action did, shown under the status.
+    pub message: Option<String>,
+    /// Index into [`Self::actions`].
+    pub focus: usize,
+}
+
+impl Default for ClaudeIntegrationModal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ClaudeIntegrationModal {
+    pub fn new() -> Self {
+        Self {
+            status: crate::services::claude_plugin::status(),
+            message: None,
+            focus: 0,
+        }
+    }
+
+    pub fn actions(&self) -> Vec<IntegrationAction> {
+        use crate::services::claude_plugin::Status;
+        let mut actions = vec![match self.status {
+            Status::NotInstalled => IntegrationAction::Install,
+            Status::Installed => IntegrationAction::Reinstall,
+            Status::Outdated { .. } => IntegrationAction::Upgrade,
+            Status::Drifted(_) => IntegrationAction::Overwrite,
+        }];
+        if !matches!(self.status, Status::NotInstalled) {
+            actions.push(IntegrationAction::Uninstall);
+        }
+        actions.push(IntegrationAction::Close);
+        actions
+    }
+
+    /// Re-read the status after an action, and keep the focus in range: the
+    /// action list shrinks by one the moment the plugin is uninstalled.
+    pub fn refresh(&mut self, message: impl Into<String>) {
+        self.status = crate::services::claude_plugin::status();
+        self.message = Some(message.into());
+        self.focus = self.focus.min(self.actions().len().saturating_sub(1));
+    }
+
+    pub fn set_focus(&mut self, index: usize) {
+        if index < self.actions().len() {
+            self.focus = index;
+        }
+    }
+
+    pub fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
+        let count = self.actions().len();
+        match key.code {
+            KeyCode::Esc => ModalOutcome::Close,
+            KeyCode::Left | KeyCode::Up | KeyCode::BackTab => {
+                self.focus = (self.focus + count - 1) % count;
+                ModalOutcome::None
+            }
+            KeyCode::Right | KeyCode::Down | KeyCode::Tab => {
+                self.focus = (self.focus + 1) % count;
+                ModalOutcome::None
+            }
+            KeyCode::Enter => match self.actions()[self.focus] {
+                IntegrationAction::Close => ModalOutcome::Close,
+                action => ModalOutcome::Effect(ModalEffect::ClaudePlugin(action)),
+            },
             _ => ModalOutcome::None,
         }
     }
