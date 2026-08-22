@@ -11,6 +11,7 @@
 //! tested against.
 
 use super::App;
+use crate::models::Speaker;
 use crate::theme;
 use ratatui::style::Style;
 
@@ -435,11 +436,26 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
         // The name is what you scan the list for, so it gets the whitespace —
         // everything below it reads as one block of detail about that name.
         nodes.push(DetailNode::Blank);
-        if !session.last_message.is_empty() && session.last_message != session.title {
+        // The exchange the conversation stopped on. A turn identical to the
+        // name is not worth a line of its own — that happens on an unnamed
+        // session, whose name *is* its first message.
+        for turn in session
+            .recent_turns
+            .iter()
+            .filter(|turn| turn.text != session.title)
+        {
+            let style = match turn.speaker {
+                Speaker::User => theme::secondary(),
+                Speaker::Claude => theme::muted(),
+            };
             text(
                 nodes,
-                format!("> {}", crate::util::truncate(&session.last_message, 40)),
-                theme::secondary(),
+                format!(
+                    "{} {}",
+                    turn.speaker.label(),
+                    crate::util::truncate(&turn.text, 60)
+                ),
+                style,
             );
         }
         // A card being re-read says so on its meta line. Without it a

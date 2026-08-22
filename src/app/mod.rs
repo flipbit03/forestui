@@ -1285,7 +1285,7 @@ mod tests {
             custom_title: None,
             id: "s1".into(),
             title: "t".into(),
-            last_message: String::new(),
+            recent_turns: Vec::new(),
             last_timestamp: chrono::Utc::now(),
             message_count: 1,
         }]);
@@ -1845,7 +1845,7 @@ mod tests {
             id: id.to_string(),
             title: format!("session {id}"),
             custom_title: None,
-            last_message: String::new(),
+            recent_turns: Vec::new(),
             last_timestamp: chrono::Utc::now(),
             message_count: 1,
         }

@@ -158,7 +158,7 @@ seed_sessions() {
   for i in $(seq 1 "$count"); do
     cat > "$dir/session-$i.jsonl" <<SESSION
 {"type":"user","timestamp":"2026-08-0${i}T10:00:00Z","message":{"content":"session $i: refactor the detail pane so the cards line up"}}
-{"type":"assistant","timestamp":"2026-08-0${i}T10:00:05Z"}
+{"type":"assistant","timestamp":"2026-08-0${i}T10:00:05Z","message":{"content":[{"type":"text","text":"looking at the card layout now"}]}}
 {"type":"user","timestamp":"2026-08-0${i}T10:01:00Z","message":{"content":"and then check it against the python build"}}
 SESSION
   done

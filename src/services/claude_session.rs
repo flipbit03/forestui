@@ -3,7 +3,7 @@
 //! Claude Code stores one JSONL file per session under
 //! `~/.claude/projects/<path-with-slashes-replaced-by-dashes>/`.
 
-use crate::models::ClaudeSession;
+use crate::models::{ClaudeSession, SessionTurn, Speaker};
 use chrono::{DateTime, TimeZone, Utc};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -163,24 +163,6 @@ fn parse_timestamp(raw: &str) -> Option<DateTime<Utc>> {
         })
 }
 
-/// Collapse runs of 3+ newlines to 2, preserving single blank lines.
-fn collapse_blank_lines(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut newline_run = 0usize;
-    for ch in text.chars() {
-        if ch == '\n' {
-            newline_run += 1;
-            if newline_run <= 2 {
-                out.push(ch);
-            }
-        } else {
-            newline_run = 0;
-            out.push(ch);
-        }
-    }
-    out
-}
-
 fn text_content(data: &serde_json::Value) -> Option<String> {
     let content = data
         .get("message")
@@ -230,6 +212,39 @@ fn is_from_the_user(data: &serde_json::Value) -> bool {
     }
 }
 
+/// One line of preview text.
+///
+/// Whitespace is flattened before clipping because a card draws a turn as a
+/// single line: a real message whose first line ended a sentence came out as
+/// `painho:**Repo` — two words from different lines with nothing between them.
+fn clip(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(100)
+        .collect()
+}
+
+/// Record a turn, keeping only the last two.
+///
+/// Consecutive records from the same speaker are one turn: a single answer is
+/// usually several `assistant` records — text, a tool call, more text — and one
+/// real session had runs of up to 77 of them. Taken as separate turns they
+/// would fill both lines and hide the question they answer, which is the half
+/// that identifies the conversation.
+fn push_turn(turns: &mut Vec<SessionTurn>, speaker: Speaker, text: String) {
+    match turns.last_mut() {
+        Some(last) if last.speaker == speaker => last.text = text,
+        _ => {
+            turns.push(SessionTurn { speaker, text });
+            if turns.len() > 2 {
+                turns.remove(0);
+            }
+        }
+    }
+}
+
 pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
     let session_id = file_path.file_stem()?.to_string_lossy().to_string();
     let raw = std::fs::read_to_string(file_path).ok()?;
@@ -237,7 +252,7 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
     let mut first_prompt = String::new();
     let mut custom_title: Option<String> = None;
     let mut ai_title: Option<String> = None;
-    let mut last_message = String::new();
+    let mut turns: Vec<SessionTurn> = Vec::new();
     let mut last_timestamp: Option<DateTime<Utc>> = None;
     let mut message_count = 0usize;
 
@@ -281,12 +296,20 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
             && !content.starts_with('<')
         {
             message_count += 1;
-            let normalized = collapse_blank_lines(&content);
-            let clipped: String = normalized.chars().take(100).collect();
+            let clipped = clip(&content);
             if first_prompt.is_empty() {
                 first_prompt = clipped.clone();
             }
-            last_message = clipped;
+            push_turn(&mut turns, Speaker::User, clipped);
+        }
+
+        // Assistant records with no text only called tools; they leave the
+        // previous answer standing, which is the readable one anyway.
+        if data.get("type").and_then(|t| t.as_str()) == Some("assistant")
+            && let Some(content) = text_content(&data)
+            && !content.is_empty()
+        {
+            push_turn(&mut turns, Speaker::Claude, clip(&content));
         }
     }
 
@@ -317,7 +340,7 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
             title
         },
         custom_title,
-        last_message,
+        recent_turns: turns,
         last_timestamp,
         message_count,
     })
@@ -421,8 +444,78 @@ mod tests {
             session.message_count, 3,
             "counted something the person did not send"
         );
-        assert_eq!(session.last_message, "from before origin existed");
+        assert_eq!(
+            session.recent_turns.last().map(|t| t.text.as_str()),
+            Some("from before origin existed")
+        );
         assert_eq!(session.title, "first thing I said");
+    }
+
+    /// The card shows the exchange a conversation stopped on, whichever way
+    /// round it happens to be — and a single answer split across several
+    /// `assistant` records is one turn, not several. Real sessions have runs of
+    /// dozens; counted separately they would fill both lines and hide the
+    /// question, which is the half that identifies the conversation.
+    #[test]
+    fn the_last_two_turns_are_kept_and_same_speaker_runs_collapse() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sess-turns2.jsonl");
+        let user = |text: &str| {
+            format!(
+                r#"{{"type":"user","timestamp":"2026-08-01T10:00:00Z","origin":{{"kind":"human"}},"message":{{"content":"{text}"}}}}"#
+            )
+        };
+        let claude = |text: &str| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-08-01T10:00:00Z","message":{{"content":[{{"type":"text","text":"{text}"}}]}}}}"#
+            )
+        };
+
+        let lines = [
+            user("an older question"),
+            claude("an older answer"),
+            user("what is going on?"),
+            // One answer, three records: text, a tool call, more text.
+            claude("let me look"),
+            r#"{"type":"assistant","timestamp":"2026-08-01T10:00:00Z","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#.to_string(),
+            claude("here is what I found"),
+        ];
+        std::fs::write(&file, lines.join("\n") + "\n").unwrap();
+
+        let session = parse_session_file(&file).expect("a session");
+        let turns: Vec<_> = session
+            .recent_turns
+            .iter()
+            .map(|t| (t.speaker, t.text.as_str()))
+            .collect();
+        assert_eq!(
+            turns,
+            vec![
+                (Speaker::User, "what is going on?"),
+                (Speaker::Claude, "here is what I found"),
+            ]
+        );
+
+        // Ending on a question leaves that question as the newest turn, with
+        // the answer before it — never an older answer pretending to reply.
+        let mut raw = std::fs::read_to_string(&file).unwrap();
+        raw.push_str(&user("and one more thing"));
+        raw.push('\n');
+        std::fs::write(&file, &raw).unwrap();
+
+        let session = parse_session_file(&file).expect("a session");
+        let turns: Vec<_> = session
+            .recent_turns
+            .iter()
+            .map(|t| (t.speaker, t.text.as_str()))
+            .collect();
+        assert_eq!(
+            turns,
+            vec![
+                (Speaker::Claude, "here is what I found"),
+                (Speaker::User, "and one more thing"),
+            ]
+        );
     }
 
     #[test]
@@ -492,7 +585,10 @@ mod tests {
         let session = parse_session_file(&file).unwrap();
         assert_eq!(session.id, "sess-1");
         assert_eq!(session.title, "first question");
-        assert_eq!(session.last_message, "second");
+        assert_eq!(
+            session.recent_turns.last().map(|t| t.text.as_str()),
+            Some("second")
+        );
         assert_eq!(session.message_count, 2);
     }
 
@@ -544,11 +640,5 @@ mod tests {
         migrate_dirs(&old, &new);
         assert!(new.join("a.jsonl").exists());
         assert!(!old.exists());
-    }
-
-    #[test]
-    fn collapse_blank_lines_keeps_single_gap() {
-        assert_eq!(collapse_blank_lines("a\n\n\n\nb"), "a\n\nb");
-        assert_eq!(collapse_blank_lines("a\nb"), "a\nb");
     }
 }

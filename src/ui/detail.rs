@@ -654,7 +654,7 @@ mod tests {
             custom_title: None,
             id: "abc".into(),
             title: "Refactor the detail pane".into(),
-            last_message: "and then some".into(),
+            recent_turns: Vec::new(),
             last_timestamp: Utc::now(),
             message_count: 12,
         }

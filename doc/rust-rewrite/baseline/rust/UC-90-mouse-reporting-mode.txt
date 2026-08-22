@@ -38,7 +38,7 @@
                                   │  ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
                                   │  │ session 3: refactor the detail pane so the cards line up                                       │
                                   │  │                                                                                                │
-                                  │  │ > and then check it against the python bui...                                                  │
-                                  │  │                                                                   ┌────────┐ ┌──────┐ ┌──────┐ │
+                                  │  │ claude: looking at the card layout now                                                         │
+                                  │  │ user: and then check it against the python build                                               │
  a Add Repo  q Quit  w Add Worktree  e Editor  t Terminal  o Files  n Claude  y YOLO  h Archive  d Delete  s Settings  r Refresh  A Archived
 [forestui-0:forestui-dev-<hhmm>*                                                                              "<host>" <clock>

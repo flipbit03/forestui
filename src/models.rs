@@ -196,6 +196,28 @@ impl Repository {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Speaker {
+    User,
+    Claude,
+}
+
+impl Speaker {
+    pub fn label(self) -> &'static str {
+        match self {
+            Speaker::User => "user:",
+            Speaker::Claude => "claude:",
+        }
+    }
+}
+
+/// One side speaking, for the preview on a session card.
+#[derive(Debug, Clone)]
+pub struct SessionTurn {
+    pub speaker: Speaker,
+    pub text: String,
+}
+
 /// A Claude Code session discovered on disk.
 #[derive(Debug, Clone)]
 pub struct ClaudeSession {
@@ -206,7 +228,9 @@ pub struct ClaudeSession {
     /// seed a tmux window name — an ai-title is a sentence and the first-prompt
     /// fallback is 100 characters of prose; neither is a tab name.
     pub custom_title: Option<String>,
-    pub last_message: String,
+    /// The last two turns, oldest first. What identifies a conversation is the
+    /// exchange it stopped on, not either half alone.
+    pub recent_turns: Vec<SessionTurn>,
     pub last_timestamp: DateTime<Utc>,
     pub message_count: usize,
 }
