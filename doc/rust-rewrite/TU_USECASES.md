@@ -597,11 +597,16 @@ not selected.
 1. `tu press --name fui Ctrl+B 0`; `sleep 1`; `tu press --name fui n`; `sleep 3`; `tu screenshot --name fui`
 2. `tu press --name fui Ctrl+B 0`; `sleep 1`; `tu press --name fui y`; `sleep 3`; `tu screenshot --name fui`
 
-**Expected:** windows `2:claude:alpha:wt-two*` and `3:yolo:alpha:wt-two*`. The
-command is run through an **interactive login shell** (`$SHELL -ic 'claude'`) so
-shell aliases resolve; the YOLO variant appends `--dangerously-skip-permissions`.
+**Expected:** windows `2:claude:alpha:wt-two*` and `3:yolo:alpha:wt-two*`. Each
+window runs an **interactive shell** that reads the command from a startup file
+forestui generated for it, so shell aliases resolve and Claude is a job the
+shell can be handed back from; the YOLO variant appends
+`--dangerously-skip-permissions`.
 **Fails if:** the prefixes are wrong; the YOLO flag is added to non-YOLO windows or
-missing from YOLO ones; the command bypasses the interactive shell (aliases break).
+missing from YOLO ones; the command bypasses the interactive shell (aliases break);
+or the window's own process is Claude, with no shell to return to when it stops
+(the Python build's `$SHELL -ic 'claude'`, whose window died on Ctrl-C and left a
+suspended session unreachable on Ctrl-Z).
 
 ---
 

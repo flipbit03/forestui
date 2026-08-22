@@ -21,16 +21,17 @@
 # vim/mc/claude so the window-creating hotkeys produce windows that stay alive
 # long enough to be named. It never touches the caller's ~/forest or tmux.
 #
-# SHELL is pinned rather than inherited. forestui opens its windows with
-# `$SHELL -ic <command>`, and the fixture HOME is empty — so on a machine whose
-# shell is zsh, every one of those windows was taken over by zsh-newuser-install
-# ("you have no zsh startup files") and the command never ran. The windows still
-# existed and were still named, so every frame assertion passed while the stubs
-# had never once been executed.
+# SHELL is pinned rather than inherited, because it decides both what tmux runs
+# in every window forestui opens and which startup-file hook a Claude window is
+# launched through — and the fixture HOME is empty. On a machine whose shell is
+# zsh, each of those windows was taken over by zsh-newuser-install ("you have
+# no zsh startup files") and the command never ran. The windows still existed
+# and were still named, so every frame assertion passed while the stubs had
+# never once been executed.
 #
-# /bin/sh specifically, because it reads no startup files for a non-login
-# interactive shell: bash would pull in the system-wide /etc/bash.bashrc, whose
-# banner differs per distribution and would land in committed frames.
+# /bin/sh specifically, because it reads next to no startup files and its
+# prompt is a bare `$`: bash would pull in the system-wide /etc/bash.bashrc,
+# whose banner differs per distribution and would land in committed frames.
 
 set -uo pipefail
 
@@ -367,6 +368,26 @@ done
 birth_line="$(head -1 "$ROOT/birth.txt" 2>/dev/null)"
 assert UC-97 claude-stub-ran "yes" "$([ -n "$birth_line" ] && echo yes || echo no)"
 assert UC-97 window-stamped-with-its-name "${birth_line%%	*}" "${birth_line##*	}"
+
+# UC-98: the window outlives Claude. Claude is a job of the window's own shell
+# rather than the window's command, and that is what keeps Ctrl-C — or Claude's
+# own Ctrl-Z suspend, which no stub can imitate — from leaving a pane with
+# nothing left in it to type at. Going back to a window whose command *is*
+# Claude renders frames identical to these, so the proof has to be a shell
+# answering a question after the command in front of it is gone.
+#
+# SHELL is /bin/sh here, so this drives the POSIX `ENV` hook specifically. The
+# zsh and bash hooks are covered by unit tests on the generated files and were
+# driven by hand; a sweep can only ever exercise the shell it pins.
+#
+# The stub UC-64 started is still in the foreground of the window it opened.
+press Ctrl+C; sleep 1.0
+type_ 'echo alive-$((6*7))'; press Enter
+await 'alive-42'
+alive="$(tu screenshot --name "$SESS" 2>/dev/null | python3 -c '
+import json, sys
+print("yes" if "alive-42" in json.load(sys.stdin)["content"] else "no")')"
+assert UC-98 shell-outlives-claude "yes" "$alive"
 
 # Editor reuses its window; terminal always opens a new, uniquified one.
 focus_app; press e
