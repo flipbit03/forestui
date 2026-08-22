@@ -267,6 +267,25 @@ mod tests {
         assert!(command.contains("'/tmp/my forest'"));
     }
 
+    /// `--claude-plugin` reports and exits before anything re-executes into
+    /// tmux. Carrying it through would hand the new process the same one-shot
+    /// action, which exits and re-executes again — a loop that never draws a UI.
+    #[test]
+    fn a_one_shot_action_is_not_carried_into_the_re_exec() {
+        let args = Args {
+            forest_path: None,
+            no_self_update: false,
+            debug_mode: false,
+            dev_mode: false,
+            claude_plugin: Some(ClaudePluginAction::Install),
+        };
+        let command = self_command(&args, Path::new("/usr/local/bin/forestui"));
+        assert!(
+            !command.contains("claude-plugin"),
+            "the re-exec would run the action again: {command}"
+        );
+    }
+
     #[test]
     fn self_command_quotes_paths_with_spaces_in_the_program() {
         let args = Args {

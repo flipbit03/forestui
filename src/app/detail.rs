@@ -461,18 +461,15 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
         // A card being re-read says so on its meta line. Without it a
         // conversation that moved on while forestui was in the background just
         // sits at its old turn count and then changes with no explanation.
+        let count = session.message_count;
+        let msgs = if count == 1 { "msg" } else { "msgs" };
         let meta = if app.sessions_refreshing.contains(&session.id) {
             format!(
-                "{} refreshing • {} msgs",
+                "{} refreshing • {count} {msgs}",
                 SPINNER[app.spinner_index % SPINNER.len()],
-                session.message_count
             )
         } else {
-            format!(
-                "{} • {} msgs",
-                session.relative_time(),
-                session.message_count
-            )
+            format!("{} • {count} {msgs}", session.relative_time())
         };
         let mut row = vec![
             ControlSpec::new(

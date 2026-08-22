@@ -31,9 +31,10 @@ pub const ISSUE_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 /// worktrees created or removed outside forestui (an agent's `git worktree
 /// add`, a manual remove) converge into the sidebar without being asked for.
 pub const WORKTREE_SCAN_INTERVAL: Duration = Duration::from_secs(30);
-/// How often the sessions on screen are re-read while forestui is just sitting
+/// How often the session list is re-scanned while forestui is just sitting
 /// there. Frequent because a conversation in another window moves constantly,
-/// and cheap because an unchanged directory short-circuits before any parsing.
+/// and affordable because an unchanged transcript is never re-parsed. The
+/// per-card refresh does *not* run on this timer — see `App::on_tick`.
 pub const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 pub const SESSION_LIMIT: usize = 5;
 pub const ISSUE_LIMIT: usize = 10;
