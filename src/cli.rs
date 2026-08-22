@@ -37,6 +37,25 @@ pub struct Args {
     #[arg(long = "dev")]
     pub dev_mode: bool,
 
+    /// Stop asking the terminal to report pointer movement (`?1003h`).
+    ///
+    /// Controls stop lighting up under the pointer; clicks, the wheel and
+    /// drags still work. The escape hatch for tmux users: while forestui's
+    /// pane is active, a pointer move that lands between the prefix key and
+    /// the next key cancels the tmux command (issue #51).
+    #[arg(long = "no-hover")]
+    pub no_hover: bool,
+
+    /// Stop asking for focus reporting, and leave tmux's `focus-events` alone.
+    ///
+    /// forestui no longer refreshes sessions and worktrees the moment you
+    /// come back to its window — the 30s sweep and `r` still do. `focus-events`
+    /// is a *server* option, so turning it on reaches every window on that
+    /// tmux server, where each focus change becomes an input event that can
+    /// cancel a pending prefix (issue #51).
+    #[arg(long = "no-focus-events")]
+    pub no_focus_events: bool,
+
     /// Manage the Claude Code plugin that names a session after its tmux
     /// window. Reports what it would touch and exits without starting the UI,
     /// so the install can be inspected before it happens.
@@ -49,6 +68,19 @@ pub enum ClaudePluginAction {
     Status,
     Install,
     Uninstall,
+}
+
+impl Args {
+    /// Which optional terminal input modes these arguments ask for.
+    ///
+    /// Lives here rather than in `main` so a swapped pair is a failing test
+    /// rather than a flag that silently turns off the other feature.
+    pub fn input_modes(&self) -> crate::terminal::InputModes {
+        crate::terminal::InputModes {
+            hover: !self.no_hover,
+            focus: !self.no_focus_events,
+        }
+    }
 }
 
 /// tmux window name for this instance.
@@ -93,6 +125,12 @@ fn self_command(args: &Args, program: &Path) -> String {
     }
     if args.dev_mode {
         parts.push("--dev".into());
+    }
+    if args.no_hover {
+        parts.push("--no-hover".into());
+    }
+    if args.no_focus_events {
+        parts.push("--no-focus-events".into());
     }
     if let Some(path) = &args.forest_path {
         parts.push(shell_quote(path));
@@ -257,12 +295,19 @@ mod tests {
             no_self_update: true,
             debug_mode: false,
             dev_mode: true,
+            no_hover: true,
+            no_focus_events: false,
             claude_plugin: None,
         };
         let command = self_command(&args, Path::new("/usr/local/bin/forestui"));
         assert!(command.starts_with("/usr/local/bin/forestui"));
         assert!(command.contains("--no-self-update"));
         assert!(command.contains("--dev"));
+        assert!(
+            command.contains("--no-hover"),
+            "a flag the re-exec drops is a flag that does nothing"
+        );
+        assert!(!command.contains("--no-focus-events"));
         assert!(!command.contains("--debug"));
         assert!(command.contains("'/tmp/my forest'"));
     }
@@ -270,6 +315,41 @@ mod tests {
     /// `--claude-plugin` reports and exits before anything re-executes into
     /// tmux. Carrying it through would hand the new process the same one-shot
     /// action, which exits and re-executes again — a loop that never draws a UI.
+    /// Each flag takes away exactly its own mode. They are near-identical
+    /// booleans one negation apart, so a swap would leave `--no-hover` quietly
+    /// turning off focus reporting instead.
+    #[test]
+    fn each_flag_declines_only_its_own_mode() {
+        let args = |no_hover, no_focus_events| Args {
+            forest_path: None,
+            no_self_update: false,
+            debug_mode: false,
+            dev_mode: false,
+            no_hover,
+            no_focus_events,
+            claude_plugin: None,
+        };
+
+        assert_eq!(
+            args(false, false).input_modes(),
+            crate::terminal::InputModes::default()
+        );
+        assert_eq!(
+            args(true, false).input_modes(),
+            crate::terminal::InputModes {
+                hover: false,
+                focus: true
+            }
+        );
+        assert_eq!(
+            args(false, true).input_modes(),
+            crate::terminal::InputModes {
+                hover: true,
+                focus: false
+            }
+        );
+    }
+
     #[test]
     fn a_one_shot_action_is_not_carried_into_the_re_exec() {
         let args = Args {
@@ -277,6 +357,8 @@ mod tests {
             no_self_update: false,
             debug_mode: false,
             dev_mode: false,
+            no_hover: false,
+            no_focus_events: false,
             claude_plugin: Some(ClaudePluginAction::Install),
         };
         let command = self_command(&args, Path::new("/usr/local/bin/forestui"));
@@ -293,6 +375,8 @@ mod tests {
             no_self_update: false,
             debug_mode: false,
             dev_mode: false,
+            no_hover: false,
+            no_focus_events: false,
             claude_plugin: None,
         };
         let command = self_command(&args, Path::new("/tmp/my dir/forestui"));

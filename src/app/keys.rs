@@ -2,7 +2,7 @@
 
 use super::{Action, App, DetailItem, Field, Focus, PAGE_STEP};
 use crate::modal::{AddRepositoryModal, Modal, SettingsModal};
-use crate::ui::widgets::TextInput;
+use crate::ui::widgets::{TextInput, is_plain_press};
 
 /// Every key binding, in the order the footer renders them: `q` is declared
 /// first in the Python bindings but carried `priority=True`, which sorted it
@@ -122,7 +122,9 @@ impl App {
             _ => {}
         }
 
-        if let KeyCode::Char(binding) = key.code {
+        if let KeyCode::Char(binding) = key.code
+            && is_plain_press(key)
+        {
             self.run_binding(binding);
         }
     }

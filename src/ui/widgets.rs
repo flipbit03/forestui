@@ -8,6 +8,30 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
+/// Whether a key press is the bare character, and so may fire a letter
+/// shortcut.
+///
+/// `Ctrl` and `Alt` combinations belong to the terminal and to tmux; forestui
+/// binding them by accident is how `Ctrl+A` opened Add Repository and `Ctrl+D`
+/// deleted a worktree, because every shortcut in the app matches on
+/// `KeyCode::Char` alone (Defect B of issue #51). A prefix of `C-a` with
+/// `bind C-a send-prefix` puts a literal `Ctrl+A` into the pane by design, so
+/// the app *will* be handed these keys and must decline them. `Shift` is
+/// allowed — `A` (Archived) is a binding.
+pub fn is_plain_press(key: KeyEvent) -> bool {
+    key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
+}
+
+/// Whether a modifier-carrying key is one [`TextInput`] itself acts on.
+///
+/// The exception list for the rule above: a focused field has to keep its
+/// `Ctrl+U`, so the shortcut guards ask here before dropping a modified key.
+/// Both sides read this one function, so adding an editing combination cannot
+/// leave it filtered out before the field ever sees it.
+pub fn text_input_claims(key: KeyEvent) -> bool {
+    key.code == KeyCode::Char('u') && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
 /// A single-line text field with a cursor.
 ///
 /// Hand-rolled rather than pulled from a crate: the app needs exactly insert,
@@ -121,11 +145,18 @@ impl TextInput {
     /// silently miss the other. Callers layer their own Enter/Escape handling.
     pub fn apply_edit_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.kill_to_start();
-                true
+            // A modified character is either an editing combination or not
+            // ours at all — inserting it would have typed the letter out of
+            // `Alt+d` into the field.
+            KeyCode::Char(_) if !is_plain_press(key) => {
+                if text_input_claims(key) {
+                    self.kill_to_start();
+                    true
+                } else {
+                    false
+                }
             }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char(c) => {
                 self.insert(c);
                 true
             }
@@ -334,6 +365,32 @@ mod tests {
         input.move_home();
         input.delete();
         assert_eq!(input.value(), "bc");
+    }
+
+    /// A modified character is not text: `Alt+d` used to type a `d` into the
+    /// field, and every other `Ctrl` combination fell through to a letter
+    /// shortcut (Defect B of issue #51). `Ctrl+U` is the one the editor claims.
+    #[test]
+    fn only_the_editors_own_combination_survives_a_modifier() {
+        use ratatui::crossterm::event::{KeyEventKind, KeyEventState};
+
+        let modified = |code, modifiers| KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+
+        let mut input = TextInput::new("hello");
+        assert!(!input.apply_edit_key(modified(KeyCode::Char('d'), KeyModifiers::ALT)));
+        assert!(!input.apply_edit_key(modified(KeyCode::Char('a'), KeyModifiers::CONTROL)));
+        assert_eq!(input.value(), "hello", "a modified key was typed as text");
+
+        assert!(input.apply_edit_key(modified(KeyCode::Char('!'), KeyModifiers::SHIFT)));
+        assert_eq!(input.value(), "hello!", "Shift is part of typing");
+
+        assert!(input.apply_edit_key(modified(KeyCode::Char('u'), KeyModifiers::CONTROL)));
+        assert_eq!(input.value(), "", "Ctrl+U no longer clears the field");
     }
 
     #[test]
