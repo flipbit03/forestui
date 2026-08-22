@@ -31,10 +31,11 @@ up to and including the conversation that issued the command.
   forgetting the flag, against a default that reaches the user's live
   session.
 
-The `test-forestui` skill carries the full harness recipe, but it only loads
-when a task *looks* like forestui testing. Tasks that do not look like
-testing — spikes, doc research, "just checking how tmux options work" — are
-exactly where this rule gets broken, which is why it lives here instead.
+The `test-forestui` skill carries the full harness recipe, and its description
+asks to be loaded before *any* tmux command, not only before testing — because
+tasks that do not look like testing are exactly where this gets broken: a
+spike, doc research, "just checking how tmux options work". The rule is
+repeated here because this file is always loaded and a skill is not.
 
 ## Project Overview
 

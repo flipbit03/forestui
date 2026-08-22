@@ -1,6 +1,6 @@
 ---
 name: test-forestui
-description: Use tu to visually drive and test forestui in headless terminals. Invoke PROACTIVELY when fixing behavioral/visual bugs or developing new features — don't wait to be asked. Lint and typecheck can't catch UI regressions, wrong window names, or broken interactions.
+description: Use tu to visually drive and test forestui in headless terminals. Invoke PROACTIVELY when fixing behavioral/visual bugs or developing new features — don't wait to be asked. Lint and typecheck can't catch UI regressions, wrong window names, or broken interactions. ALSO load this before running ANY tmux command for ANY reason — including work that is not testing at all: exploring how a tmux option, hook or format behaves, reproducing something from the tmux docs, checking what a command does, or a one-off spike. The isolation recipe lives here, and a bare tmux command reaches the user's own live forestui session.
 allowed-tools: Bash, Read
 argument-hint: "[what to test or verify]"
 ---
