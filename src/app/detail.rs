@@ -442,7 +442,7 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
                 theme::secondary(),
             );
         }
-        // A card being re-read says so on its own meta line. Without it a
+        // A card being re-read says so on its meta line. Without it a
         // conversation that moved on while forestui was in the background just
         // sits at its old turn count and then changes with no explanation.
         let meta = if app.sessions_refreshing.contains(&session.id) {
@@ -458,8 +458,6 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
                 session.message_count
             )
         };
-        text(nodes, meta, theme::muted());
-
         let mut row = vec![
             ControlSpec::new(
                 Action::ResumeSession(index),
@@ -476,7 +474,13 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
             button,
             session: index,
         }));
-        controls(nodes, row);
+        // The meta rides the button row rather than taking one of its own, as
+        // the issue cards already do. It costs no height and fills the empty
+        // stretch the buttons leave to their left.
+        nodes.push(DetailNode::Controls {
+            lead: Some((format!("{meta}  "), theme::muted())),
+            controls: row,
+        });
         nodes.push(DetailNode::CardEnd);
     }
 }

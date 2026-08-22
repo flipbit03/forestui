@@ -28,7 +28,9 @@ const CARD_INSET: u16 = 2;
 /// Cells left clear on the right of a card or a rule, from the `margin: 0 2 1 0`
 /// Textual gave `.session-item` and `.issue-row` and the `margin: 1 2 1 0` it
 /// gave `Rule.-horizontal`. Without it they run into the edge of the pane.
-const RIGHT_MARGIN: u16 = 2;
+/// Columns kept clear to the right of every card. Three rather than two so a
+/// card stops short of the scrollbar instead of running into it.
+const RIGHT_MARGIN: u16 = 3;
 
 /// Rows a control occupies, from Textual's `Button { border: solid; height: 3 }`:
 /// its top border, its label, and its bottom border.
