@@ -10,7 +10,7 @@ use crate::models::{
     MAX_CLAUDE_COMMAND_LENGTH, Repository, Settings, derive_prefix, validate_button_label,
     validate_button_prefix, validate_claude_command,
 };
-use crate::ui::widgets::TextInput;
+use crate::ui::widgets::{TextInput, is_plain_press, text_input_claims};
 use crate::util;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use std::path::PathBuf;
@@ -151,6 +151,14 @@ pub enum Modal {
 
 impl Modal {
     pub fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
+        // Every modal below matches letter shortcuts on `KeyCode::Char` alone,
+        // so without this `Ctrl+D` deleted a custom button and `Ctrl+Y`
+        // answered a confirmation. Only the combinations a focused text field
+        // claims get through — see `widgets::is_plain_press`.
+        if matches!(key.code, KeyCode::Char(_)) && !is_plain_press(key) && !text_input_claims(key) {
+            return ModalOutcome::None;
+        }
+
         match self {
             Modal::AddRepository(m) => m.handle_key(key),
             Modal::AddWorktree(m) => m.handle_key(key),
@@ -1418,6 +1426,13 @@ mod tests {
         }
     }
 
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            modifiers: KeyModifiers::CONTROL,
+            ..key(code)
+        }
+    }
+
     fn typed(text: &str) -> Vec<KeyEvent> {
         text.chars().map(|c| key(KeyCode::Char(c))).collect()
     }
@@ -1603,6 +1618,45 @@ mod tests {
             modal.handle_key(key(KeyCode::Char('s'))),
             ModalOutcome::Submit(ModalResult::CustomButtonsSaved(_))
         ));
+    }
+
+    /// The funnel in `Modal::handle_key`, for the same reason as the footer
+    /// bindings (Defect B of issue #51): the modals match shortcuts on the
+    /// character alone, so `Ctrl+D` used to delete the selected custom button.
+    /// The one exception is the text editor's own `Ctrl+U`, which must still
+    /// reach a focused field.
+    #[test]
+    fn modified_letters_never_fire_modal_shortcuts() {
+        let make = |name: &str| CustomClaudeButton {
+            label: name.into(),
+            prefix: name.to_lowercase(),
+            command: "claude".into(),
+        };
+        let mut modal = Modal::CustomButtons(CustomButtonsModal::new(vec![make("A"), make("B")]));
+        for shortcut in ['d', 'a', 's', 'K', 'J'] {
+            assert!(matches!(
+                modal.handle_key(ctrl(KeyCode::Char(shortcut))),
+                ModalOutcome::None
+            ));
+        }
+        let Modal::CustomButtons(buttons) = &modal else {
+            unreachable!("the modal was replaced");
+        };
+        assert_eq!(buttons.buttons.len(), 2, "a Ctrl combination deleted a row");
+        assert_eq!(
+            buttons.buttons[0].label, "A",
+            "a Ctrl combination reordered"
+        );
+
+        let mut add = Modal::AddRepository(AddRepositoryModal::new());
+        for event in typed("/tmp/repo") {
+            add.handle_key(event);
+        }
+        add.handle_key(ctrl(KeyCode::Char('u')));
+        let Modal::AddRepository(add) = &add else {
+            unreachable!("the modal was replaced");
+        };
+        assert_eq!(add.path.value(), "", "Ctrl+U no longer reaches the field");
     }
 
     #[test]

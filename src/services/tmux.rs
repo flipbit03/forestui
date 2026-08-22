@@ -118,12 +118,90 @@ pub fn rename_window(name: &str) -> bool {
     tmux(&["rename-window", "-t", &window, name]).is_some()
 }
 
+/// What `ensure_focus_events` found, and therefore what exit has to undo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FocusEvents {
+    /// Not inside tmux, or tmux refused the option.
+    Unavailable,
+    /// Someone else's setting — leave it exactly as it is.
+    AlreadyOn,
+    /// Ours to undo, either because we just turned it on or because a previous
+    /// forestui did and died before it could.
+    Ours,
+}
+
+/// Marks `focus-events` as forestui's doing, so the option can be handed back
+/// even when the run that set it never reached its cleanup.
+///
+/// Without it, one panic or `SIGTERM` would leave the option on forever: every
+/// later run would find it already on, conclude it was the user's, and refuse
+/// to touch it. A tmux user option is the natural place for the flag — it
+/// lives exactly as long as the server whose setting it describes.
+const FOCUS_EVENTS_MARKER: &str = "@forestui_focus_events";
+
 /// Enable the tmux `focus-events` option so the app can refresh on focus.
-pub fn ensure_focus_events() -> bool {
+///
+/// It is a **server** option: turning it on reaches every session, window and
+/// client on that tmux server, and nothing turns it off again on its own. That
+/// is not free — while it is on, tmux asks the terminal for focus reporting,
+/// and a focus report that arrives between the prefix key and the next key
+/// cancels the tmux command (issue #51). So this reports whether the option is
+/// ours to undo, and [`disable_focus_events`] hands it back.
+pub fn ensure_focus_events() -> FocusEvents {
     if !is_inside_tmux() {
-        return false;
+        return FocusEvents::Unavailable;
     }
-    tmux(&["set-option", "-g", "focus-events", "on"]).is_some()
+
+    if tmux(&["show-options", "-gv", "focus-events"]).is_some_and(|v| v.trim() == "on") {
+        return if marked_as_ours() {
+            FocusEvents::Ours
+        } else {
+            FocusEvents::AlreadyOn
+        };
+    }
+
+    if tmux(&["set-option", "-g", "focus-events", "on"]).is_some() {
+        let _ = tmux(&["set-option", "-g", FOCUS_EVENTS_MARKER, "on"]);
+        FocusEvents::Ours
+    } else {
+        FocusEvents::Unavailable
+    }
+}
+
+/// Put `focus-events` back to off, for the run that owns it.
+///
+/// Only called for [`FocusEvents::Ours`], so a user who set the option
+/// themselves keeps it. Two forestui instances can still disagree — the first
+/// to exit turns it off under the second, which costs that instance its
+/// refresh-on-return until it restarts. That is the cheaper of the two
+/// mistakes: the other one is changing the user's server permanently and never
+/// telling them.
+pub fn disable_focus_events() {
+    if !is_inside_tmux() {
+        return;
+    }
+    let _ = tmux(&["set-option", "-g", "focus-events", "off"]);
+    let _ = tmux(&["set-option", "-gu", FOCUS_EVENTS_MARKER]);
+}
+
+/// Hand back a `focus-events` a previous forestui stranded, for a run that
+/// wants nothing to do with it.
+///
+/// `--no-focus-events` is what someone reaches for when focus reporting is
+/// costing them a tmux prefix, so it has to clear the setting a crashed run
+/// left behind rather than only declining to add one.
+pub fn release_stranded_focus_events() {
+    if is_inside_tmux() && marked_as_ours() {
+        disable_focus_events();
+    }
+}
+
+/// Whether a forestui — this one or one that died before cleaning up — is what
+/// turned `focus-events` on.
+fn marked_as_ours() -> bool {
+    // An unset user option is an error, not an empty value, so a failed call
+    // is the "not ours" answer rather than something to report.
+    tmux(&["show-options", "-gv", FOCUS_EVENTS_MARKER]).is_some_and(|v| v.trim() == "on")
 }
 
 fn window_names() -> Vec<String> {

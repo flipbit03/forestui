@@ -48,6 +48,12 @@ tokio = { version = "1", features = [
 ] }
 uuid = { version = "1.24.0", features = ["v4", "serde"] }
 
+# Signal handlers. Resetting the terminal when a pane is killed has to happen
+# inside the handler itself, and the async-signal-safe primitives that allows
+# (`write`, `tcsetattr`, `raise`) are not in std.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
 

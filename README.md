@@ -111,6 +111,11 @@ forestui ~/my-projects
 
 # Show help
 forestui --help
+
+# Stop asking the terminal to report pointer movement, or focus changes
+# (see "If tmux's prefix key stops working")
+forestui --no-hover
+forestui --no-focus-events
 ```
 
 ### Keyboard Shortcuts
@@ -154,6 +159,26 @@ crosses them, so what is clickable is visible rather than guessed at:
 - **The scroll wheel** scrolls whichever pane the pointer is over, whether or
   not it holds the keyboard focus.
 - **The scrollbar** can be dragged, and clicking its track pages to that point.
+
+### If tmux's prefix key stops working
+
+tmux drops a pending prefix when the next thing it receives is a key it cannot
+find in its `prefix` key table, and a mouse or focus report is such a key. So
+`C-a` followed by one of those silently does nothing, and the key you typed
+after it is lost.
+
+forestui asks the terminal for two reports that can land in that gap. Either
+can be turned off:
+
+| Flag | You lose | The prefix stops being eaten by |
+|------|----------|---------------------------------|
+| `--no-hover` | controls no longer light up under the pointer; clicks, wheel and drag still work | pointer movement (`?1003h`), while forestui's pane is active |
+| `--no-focus-events` | no refresh the moment you return to the window — `r` and the 30-second sweep still do it | focus changes, in every window on that tmux server |
+
+`focus-events` is a tmux *server* option, and forestui turns it on. It hands it
+back on exit, including after a run that was killed before it could — but if
+your own tmux config turns it on, it stays on and the flag cannot help with
+that half.
 
 ### TUI Editor Integration
 

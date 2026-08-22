@@ -197,6 +197,12 @@ pub struct App {
     /// Whether to check for a newer release at startup; `--no-self-update`
     /// clears it.
     pub self_update: bool,
+    /// Which optional terminal input modes this run asked for; `--no-hover`
+    /// and `--no-focus-events` narrow it.
+    pub input_modes: crate::terminal::InputModes,
+    /// Whether *this* run turned tmux's server-wide `focus-events` on, and so
+    /// has to turn it off again on the way out.
+    focus_events_owned: bool,
 
     /// The detail items as the last frame drew them, each with whether it was
     /// enabled. Activation — a click or Enter — resolves against this snapshot
@@ -273,6 +279,8 @@ impl App {
             scroll_drag: None,
             collapsed: std::collections::HashSet::new(),
             self_update: true,
+            input_modes: crate::terminal::InputModes::default(),
+            focus_events_owned: false,
             drawn_items: Vec::new(),
             name_input: TextInput::new(""),
             branch_input: TextInput::new(""),
@@ -303,12 +311,33 @@ impl App {
         }
     }
 
+    /// Undo the global tmux state this run turned on.
+    ///
+    /// Called from the main loop's exit; a `SIGTERM` still skips it, which is
+    /// the same gap every tmux command has and not one a signal handler can
+    /// close (spawning a process from one is not async-signal-safe).
+    pub fn release_tmux_options(&mut self) {
+        if std::mem::take(&mut self.focus_events_owned) {
+            tmux::disable_focus_events();
+        }
+    }
+
     // ------------------------------------------------------------------ startup
 
     /// Work kicked off once the terminal is up.
     pub fn on_start(&mut self) {
-        if !tmux::ensure_focus_events() {
-            self.notify("Could not enable focus events", Severity::Warning);
+        if self.input_modes.focus {
+            match tmux::ensure_focus_events() {
+                tmux::FocusEvents::Ours => self.focus_events_owned = true,
+                tmux::FocusEvents::AlreadyOn => {}
+                tmux::FocusEvents::Unavailable => {
+                    self.notify("Could not enable focus events", Severity::Warning);
+                }
+            }
+        } else {
+            // Declining the mode also means clearing one a killed run left on:
+            // the flag exists for people whose prefix key it is eating.
+            tmux::release_stranded_focus_events();
         }
         if self.state.selection.repository_id.is_none()
             && let Some(first) = self.state.repositories().first()
@@ -1226,11 +1255,21 @@ pub(crate) mod test_support {
             state: KeyEventState::NONE,
         }
     }
+
+    /// The same key with `Ctrl` held — what a pane is handed when tmux sends
+    /// the prefix through, and what the app must not act on.
+    pub fn ctrl(code: ratatui::crossterm::event::KeyCode) -> ratatui::crossterm::event::KeyEvent {
+        use ratatui::crossterm::event::KeyModifiers;
+        ratatui::crossterm::event::KeyEvent {
+            modifiers: KeyModifiers::CONTROL,
+            ..key(code)
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::{app_with_fixture, key};
+    use super::test_support::{app_with_fixture, ctrl, key};
     use super::*;
     use crate::models::{CustomClaudeButton, Repository, Worktree};
     use ratatui::crossterm::event::KeyCode;
@@ -1379,6 +1418,30 @@ mod tests {
 
         app.handle_key(key(KeyCode::Char('q')));
         assert!(app.should_quit);
+    }
+
+    /// Defect B of issue #51: every binding fired on `Ctrl`+letter, so a
+    /// `Ctrl+A` that reached the pane — which is exactly what tmux's own
+    /// `bind C-a send-prefix` does — opened Add Repository, and `Ctrl+D`
+    /// started deleting a worktree. `Ctrl+C` stays quit.
+    #[tokio::test]
+    async fn control_modified_keys_never_fire_footer_bindings() {
+        let (_dir, mut app) = app_with_fixture();
+        let archived_before = app.state.show_archived;
+
+        for binding in ['a', 's', 'w', 'A', 'q'] {
+            app.handle_key(ctrl(KeyCode::Char(binding)));
+        }
+
+        assert!(app.modals.is_empty(), "a Ctrl combination opened a modal");
+        assert!(!app.should_quit, "Ctrl+Q quit the app");
+        assert_eq!(
+            app.state.show_archived, archived_before,
+            "Ctrl+A toggled the archived section"
+        );
+
+        app.handle_key(ctrl(KeyCode::Char('c')));
+        assert!(app.should_quit, "Ctrl+C no longer quits");
     }
 
     #[tokio::test]

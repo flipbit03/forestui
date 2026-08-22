@@ -573,6 +573,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "libc",
  "ratatui",
  "reqwest",
  "semver",
