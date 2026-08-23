@@ -559,22 +559,28 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
         // Two stacked button rows floating on the right: what launches Claude
         // on top, what manages the record below. Flattened top-then-bottom
         // they keep the item order the actions always had.
+        //
+        // The whole launch row wears the accent, YOLO-style customs included:
+        // five cards of red YOLO buttons read as a wall of warnings, and the
+        // CLAUDE section above already colours that choice at full strength.
         let mut launch = vec![
             ControlSpec::new(
                 Action::ResumeSession(index),
                 "Claude",
-                theme::Variant::Normal,
+                theme::Variant::Accent,
             ),
-            ControlSpec::new(
-                Action::ResumeYolo(index),
-                "YOLO",
-                theme::Variant::Destructive,
-            ),
+            ControlSpec::new(Action::ResumeYolo(index), "YOLO", theme::Variant::Accent),
         ];
-        launch.extend(custom_controls(app, move |button| Action::ResumeCustom {
-            button,
-            session: index,
-        }));
+        launch.extend(
+            custom_controls(app, move |button| Action::ResumeCustom {
+                button,
+                session: index,
+            })
+            .map(|mut control| {
+                control.variant = theme::Variant::Accent;
+                control
+            }),
+        );
         let manage = vec![
             ControlSpec::new(
                 Action::RenameSession(index),

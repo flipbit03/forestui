@@ -279,6 +279,12 @@ pub enum Variant {
     Normal,
     Primary,
     Destructive,
+    /// A quiet button whose label carries the theme accent — the colour the
+    /// pane gives branch names. The session cards use it for their whole
+    /// launch row: five cards of `-destructive` YOLO buttons read as a wall
+    /// of warnings, and the card is not the place to relitigate a choice the
+    /// CLAUDE section already colours at its full strength.
+    Accent,
 }
 
 impl Variant {
@@ -317,6 +323,9 @@ pub fn action_bg(variant: Variant, hovered: bool) -> Color {
         // `Button.-destructive:hover { background: #4d2828 }`
         (Variant::Destructive, true) => theme.destructive_bg_hover,
         (Variant::Destructive, false) => theme.destructive_bg,
+        // Accent keeps Normal's quiet fill; only the label carries colour.
+        (Variant::Accent, true) => theme.bg_hover,
+        (Variant::Accent, false) => theme.bg_elevated,
     }
 }
 
@@ -330,6 +339,8 @@ pub fn action(focused: bool, variant: Variant, hovered: bool) -> Style {
             // `-primary` text colour flips with the fill.
             (Variant::Primary, true) => theme.bg,
             (v, _) if v.is_destructive() => theme.destructive,
+            // The same colour the pane gives branch names.
+            (Variant::Accent, _) => theme.accent,
             _ => theme.text_primary,
         });
     if focused {
@@ -357,7 +368,10 @@ pub fn action_border(focused: bool, variant: Variant, hovered: bool) -> Style {
         });
     }
     match variant {
-        Variant::Normal => border(),
+        // Accent rests on the plain border like Normal — the coloured label
+        // is the whole signal, and an accent frame on every card button would
+        // shout as much as the red it replaces.
+        Variant::Normal | Variant::Accent => border(),
         Variant::Primary => Style::default().fg(theme.accent),
         Variant::Destructive => Style::default().fg(theme.destructive_border),
     }
