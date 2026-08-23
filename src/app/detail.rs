@@ -416,10 +416,6 @@ fn custom_controls<'a>(
 /// Shared by the issue header and the per-session refresh indicator.
 const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
 
-/// Rows of a live pane shown inside the card. Enough to see what Claude is
-/// doing without the card swallowing the pane.
-pub const PEEK_LINES: usize = 5;
-
 fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
     nodes.push(DetailNode::Section("RECENT SESSIONS"));
     let Some(list) = app.sessions.as_deref() else {
@@ -479,25 +475,12 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
             );
         }
         session_info_line(nodes, session, live);
-        // The live peek: what the pane is showing right now, for the session
-        // that is actually running. Reading it here beats switching windows to
-        // check whether Claude is waiting on something.
-        if live.is_some_and(|window| window.running)
-            && let Some(peek) = app.session_peeks.get(&session.id)
-        {
-            for line in peek.iter().take(PEEK_LINES) {
-                nodes.push(DetailNode::Spans(vec![
-                    ("│ ".to_string(), theme::border()),
-                    (crate::util::truncate(line, 70), theme::muted()),
-                ]));
-            }
-        }
         // A card being re-read says so on its meta line. Without it a
         // conversation that moved on while forestui was in the background just
         // sits at its old turn count and then changes with no explanation.
         let count = session.message_count;
         let msgs = if count == 1 { "msg" } else { "msgs" };
-        let meta = if app.sessions_refreshing.contains(&session.id) {
+        let mut meta = if app.sessions_refreshing.contains(&session.id) {
             format!(
                 "{} refreshing • {count} {msgs}",
                 SPINNER[app.spinner_index % SPINNER.len()],
@@ -505,6 +488,19 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
         } else {
             format!("{} • {count} {msgs}", session.relative_time())
         };
+        // The spend rides the meta line, next to the message count it
+        // explains. Old minimal transcripts carry no usage and add nothing.
+        if !session.tokens.is_zero() {
+            use crate::services::claude_session as service;
+            meta.push_str(&format!(
+                " • {} in / {} out",
+                service::fmt_tokens(session.tokens.total_in()),
+                service::fmt_tokens(session.tokens.output),
+            ));
+            if let Some(cost) = service::cost_estimate(session.model.as_deref(), session.tokens) {
+                meta.push_str(&format!(" • {}", service::fmt_cost(cost)));
+            }
+        }
         let mut row = vec![
             ControlSpec::new(
                 Action::ResumeSession(index),
@@ -543,27 +539,26 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
                 theme::Variant::Destructive,
             )
         });
-        // The meta rides the button row rather than taking one of its own, as
-        // the issue cards already do. It costs no height and fills the empty
-        // stretch the buttons leave to their left.
+        // On its own line, unlike the issue cards' meta: with the spend on it
+        // and six buttons beside it, sharing the button row pushed Pin and
+        // Del off the card's right edge at ordinary widths.
+        text(nodes, meta, theme::muted());
         nodes.push(DetailNode::Controls {
-            lead: Some((format!("{meta}  "), theme::muted())),
+            lead: None,
             controls: row,
         });
         nodes.push(DetailNode::CardEnd);
     }
 }
 
-/// The card's recognition line: live badge, branch, tokens, estimated cost.
-/// Skipped entirely when there is nothing to say, so old minimal transcripts
-/// render exactly as before.
+/// The card's recognition line: live badge and branch. Skipped entirely when
+/// there is nothing to say, so old minimal transcripts render as before; the
+/// spend lives on the meta line beside the message count.
 fn session_info_line(
     nodes: &mut Vec<DetailNode>,
     session: &crate::models::ClaudeSession,
     live: Option<&crate::services::tmux::ClaudeWindow>,
 ) {
-    use crate::services::claude_session as sessions;
-
     let mut spans: Vec<(String, Style)> = Vec::new();
     match live {
         // ● running: Claude is the pane's foreground process right now.
@@ -585,24 +580,12 @@ fn session_info_line(
         )),
         None => {}
     }
-
-    let mut details: Vec<String> = Vec::new();
     if let Some(branch) = &session.git_branch {
-        details.push(format!("on {}", crate::util::truncate(branch, 30)));
-    }
-    if !session.tokens.is_zero() {
-        details.push(format!(
-            "{} in / {} out",
-            sessions::fmt_tokens(session.tokens.total_in()),
-            sessions::fmt_tokens(session.tokens.output),
-        ));
-        if let Some(cost) = sessions::cost_estimate(session.model.as_deref(), session.tokens) {
-            details.push(sessions::fmt_cost(cost));
-        }
-    }
-    if !details.is_empty() {
         let lead = if spans.is_empty() { "" } else { " · " };
-        spans.push((format!("{lead}{}", details.join(" · ")), theme::muted()));
+        spans.push((
+            format!("{lead}on {}", crate::util::truncate(branch, 30)),
+            theme::muted(),
+        ));
     }
     if !spans.is_empty() {
         nodes.push(DetailNode::Spans(spans));

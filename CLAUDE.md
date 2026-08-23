@@ -268,9 +268,9 @@ window instead.
   inside the window, ahead of the command), records which Claude session the
   window holds — the pre-minted `--session-id` for a fresh session, the
   resumed id otherwise. It is what makes window ↔ session a recorded fact:
-  the live badge, the duplicate-open guard, the pane peek and the delete
-  refusal all resolve against one `list-windows` sweep over these stamps,
-  never against transcript mtimes. Corollary: the shell history line for a
+  the live badge, the duplicate-open guard and the delete refusal all
+  resolve against one `list-windows` sweep over these stamps, never against
+  transcript mtimes. Corollary: the shell history line for a
   fresh session remembers the *resume* form (`claude -r '<id>'`), because
   `--session-id` refuses to run once the session exists and the up arrow
   exists precisely for the second run.

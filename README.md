@@ -14,9 +14,9 @@ forestui brings Git worktree management to the terminal with a TUI built on
 - **Worktree Operations**: Create, rename, archive, and delete worktrees
 - **TUI Editor Integration**: Opens TUI editors (vim, nvim, helix, etc.) in tmux windows
 - **Claude Code Integration**: Track and resume Claude Code sessions per worktree
-- **Session Management**: See which sessions are live in a tmux window (with a
-  peek at what the pane is doing), rename, pin, and delete sessions, and read
-  each conversation's branch, token totals, and estimated cost off its card
+- **Session Management**: See which sessions are live in a tmux window,
+  rename, pin, and delete sessions, and read each conversation's branch,
+  token totals, and estimated cost off its card
 - **GitHub Issues**: Create a worktree straight from an issue assigned to you
 - **Multi-Forest Support**: Manage multiple forest directories via CLI argument
 - **tmux Native**: Runs inside tmux for a cohesive terminal experience
@@ -94,8 +94,8 @@ resuming a session keeps the name it already had.
 
 Every session card shows what forestui knows about the conversation: the
 branch it last saw, its token totals with an estimated cost, and — when the
-session is open in a tmux window — a live badge with the window's name and the
-last few lines of its pane. Resuming a session that is already open offers to
+session is open in a tmux window — a live badge with the window's name.
+Resuming a session that is already open offers to
 switch to its window instead of starting a second Claude on the same
 transcript. Cards also carry `Rename` (a live session renames through its tmux
 window, a stopped one through its transcript), `Pin` (pinned sessions stay at

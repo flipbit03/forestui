@@ -203,17 +203,16 @@ impl App {
                         // The badge on screen names the window; refresh it in
                         // the same breath so it does not spend the next sweep
                         // interval telling the user the name they just changed.
-                        let snapshot = tmux::live_snapshot(crate::app::detail::PEEK_LINES);
-                        (renamed, snapshot)
+                        (renamed, tmux::list_claude_windows())
                     })
                     .await
                     .ok();
                     match renamed {
-                        Some((true, (windows, peeks))) => {
+                        Some((true, windows)) => {
                             tx.info(format!(
                                 "Window renamed to '{shown}' — the session follows on its next prompt"
                             ));
-                            tx.send(AppEvent::LiveSessions { windows, peeks });
+                            tx.send(AppEvent::LiveSessions { windows });
                         }
                         _ => tx.error("Could not rename the window"),
                     }

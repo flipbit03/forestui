@@ -349,45 +349,6 @@ fn parse_claude_windows(out: &str) -> Vec<ClaudeWindow> {
     windows
 }
 
-/// One coherent view of the live Claude windows: the windows themselves plus
-/// a pane tail for each *running* one. The scan sweep and any flow that just
-/// changed a window (a live rename) both send this, so the map on screen
-/// never waits for the next sweep to catch up with an action the user watched
-/// happen.
-pub fn live_snapshot(
-    peek_lines: usize,
-) -> (
-    Vec<ClaudeWindow>,
-    std::collections::HashMap<String, Vec<String>>,
-) {
-    let windows = list_claude_windows();
-    let peeks = windows
-        .iter()
-        .filter(|window| window.running)
-        .map(|window| {
-            (
-                window.session_id.clone(),
-                capture_pane_tail(&window.window_id, peek_lines),
-            )
-        })
-        .collect();
-    (windows, peeks)
-}
-
-/// The last `lines` non-blank rows of a window's pane, for the live peek.
-pub fn capture_pane_tail(window_id: &str, lines: usize) -> Vec<String> {
-    let Some(out) = tmux(&["capture-pane", "-p", "-t", window_id]) else {
-        return Vec::new();
-    };
-    let kept: Vec<String> = out
-        .lines()
-        .map(|line| line.trim_end().to_string())
-        .filter(|line| !line.is_empty())
-        .collect();
-    let start = kept.len().saturating_sub(lines);
-    kept[start..].to_vec()
-}
-
 /// Append `:2`, `:3`, … until the window name is unused.
 pub fn find_unique_window_name(base_name: &str) -> String {
     unique_name_among(base_name, &window_names())

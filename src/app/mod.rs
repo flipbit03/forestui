@@ -155,8 +155,6 @@ pub struct App {
     /// whose id is here is open somewhere, and `running` says whether Claude
     /// is actually the pane's foreground process.
     pub live_sessions: std::collections::HashMap<String, tmux::ClaudeWindow>,
-    /// The last few pane lines of each *running* session, for the card peek.
-    pub session_peeks: std::collections::HashMap<String, Vec<String>>,
     /// One live scan at a time — it shells out to tmux once per sweep.
     live_scan_in_flight: bool,
     /// Per-repository worktree mutation counter; see
@@ -274,7 +272,6 @@ impl App {
             last_session_refresh: Instant::now(),
             sessions_refreshing: std::collections::HashSet::new(),
             live_sessions: std::collections::HashMap::new(),
-            session_peeks: std::collections::HashMap::new(),
             live_scan_in_flight: false,
             worktree_epochs: std::collections::HashMap::new(),
             renames_in_flight: std::collections::HashSet::new(),
@@ -395,9 +392,8 @@ impl App {
         });
     }
 
-    /// Ask tmux which windows hold which Claude sessions, and capture a tail
-    /// of every running pane for the peek. One tmux listing plus one capture
-    /// per running session, all off the loop.
+    /// Ask tmux which windows hold which Claude sessions. One tmux listing
+    /// for the whole session, off the loop.
     pub(super) fn scan_live_sessions(&mut self) {
         if self.live_scan_in_flight {
             return;
@@ -405,13 +401,10 @@ impl App {
         self.live_scan_in_flight = true;
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let result = tokio::task::spawn_blocking(|| tmux::live_snapshot(detail::PEEK_LINES))
+            let windows = tokio::task::spawn_blocking(tmux::list_claude_windows)
                 .await
                 .unwrap_or_default();
-            tx.send(AppEvent::LiveSessions {
-                windows: result.0,
-                peeks: result.1,
-            });
+            tx.send(AppEvent::LiveSessions { windows });
         });
     }
 
@@ -1027,7 +1020,7 @@ impl App {
                     }
                 }
             }
-            AppEvent::LiveSessions { windows, peeks } => {
+            AppEvent::LiveSessions { windows } => {
                 self.live_scan_in_flight = false;
                 let fresh: std::collections::HashMap<String, tmux::ClaudeWindow> = windows
                     .into_iter()
@@ -1035,9 +1028,8 @@ impl App {
                     .collect();
                 // Claims its own repaint: this runs on the ten-second sweep
                 // and usually finds exactly the map it replaced.
-                if fresh != self.live_sessions || peeks != self.session_peeks {
+                if fresh != self.live_sessions {
                     self.live_sessions = fresh;
-                    self.session_peeks = peeks;
                     self.redraw = true;
                 }
             }
@@ -2392,38 +2384,28 @@ mod tests {
         assert_eq!(app.state.pinned_for(&path), vec!["new", "old"]);
     }
 
-    /// The live scan's fold replaces the maps and repaints only on change.
+    /// The live scan's fold replaces the map and repaints only on change.
     #[tokio::test]
     async fn the_live_scan_folds_quietly_when_nothing_changed() {
         let (_dir, mut app) = app_with_fixture();
         let windows = vec![a_live_window("one", true)];
-        let peeks: std::collections::HashMap<String, Vec<String>> =
-            [("one".to_string(), vec!["$ cargo test".to_string()])]
-                .into_iter()
-                .collect();
 
         app.redraw = false;
         app.handle_event(AppEvent::LiveSessions {
             windows: windows.clone(),
-            peeks: peeks.clone(),
         });
         assert!(app.redraw, "the first result changes the frame");
         assert_eq!(app.live_sessions.len(), 1);
 
         app.redraw = false;
-        app.handle_event(AppEvent::LiveSessions {
-            windows,
-            peeks: peeks.clone(),
-        });
+        app.handle_event(AppEvent::LiveSessions { windows });
         assert!(!app.redraw, "an identical sweep must not repaint");
 
         // A closed window disappears from the map wholesale.
         app.handle_event(AppEvent::LiveSessions {
             windows: Vec::new(),
-            peeks: std::collections::HashMap::new(),
         });
         assert!(app.live_sessions.is_empty());
-        assert!(app.session_peeks.is_empty());
     }
 
     /// A late answer for a selection the user has already left must not put

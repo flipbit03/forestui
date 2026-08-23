@@ -847,9 +847,9 @@ mod tests {
         }
     }
 
-    /// The session card's new furniture: the live badge and peek for an open
-    /// session, the recognition line's branch/token/cost details, the pin
-    /// star, and a Del that cannot fire while a window holds the transcript.
+    /// The session card's new furniture: the live badge for an open session,
+    /// the branch line, the spend on the meta line, the pin marker, and a Del
+    /// that cannot fire while a window holds the transcript.
     #[tokio::test]
     async fn session_cards_show_liveness_pins_and_spend() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -877,16 +877,15 @@ mod tests {
                 session_id: "abc".into(),
             },
         );
-        app.session_peeks
-            .insert("abc".into(), vec!["✳ Compacting conversation…".into()]);
-
         let screen = render(&mut app);
         assert!(screen.contains("● live in claude:demo:wt"), "{screen}");
         assert!(screen.contains("on feat/x"), "{screen}");
-        assert!(screen.contains("1.2M in / 50k out"), "{screen}");
-        assert!(screen.contains("~$"), "{screen}");
+        // The spend rides the meta line, beside the count it explains.
+        assert!(
+            screen.contains("12 msgs • 1.2M in / 50k out • ~$"),
+            "{screen}"
+        );
         assert!(screen.contains("◆ Refactor the detail pane"), "{screen}");
-        assert!(screen.contains("Compacting conversation"), "{screen}");
         assert!(screen.contains("Unpin"), "{screen}");
 
         // Del keeps its slot but is disabled while the window is open.
@@ -902,12 +901,10 @@ mod tests {
             "Del must not fire on a live session"
         );
 
-        // Claude exited but the window is open: the badge changes register
-        // and the peek disappears with the process it was peeking at.
+        // Claude exited but the window is open: the badge changes register.
         app.live_sessions.get_mut("abc").unwrap().running = false;
         let screen = render(&mut app);
         assert!(screen.contains("○ open in claude:demo:wt"), "{screen}");
-        assert!(!screen.contains("Compacting conversation"), "{screen}");
 
         // No window at all: no badge, Del enabled again.
         app.live_sessions.clear();
