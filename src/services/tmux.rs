@@ -521,7 +521,10 @@ pub fn claude_command_line(
         // name, which may have picked up a `:2` from uniquifying against a
         // window still open for the same conversation. The hook adopts the
         // stored name onto the window instead.
-        cmd.push_str(&format!(" -r {id}"));
+        //
+        // Quoted like the window name: a resume id is a transcript's filename
+        // stem, which forestui read off disk rather than wrote.
+        cmd.push_str(&format!(" -r {}", sh_quote(id)));
     } else {
         // Claude renders this in the prompt box from the first frame, which no
         // hook can do: a title set before the session's UI is live is stored
@@ -530,7 +533,7 @@ pub fn claude_command_line(
         // The pre-minted id, so the window knows which session it holds from
         // birth instead of forestui guessing later from transcript mtimes.
         if let Some(id) = new_session_id {
-            cmd.push_str(&format!(" --session-id {id}"));
+            cmd.push_str(&format!(" --session-id {}", sh_quote(id)));
         }
     }
     single_line(&cmd)
@@ -608,15 +611,23 @@ fn startup_for(
     window_name: &str,
     session_id: &str,
     line: &str,
+    remembered_line: &str,
 ) -> Option<Startup> {
     let base = Path::new(shell).file_name()?.to_str()?;
     let dir_str = dir.to_str()?;
     // Typing the command used to put it in the shell's history for free, and
     // that is worth keeping: after Ctrl-C the up arrow is the shortest way
     // back into a session. Only the shells with a builtin for it get one.
+    //
+    // What is remembered is not always what ran: a fresh session launches
+    // with a pre-minted `--session-id`, and Claude refuses that flag once the
+    // session exists ("Session ID is already in use") — which is exactly the
+    // state an up-arrow rerun happens in. The caller hands the resume form
+    // instead, so the up arrow goes back into the same conversation rather
+    // than into an error.
     let remembered = match base {
-        "zsh" => format!("print -s -- {}\n", sh_quote(line)),
-        "bash" => format!("history -s {}\n", sh_quote(line)),
+        "zsh" => format!("print -s -- {}\n", sh_quote(remembered_line)),
+        "bash" => format!("history -s {}\n", sh_quote(remembered_line)),
         _ => String::new(),
     };
     let tail = format!(
@@ -683,7 +694,12 @@ fn startup_for(
 }
 
 /// Write the startup files for this launch, or `None` to fall back to typing.
-fn prepare_startup(window_name: &str, session_id: &str, line: &str) -> Option<Startup> {
+fn prepare_startup(
+    window_name: &str,
+    session_id: &str,
+    line: &str,
+    remembered_line: &str,
+) -> Option<Startup> {
     let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty())?;
     let dir = std::env::temp_dir().join(format!(
         "forestui-launch-{}-{}",
@@ -700,6 +716,7 @@ fn prepare_startup(window_name: &str, session_id: &str, line: &str) -> Option<St
         window_name,
         session_id,
         line,
+        remembered_line,
     )?;
 
     // A launch that cannot write its files is not an error to show anyone:
@@ -782,8 +799,18 @@ pub fn create_claude_window(
         &window_name,
         resume_session_id.is_none().then_some(session_id),
     );
+    // The history entry: for a resume it is the line itself, for a fresh
+    // session the resume form of the same id — see `startup_for`.
+    let remembered = claude_command_line(
+        Some(session_id),
+        yolo,
+        custom_command,
+        custom_prefix,
+        &window_name,
+        None,
+    );
 
-    match prepare_startup(&window_name, session_id, &line) {
+    match prepare_startup(&window_name, session_id, &line, &remembered) {
         // The window's command is the user's shell, interactive, reading a
         // startup file that ends in the Claude command. Nothing is typed, so
         // there is nothing to race the shell's startup.
@@ -914,7 +941,17 @@ mod tests {
             build(None, true, None, None),
             "claude --dangerously-skip-permissions -n 'claude:wt'"
         );
-        assert_eq!(build(Some("abc123"), false, None, None), "claude -r abc123");
+        assert_eq!(
+            build(Some("abc123"), false, None, None),
+            "claude -r 'abc123'"
+        );
+        // A resume id is a transcript filename stem — read off disk, not
+        // written by forestui — so it is quoted like every other foreign
+        // string that reaches a shell.
+        assert_eq!(
+            build(Some("x; rm -rf ~"), false, None, None),
+            "claude -r 'x; rm -rf ~'"
+        );
         // A custom button never gets the YOLO flag appended.
         assert_eq!(
             build(None, true, Some("claude --model opus"), Some("opus")),
@@ -930,11 +967,11 @@ mod tests {
     fn a_preminted_session_id_reaches_fresh_sessions_only() {
         assert_eq!(
             claude_command_line(None, false, None, None, "claude:wt", Some("id-123")),
-            "claude -n 'claude:wt' --session-id id-123"
+            "claude -n 'claude:wt' --session-id 'id-123'"
         );
         assert_eq!(
             claude_command_line(Some("abc"), false, None, None, "claude:wt", Some("id-123")),
-            "claude -r abc"
+            "claude -r 'abc'"
         );
     }
 
@@ -1039,6 +1076,7 @@ mod tests {
             "claude:wt",
             "sess-1",
             "claude",
+            "claude -r 'sess-1'",
         )
         .expect("zsh is known");
         assert_eq!(zsh.command, "env ZDOTDIR='/tmp/launch' '/usr/bin/zsh' -i");
@@ -1050,21 +1088,46 @@ mod tests {
         assert!(zsh.files[1].1.contains("'/home/u/.zshrc'"));
         assert!(zsh.files[1].1.ends_with(tail));
 
-        let bash = startup_for("/bin/bash", dir, &home(), "claude:wt", "sess-1", "claude")
-            .expect("bash is known");
+        let bash = startup_for(
+            "/bin/bash",
+            dir,
+            &home(),
+            "claude:wt",
+            "sess-1",
+            "claude",
+            "claude -r 'sess-1'",
+        )
+        .expect("bash is known");
         assert_eq!(bash.command, "'/bin/bash' --rcfile '/tmp/launch/rc' -i");
         assert!(bash.files[0].1.contains("'/home/u/.bashrc'"));
         assert!(bash.files[0].1.ends_with(tail));
 
-        let sh = startup_for("/bin/dash", dir, &home(), "claude:wt", "sess-1", "claude")
-            .expect("dash is known");
+        let sh = startup_for(
+            "/bin/dash",
+            dir,
+            &home(),
+            "claude:wt",
+            "sess-1",
+            "claude",
+            "claude -r 'sess-1'",
+        )
+        .expect("dash is known");
         assert_eq!(sh.command, "env ENV='/tmp/launch/rc' '/bin/dash' -i");
         assert!(sh.files[0].1.ends_with(tail));
 
         // The command lands in the shell's history where there is a builtin
-        // for it, so the up arrow restarts a session that was interrupted.
-        assert!(zsh.files[1].1.contains("print -s -- 'claude'"));
-        assert!(bash.files[0].1.contains("history -s 'claude'"));
+        // for it, so the up arrow restarts a session that was interrupted —
+        // and what is remembered is the *resume* form, because a fresh
+        // session's `--session-id` refuses to run a second time and the up
+        // arrow exists precisely for the second run.
+        let expected_zsh = format!("print -s -- {}", sh_quote("claude -r 'sess-1'"));
+        let expected_bash = format!("history -s {}", sh_quote("claude -r 'sess-1'"));
+        assert!(zsh.files[1].1.contains(&expected_zsh), "{}", zsh.files[1].1);
+        assert!(
+            bash.files[0].1.contains(&expected_bash),
+            "{}",
+            bash.files[0].1
+        );
         assert!(!sh.files[0].1.contains("history"));
 
         // A shell whose ENV already names a file keeps reading it.
@@ -1072,8 +1135,16 @@ mod tests {
             env_file: Some("/home/u/.shinit".into()),
             ..home()
         };
-        let sh = startup_for("/bin/sh", dir, &inherited, "claude:wt", "sess-1", "claude")
-            .expect("sh is known");
+        let sh = startup_for(
+            "/bin/sh",
+            dir,
+            &inherited,
+            "claude:wt",
+            "sess-1",
+            "claude",
+            "claude -r 'sess-1'",
+        )
+        .expect("sh is known");
         assert!(sh.files[0].1.contains("'/home/u/.shinit'"));
     }
 
@@ -1083,8 +1154,16 @@ mod tests {
     fn a_generated_startup_file_sweeps_itself_up() {
         let dir = Path::new("/tmp/launch");
         for shell in ["/usr/bin/zsh", "/bin/bash", "/bin/sh"] {
-            let startup = startup_for(shell, dir, &home(), "claude:wt", "sess-1", "claude")
-                .expect("a known shell");
+            let startup = startup_for(
+                shell,
+                dir,
+                &home(),
+                "claude:wt",
+                "sess-1",
+                "claude",
+                "claude",
+            )
+            .expect("a known shell");
             let last = &startup.files.last().expect("a file").1;
             assert!(
                 last.contains("rm -rf '/tmp/launch'"),
@@ -1104,6 +1183,7 @@ mod tests {
                 &home(),
                 "claude:wt",
                 "sess-1",
+                "claude",
                 "claude",
             )
         };

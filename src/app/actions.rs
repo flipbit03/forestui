@@ -275,6 +275,16 @@ impl App {
                 let (task_path, task_id) = (path.clone(), session_id.clone());
                 tokio::spawn(async move {
                     let result = tokio::task::spawn_blocking(move || {
+                        // The guard that disabled Del read a map up to a sweep
+                        // old; a window opened since would lose its transcript
+                        // out from under a running Claude. Ask tmux again at
+                        // the moment of truth.
+                        if let Some(window) = tmux::list_claude_windows()
+                            .into_iter()
+                            .find(|window| window.session_id == task_id)
+                        {
+                            return Err(format!("it is open in window '{}'", window.window_name));
+                        }
                         claude_session::delete_session(&task_path, &task_id)
                     })
                     .await
