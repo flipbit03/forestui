@@ -915,14 +915,8 @@ mod tests {
             "Del must not fire on a live session"
         );
 
-        // Claude exited but the window is open: the badge changes register.
-        app.live_sessions.get_mut("abc").unwrap().running = false;
-        let screen = render(&mut app);
-        assert!(screen.contains("○ open in claude:demo:wt"), "{screen}");
-
         // A window named exactly after the session — the designed steady
         // state — is not worth repeating: the badge alone says live.
-        app.live_sessions.get_mut("abc").unwrap().running = true;
         app.live_sessions.get_mut("abc").unwrap().window_name =
             "Refactor the detail pane".to_string();
         let screen = render(&mut app);

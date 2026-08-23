@@ -1022,8 +1022,16 @@ impl App {
             }
             AppEvent::LiveSessions { windows } => {
                 self.live_scan_in_flight = false;
+                // Only windows where Claude is actually the foreground
+                // process count as live. A window whose Claude exited or was
+                // suspended still carries its stamp, but the session is free:
+                // resumable anywhere, renamable, deletable — holding it
+                // hostage to a shell prompt someone might up-arrow in helped
+                // nobody. (If they do up-arrow it back, the stamp is still on
+                // the window and the next sweep sees it running again.)
                 let fresh: std::collections::HashMap<String, tmux::ClaudeWindow> = windows
                     .into_iter()
+                    .filter(|window| window.running)
                     .map(|window| (window.session_id.clone(), window))
                     .collect();
                 // Claims its own repaint: this runs on the ten-second sweep
@@ -2235,17 +2243,18 @@ mod tests {
         }
     }
 
-    /// Resuming a session that already has a window must offer that window,
-    /// not fork the conversation — running or suspended alike, because either
-    /// way a second `claude -r` diverges from the same transcript.
+    /// Resuming a session that is *running* in a window must offer that
+    /// window, not fork the conversation. A window whose Claude exited holds
+    /// nothing: the fold never admits it, so the session resumes freely.
     #[tokio::test]
     async fn resuming_an_open_session_offers_its_window_instead() {
         let (_dir, mut app) = app_with_fixture();
         let path = app.state.selected_path().expect("a selection");
         std::fs::create_dir_all(&path).expect("the selected path exists");
         app.sessions = Some(vec![a_session("one")]);
-        app.live_sessions
-            .insert("one".into(), a_live_window("one", true));
+        app.handle_event(AppEvent::LiveSessions {
+            windows: vec![a_live_window("one", true)],
+        });
 
         app.run_action(Action::ResumeSession(0));
 
@@ -2258,15 +2267,21 @@ mod tests {
         ));
         assert!(confirm.message.contains("claude:demo:wt"));
 
-        // The suspended form guards too, with its own wording.
+        // Claude exited in its window: the session is free again — no
+        // dialog, no badge, nothing held hostage to a shell prompt.
         app.modals.clear();
-        app.live_sessions
-            .insert("one".into(), a_live_window("one", false));
+        app.handle_event(AppEvent::LiveSessions {
+            windows: vec![a_live_window("one", false)],
+        });
+        assert!(
+            app.live_sessions.is_empty(),
+            "an exited window entered the live map"
+        );
         app.run_action(Action::ResumeYolo(0));
-        let Some(crate::modal::Modal::Confirm(confirm)) = app.modals.last() else {
-            panic!("the suspended guard did not open a dialog");
-        };
-        assert!(confirm.message.contains("up arrow"), "{}", confirm.message);
+        assert!(
+            !matches!(app.modals.last(), Some(crate::modal::Modal::Confirm(_))),
+            "an exited window must not guard a resume"
+        );
     }
 
     /// Deleting a session asks first and really deletes after — and refuses

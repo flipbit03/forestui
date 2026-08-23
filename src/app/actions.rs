@@ -277,10 +277,11 @@ impl App {
                         // The guard that disabled Del read a map up to a sweep
                         // old; a window opened since would lose its transcript
                         // out from under a running Claude. Ask tmux again at
-                        // the moment of truth.
+                        // the moment of truth — a *running* Claude only, since
+                        // an exited one holds nothing.
                         if let Some(window) = tmux::list_claude_windows()
                             .into_iter()
-                            .find(|window| window.session_id == task_id)
+                            .find(|window| window.running && window.session_id == task_id)
                         {
                             return Err(format!("it is open in window '{}'", window.window_name));
                         }
@@ -479,14 +480,10 @@ impl App {
             return false;
         };
         let (window_id, window_name) = (window.window_id.clone(), window.window_name.clone());
-        let message = if window.running {
-            format!("This session is running in window '{window_name}'.\nSwitch to it?")
-        } else {
-            format!(
-                "Claude exited, but its window '{window_name}' is still open —\n\
-                 the up arrow there restarts it. Switch to it?"
-            )
-        };
+        // Only a *running* session guards — the live map holds nothing else.
+        // A window whose Claude exited leaves the session free to resume
+        // anywhere, deliberately: the shell prompt left behind holds nothing.
+        let message = format!("This session is running in window '{window_name}'.\nSwitch to it?");
         self.modals.push(Modal::Confirm(ConfirmModal::new(
             "Session Already Open",
             message,

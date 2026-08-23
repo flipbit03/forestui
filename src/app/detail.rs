@@ -448,6 +448,9 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
             title_line.push(("◆ ".to_string(), theme::accent()));
         }
         title_line.push((crate::util::truncate(&session.title, 60), theme::primary()));
+        // A map hit means Claude is the pane's foreground process right now —
+        // a window whose Claude exited never enters the map, because that
+        // session is free again (see the `LiveSessions` fold).
         if let Some(window) = live {
             // The window name and the session name are one string by design,
             // so it is only worth printing when the two actually differ — a
@@ -459,14 +462,7 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
                 format!(" in {}", crate::util::truncate(&window.window_name, 25))
             };
             title_line.push((" · ".to_string(), theme::muted()));
-            if window.running {
-                // ● running: Claude is the pane's foreground process.
-                title_line.push((format!("● live{place}"), theme::accent()));
-            } else {
-                // ○ the window is open but Claude exited or was suspended —
-                // resuming from here forks; the window's shell can `fg` it.
-                title_line.push((format!("○ open{place}"), theme::secondary()));
-            }
+            title_line.push((format!("● live{place}"), theme::accent()));
         }
         nodes.push(DetailNode::Spans(title_line));
         // The name is what you scan the list for, so it gets the whitespace —
