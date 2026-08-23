@@ -22,6 +22,16 @@ pub fn is_tui_editor(editor: &str) -> bool {
 }
 
 fn tmux(args: &[&str]) -> Option<String> {
+    // Unit tests must never reach a real tmux server — the developer working
+    // on forestui is, almost by definition, running forestui, and the test
+    // binary inherits their `TMUX_PANE`. One test whose action path reached
+    // `new-window` opened a real window in a real session; this gate makes
+    // that whole class impossible instead of relying on every future test to
+    // stay away from the launch paths. Under the gate tmux reads and writes
+    // both answer as they do outside tmux entirely.
+    if cfg!(test) {
+        return None;
+    }
     let output = Command::new("tmux").args(args).output().ok()?;
     if !output.status.success() {
         return None;
@@ -132,6 +142,36 @@ pub fn rename_window_by_id(window_id: &str, name: &str) -> bool {
 /// Jump to a window, for the duplicate-open guard's "switch there" choice.
 pub fn select_window(window_id: &str) -> bool {
     tmux(&["select-window", "-t", window_id]).is_some()
+}
+
+/// The window holding a pane, and the tmux session that owns it.
+///
+/// This is how a heartbeat's recorded `TMUX_PANE` resolves back to something
+/// forestui can offer to switch to — but only when the pane's session is
+/// forestui's own, which is why the session rides along for the caller to
+/// compare.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneWindow {
+    pub tmux_session: String,
+    pub window_id: String,
+    pub window_name: String,
+}
+
+pub fn pane_window(pane: &str) -> Option<PaneWindow> {
+    let out = tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        pane,
+        "#{session_id}\t#{window_id}\t#{window_name}",
+    ])?;
+    let line = out.trim_end_matches('\n');
+    let mut parts = line.splitn(3, '\t');
+    Some(PaneWindow {
+        tmux_session: parts.next()?.to_string(),
+        window_id: parts.next()?.to_string(),
+        window_name: parts.next()?.to_string(),
+    })
 }
 
 /// What `ensure_focus_events` found, and therefore what exit has to undo.
@@ -856,6 +896,23 @@ mod tests {
         assert_eq!(
             opening_window_name(None, "repo:wt", false, Some("opus")),
             "opus:repo:wt"
+        );
+    }
+
+    /// The test binary inherits the developer's own `TMUX`/`TMUX_PANE`, and
+    /// the developer working on forestui is running forestui — so a test that
+    /// reaches any tmux command is touching their live server. The gate in
+    /// `tmux()` makes every such call answer as if there were no tmux at all.
+    /// This assertion is the proof precisely when the suite runs inside tmux
+    /// (where it once opened a real window), and trivially true outside.
+    #[test]
+    fn no_test_can_reach_a_real_tmux_server() {
+        assert!(current_session().is_none(), "the cfg!(test) gate is gone");
+        assert!(!rename_window_by_id("@0", "forestui-test-probe"));
+        assert!(!select_window("@0"));
+        assert!(list_claude_windows().is_empty());
+        assert!(
+            create_claude_window("forestui-test-probe", "/tmp", None, false, None, None).is_none()
         );
     }
 

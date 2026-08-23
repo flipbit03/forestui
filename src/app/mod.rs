@@ -150,11 +150,10 @@ pub struct App {
     /// Session ids being re-read right now. Each one draws a spinner on its own
     /// card, so a slow transcript is visibly working rather than silently old.
     pub sessions_refreshing: std::collections::HashSet<String>,
-    /// Which tmux window currently holds each Claude session, from the last
-    /// live scan. The `@claude_session_id` stamp makes this a lookup: a card
-    /// whose id is here is open somewhere, and `running` says whether Claude
-    /// is actually the pane's foreground process.
-    pub live_sessions: std::collections::HashMap<String, tmux::ClaudeWindow>,
+    /// Where each Claude session is running, from the last live scan — a
+    /// stamped tmux window or, via the plugin's heartbeat, anywhere else on
+    /// the machine. A card whose id is here has a running Claude somewhere.
+    pub live_sessions: std::collections::HashMap<String, crate::services::live::LiveSession>,
     /// One live scan at a time — it shells out to tmux once per sweep.
     live_scan_in_flight: bool,
     /// Per-repository worktree mutation counter; see
@@ -392,8 +391,8 @@ impl App {
         });
     }
 
-    /// Ask tmux which windows hold which Claude sessions. One tmux listing
-    /// for the whole session, off the loop.
+    /// Ask where every Claude session is running — stamped tmux windows plus
+    /// plugin heartbeats — off the loop.
     pub(super) fn scan_live_sessions(&mut self) {
         if self.live_scan_in_flight {
             return;
@@ -401,10 +400,10 @@ impl App {
         self.live_scan_in_flight = true;
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let windows = tokio::task::spawn_blocking(tmux::list_claude_windows)
+            let sessions = tokio::task::spawn_blocking(crate::services::live::snapshot)
                 .await
                 .unwrap_or_default();
-            tx.send(AppEvent::LiveSessions { windows });
+            tx.send(AppEvent::LiveSessions { sessions });
         });
     }
 
@@ -1020,20 +1019,17 @@ impl App {
                     }
                 }
             }
-            AppEvent::LiveSessions { windows } => {
+            AppEvent::LiveSessions { sessions } => {
                 self.live_scan_in_flight = false;
-                // Only windows where Claude is actually the foreground
-                // process count as live. A window whose Claude exited or was
-                // suspended still carries its stamp, but the session is free:
-                // resumable anywhere, renamable, deletable — holding it
-                // hostage to a shell prompt someone might up-arrow in helped
-                // nobody. (If they do up-arrow it back, the stamp is still on
-                // the window and the next sweep sees it running again.)
-                let fresh: std::collections::HashMap<String, tmux::ClaudeWindow> = windows
-                    .into_iter()
-                    .filter(|window| window.running)
-                    .map(|window| (window.session_id.clone(), window))
-                    .collect();
+                // The snapshot already decided what counts as live: a window
+                // whose Claude exited stays out (that session is free again —
+                // holding it hostage to a shell prompt helped nobody), and a
+                // heartbeat only survives while its claude process does.
+                let fresh: std::collections::HashMap<String, crate::services::live::LiveSession> =
+                    sessions
+                        .into_iter()
+                        .map(|session| (session.session_id.clone(), session))
+                        .collect();
                 // Claims its own repaint: this runs on the ten-second sweep
                 // and usually finds exactly the map it replaced.
                 if fresh != self.live_sessions {
@@ -2234,29 +2230,44 @@ mod tests {
         assert_eq!(list[0].id, "two");
     }
 
-    fn a_live_window(session_id: &str, running: bool) -> crate::services::tmux::ClaudeWindow {
-        crate::services::tmux::ClaudeWindow {
-            window_id: "@7".into(),
-            window_name: "claude:demo:wt".into(),
-            running,
+    fn a_live_window(session_id: &str) -> crate::services::live::LiveSession {
+        crate::services::live::LiveSession {
             session_id: session_id.into(),
+            place: crate::services::live::LivePlace::Window {
+                window_id: "@7".into(),
+                window_name: "claude:demo:wt".into(),
+            },
         }
     }
 
-    /// Resuming a session that is *running* in a window must offer that
-    /// window, not fork the conversation. A window whose Claude exited holds
-    /// nothing: the fold never admits it, so the session resumes freely.
+    fn a_live_elsewhere(session_id: &str, pid: u32) -> crate::services::live::LiveSession {
+        crate::services::live::LiveSession {
+            session_id: session_id.into(),
+            place: crate::services::live::LivePlace::Elsewhere { pid },
+        }
+    }
+
+    /// Resuming a session that is *running* must guard: an offer to switch
+    /// when it sits in one of our windows, an eyes-open "resume anyway" when
+    /// its heartbeat says it runs somewhere unreachable. A session with no
+    /// live entry resumes freely.
+    ///
+    /// Exercised through `guard_open_session` directly, never through
+    /// `run_action(Resume…)`: the resume path really launches windows, and a
+    /// test binary inherits the developer's own `TMUX_PANE` — an earlier
+    /// version of this test opened a real window in a real tmux session.
+    /// The `cfg!(test)` gate in `services::tmux` now makes that impossible,
+    /// and this test stays off the launch path anyway.
     #[tokio::test]
     async fn resuming_an_open_session_offers_its_window_instead() {
         let (_dir, mut app) = app_with_fixture();
         let path = app.state.selected_path().expect("a selection");
-        std::fs::create_dir_all(&path).expect("the selected path exists");
         app.sessions = Some(vec![a_session("one")]);
         app.handle_event(AppEvent::LiveSessions {
-            windows: vec![a_live_window("one", true)],
+            sessions: vec![a_live_window("one")],
         });
 
-        app.run_action(Action::ResumeSession(0));
+        assert!(app.guard_open_session(0, &path, false, None));
 
         let Some(crate::modal::Modal::Confirm(confirm)) = app.modals.last() else {
             panic!("the guard did not open a dialog: {:?}", app.modals.last());
@@ -2267,21 +2278,37 @@ mod tests {
         ));
         assert!(confirm.message.contains("claude:demo:wt"));
 
-        // Claude exited in its window: the session is free again — no
-        // dialog, no badge, nothing held hostage to a shell prompt.
+        // Running somewhere unreachable: the guard warns about the fork and
+        // the confirm carries everything the resume needs, since there is no
+        // window to offer.
         app.modals.clear();
         app.handle_event(AppEvent::LiveSessions {
-            windows: vec![a_live_window("one", false)],
+            sessions: vec![a_live_elsewhere("one", 4242)],
         });
-        assert!(
-            app.live_sessions.is_empty(),
-            "an exited window entered the live map"
-        );
-        app.run_action(Action::ResumeYolo(0));
-        assert!(
-            !matches!(app.modals.last(), Some(crate::modal::Modal::Confirm(_))),
-            "an exited window must not guard a resume"
-        );
+        assert!(app.guard_open_session(0, &path, true, None));
+        let Some(crate::modal::Modal::Confirm(confirm)) = app.modals.last() else {
+            panic!("the elsewhere guard did not open a dialog");
+        };
+        assert!(confirm.message.contains("4242"), "{}", confirm.message);
+        match &confirm.action {
+            crate::modal::ConfirmAction::ForceResume {
+                session_id, yolo, ..
+            } => {
+                assert_eq!(session_id, "one");
+                assert!(*yolo, "the resume flavour must survive the dialog");
+            }
+            other => panic!("expected ForceResume, got {other:?}"),
+        }
+        assert_eq!(confirm.action.confirm_label(), "Resume anyway");
+        assert!(confirm.action.is_destructive(), "forking earns the red");
+
+        // No live entry at all: the guard declines and the resume may run.
+        app.modals.clear();
+        app.handle_event(AppEvent::LiveSessions {
+            sessions: Vec::new(),
+        });
+        assert!(!app.guard_open_session(0, &path, false, None));
+        assert!(app.modals.is_empty(), "a free session must not guard");
     }
 
     /// Deleting a session asks first and really deletes after — and refuses
@@ -2295,8 +2322,7 @@ mod tests {
         app.state.toggle_pin(&path, "one");
 
         // Open in a window: refused with a warning, no dialog.
-        app.live_sessions
-            .insert("one".into(), a_live_window("one", true));
+        app.live_sessions.insert("one".into(), a_live_window("one"));
         app.run_action(Action::DeleteSession(0));
         assert!(app.modals.is_empty(), "a live session must not confirm");
         assert!(
@@ -2428,8 +2454,7 @@ mod tests {
         app.modals.clear();
 
         // Live: the window's name is the truest form of the current name.
-        app.live_sessions
-            .insert("one".into(), a_live_window("one", true));
+        app.live_sessions.insert("one".into(), a_live_window("one"));
         app.run_action(Action::RenameSession(0));
         let Some(crate::modal::Modal::RenameSession(modal)) = app.modals.last() else {
             panic!("no rename dialog");
@@ -2455,22 +2480,22 @@ mod tests {
     #[tokio::test]
     async fn the_live_scan_folds_quietly_when_nothing_changed() {
         let (_dir, mut app) = app_with_fixture();
-        let windows = vec![a_live_window("one", true)];
+        let sessions = vec![a_live_window("one"), a_live_elsewhere("two", 99)];
 
         app.redraw = false;
         app.handle_event(AppEvent::LiveSessions {
-            windows: windows.clone(),
+            sessions: sessions.clone(),
         });
         assert!(app.redraw, "the first result changes the frame");
-        assert_eq!(app.live_sessions.len(), 1);
+        assert_eq!(app.live_sessions.len(), 2);
 
         app.redraw = false;
-        app.handle_event(AppEvent::LiveSessions { windows });
+        app.handle_event(AppEvent::LiveSessions { sessions });
         assert!(!app.redraw, "an identical sweep must not repaint");
 
-        // A closed window disappears from the map wholesale.
+        // A session that ended disappears from the map wholesale.
         app.handle_event(AppEvent::LiveSessions {
-            windows: Vec::new(),
+            sessions: Vec::new(),
         });
         assert!(app.live_sessions.is_empty());
     }

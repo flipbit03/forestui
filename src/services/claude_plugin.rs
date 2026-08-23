@@ -30,14 +30,18 @@ const ASSETS: &[(&str, &str)] = &[
         "hooks/tmux-title.sh",
         include_str!("../../assets/claude-plugin/tmux-title.sh"),
     ),
+    (
+        "hooks/heartbeat.sh",
+        include_str!("../../assets/claude-plugin/heartbeat.sh"),
+    ),
 ];
 
-/// The only file that has to be executable — Claude runs it as a command.
-const EXECUTABLE: &str = "hooks/tmux-title.sh";
+/// The files that have to be executable — Claude runs them as commands.
+const EXECUTABLES: &[&str] = &["hooks/tmux-title.sh", "hooks/heartbeat.sh"];
 
 /// Bumped whenever a shipped file changes, so an install by an older forestui
 /// is recognised as old rather than reported as the user having edited it.
-const SHIPPED_VERSION: &str = "3";
+const SHIPPED_VERSION: &str = "4";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
@@ -158,7 +162,9 @@ pub fn install_in(dir: &Path, overwrite_drift: bool) -> Result<(), String> {
         util::write_atomically(&target, contents)
             .map_err(|e| format!("could not write {}: {e}", target.display()))?;
     }
-    make_executable(&dir.join(EXECUTABLE))?;
+    for rel in EXECUTABLES {
+        make_executable(&dir.join(rel))?;
+    }
     Ok(())
 }
 
@@ -280,16 +286,16 @@ mod tests {
         let dir = tmp.path().join(PLUGIN_NAME);
         install_in(&dir, false).unwrap();
 
-        let script = dir.join(EXECUTABLE);
+        let script = dir.join(EXECUTABLES[0]);
         std::fs::write(&script, "#!/bin/sh\n# my own version\n").unwrap();
 
         match status_in(&dir) {
-            Status::Drifted(files) => assert_eq!(files, vec![EXECUTABLE.to_string()]),
+            Status::Drifted(files) => assert_eq!(files, vec![EXECUTABLES[0].to_string()]),
             other => panic!("expected drift, got {other:?}"),
         }
 
         let refused = install_in(&dir, false).expect_err("install must refuse to clobber");
-        assert!(refused.contains(EXECUTABLE));
+        assert!(refused.contains(EXECUTABLES[0]));
         assert!(
             std::fs::read_to_string(&script)
                 .unwrap()
@@ -342,10 +348,12 @@ mod tests {
         let dir = tmp.path().join(PLUGIN_NAME);
         install_in(&dir, false).unwrap();
 
-        let mode = std::fs::metadata(dir.join(EXECUTABLE))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o111, 0o111, "owner/group/other execute bits");
+        for rel in EXECUTABLES {
+            let mode = std::fs::metadata(dir.join(rel))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o111, 0o111, "{rel}: owner/group/other execute");
+        }
     }
 }

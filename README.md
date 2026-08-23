@@ -94,7 +94,9 @@ resuming a session keeps the name it already had.
 
 Every session card shows what forestui knows about the conversation: the
 branch it last saw, its token totals with an estimated cost, and — when the
-session is open in a tmux window — a live badge with the window's name.
+session is running — a live badge: the window's name when it sits in a tmux
+window forestui can jump to, or "live elsewhere" when the plugin's heartbeat
+finds it running in some other terminal entirely.
 Resuming a session that is already open offers to
 switch to its window instead of starting a second Claude on the same
 transcript. Cards also carry `Rename` (a live session renames through its tmux

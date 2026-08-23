@@ -203,16 +203,16 @@ impl App {
                         // The badge on screen names the window; refresh it in
                         // the same breath so it does not spend the next sweep
                         // interval telling the user the name they just changed.
-                        (renamed, tmux::list_claude_windows())
+                        (renamed, crate::services::live::snapshot())
                     })
                     .await
                     .ok();
                     match renamed {
-                        Some((true, windows)) => {
+                        Some((true, sessions)) => {
                             tx.info(format!(
                                 "Window renamed to '{shown}' — the session follows on its next prompt"
                             ));
-                            tx.send(AppEvent::LiveSessions { windows });
+                            tx.send(AppEvent::LiveSessions { sessions });
                         }
                         _ => tx.error("Could not rename the window"),
                     }
@@ -275,15 +275,19 @@ impl App {
                 tokio::spawn(async move {
                     let result = tokio::task::spawn_blocking(move || {
                         // The guard that disabled Del read a map up to a sweep
-                        // old; a window opened since would lose its transcript
-                        // out from under a running Claude. Ask tmux again at
-                        // the moment of truth — a *running* Claude only, since
-                        // an exited one holds nothing.
+                        // old; a session resumed since would lose its
+                        // transcript out from under a running Claude. Ask
+                        // again at the moment of truth — tmux for a *running*
+                        // window (an exited one holds nothing), and the
+                        // heartbeats for a claude running anywhere else.
                         if let Some(window) = tmux::list_claude_windows()
                             .into_iter()
                             .find(|window| window.running && window.session_id == task_id)
                         {
                             return Err(format!("it is open in window '{}'", window.window_name));
+                        }
+                        if crate::services::live::heartbeat_alive(&task_id) {
+                            return Err("it is running elsewhere".to_string());
                         }
                         claude_session::delete_session(&task_path, &task_id)
                     })
@@ -309,6 +313,18 @@ impl App {
                     self.notify(format!("Window {window_name} is gone"), Severity::Warning);
                     self.scan_live_sessions();
                 }
+            }
+            ConfirmAction::ForceResume {
+                path,
+                session_id,
+                yolo,
+                custom_button,
+                seed,
+            } => {
+                // Confirmed with the fork warning on screen; the guard is
+                // deliberately not consulted again.
+                let custom = custom_button.and_then(|index| self.custom_button(index));
+                self.start_claude(&path, Some(&session_id), yolo, custom, seed);
             }
         }
     }
@@ -467,31 +483,63 @@ impl App {
         self.sessions.as_ref().and_then(|s| s.get(index))
     }
 
-    /// The duplicate-open guard. A resume aimed at a session that already has
-    /// a window would start a second Claude on the same transcript — two
+    /// The duplicate-open guard. A resume aimed at a session that is already
+    /// running would start a second Claude on the same transcript — two
     /// conversations diverging from one history, exactly the mess the
-    /// `@claude_session_id` stamp exists to prevent. Offer the window instead.
-    /// Returns true when the guard took the action over.
-    fn guard_open_session(&mut self, index: usize) -> bool {
+    /// liveness tracking exists to prevent. A session in one of our windows
+    /// gets an offer to switch there; one running somewhere unreachable (seen
+    /// via its heartbeat) gets an eyes-open "resume anyway". Returns true
+    /// when the guard took the action over.
+    ///
+    /// Only a *running* session guards — the live map holds nothing else. A
+    /// window whose Claude exited leaves the session free to resume anywhere,
+    /// deliberately: the shell prompt left behind holds nothing.
+    pub(super) fn guard_open_session(
+        &mut self,
+        index: usize,
+        path: &str,
+        yolo: bool,
+        custom_button: Option<usize>,
+    ) -> bool {
         let Some(session) = self.session_at(index) else {
             return false;
         };
-        let Some(window) = self.live_sessions.get(&session.id) else {
+        let Some(live) = self.live_sessions.get(&session.id) else {
             return false;
         };
-        let (window_id, window_name) = (window.window_id.clone(), window.window_name.clone());
-        // Only a *running* session guards — the live map holds nothing else.
-        // A window whose Claude exited leaves the session free to resume
-        // anywhere, deliberately: the shell prompt left behind holds nothing.
-        let message = format!("This session is running in window '{window_name}'.\nSwitch to it?");
-        self.modals.push(Modal::Confirm(ConfirmModal::new(
-            "Session Already Open",
-            message,
-            ConfirmAction::SwitchToWindow {
+        match &live.place {
+            crate::services::live::LivePlace::Window {
                 window_id,
                 window_name,
-            },
-        )));
+            } => {
+                let (window_id, window_name) = (window_id.clone(), window_name.clone());
+                self.modals.push(Modal::Confirm(ConfirmModal::new(
+                    "Session Already Open",
+                    format!("This session is running in window '{window_name}'.\nSwitch to it?"),
+                    ConfirmAction::SwitchToWindow {
+                        window_id,
+                        window_name,
+                    },
+                )));
+            }
+            crate::services::live::LivePlace::Elsewhere { pid } => {
+                let seed = self.session_window_name(index);
+                self.modals.push(Modal::Confirm(ConfirmModal::new(
+                    "Session Running Elsewhere",
+                    format!(
+                        "This session is running outside this tmux session (pid {pid}).\n\
+                         Resuming here would run two Claudes on one conversation."
+                    ),
+                    ConfirmAction::ForceResume {
+                        path: path.to_string(),
+                        session_id: session.id.clone(),
+                        yolo,
+                        custom_button,
+                        seed,
+                    },
+                )));
+            }
+        }
         true
     }
 
@@ -547,7 +595,7 @@ impl App {
                 }
             }
             Action::ResumeSession(index) => {
-                if !self.guard_open_session(index)
+                if !self.guard_open_session(index, &path, false, None)
                     && let Some(id) = self.session_id(index)
                 {
                     let seed = self.session_window_name(index);
@@ -555,7 +603,7 @@ impl App {
                 }
             }
             Action::ResumeYolo(index) => {
-                if !self.guard_open_session(index)
+                if !self.guard_open_session(index, &path, true, None)
                     && let Some(id) = self.session_id(index)
                 {
                     let seed = self.session_window_name(index);
@@ -563,7 +611,7 @@ impl App {
                 }
             }
             Action::ResumeCustom { button, session } => {
-                if !self.guard_open_session(session)
+                if !self.guard_open_session(session, &path, false, Some(button))
                     && let (Some(id), Some(button)) =
                         (self.session_id(session), self.custom_button(button))
                 {
@@ -611,18 +659,34 @@ impl App {
             return;
         };
         let id = session.id.clone();
+        // A session running somewhere unreachable can be renamed by neither
+        // mechanism: no window to rename, and its Claude is mid-write on the
+        // transcript an append would race.
+        let live_window = match self.live_sessions.get(&id).map(|live| &live.place) {
+            Some(crate::services::live::LivePlace::Elsewhere { .. }) => {
+                self.notify(
+                    "Session is running elsewhere — rename it there with /rename",
+                    Severity::Warning,
+                );
+                return;
+            }
+            Some(crate::services::live::LivePlace::Window {
+                window_id,
+                window_name,
+            }) => Some((window_id.clone(), window_name.clone())),
+            None => None,
+        };
         // The dialog opens on the name the card shows, cursor at the end —
         // the way tmux's own rename prompt continues the existing name. For a
         // live session the window's current name is the truest form (the two
         // are one string by design); a stopped one falls back through the
         // chosen title to whatever the card is displaying, so the field is
         // never empty on a session that visibly has a name.
-        let live = self.live_sessions.get(&id);
-        let current = live
-            .map(|window| window.window_name.clone())
+        let current = live_window
+            .as_ref()
+            .map(|(_, name)| name.clone())
             .or_else(|| session.custom_title.clone())
             .unwrap_or_else(|| session.title.clone());
-        let live_window = live.map(|window| (window.window_id.clone(), window.window_name.clone()));
         self.modals
             .push(Modal::RenameSession(crate::modal::RenameSessionModal::new(
                 path.to_string(),
@@ -647,12 +711,17 @@ impl App {
         };
         // The control is drawn disabled for a live session, but the drawn
         // snapshot can be a sweep older than the map — refuse here too.
-        if let Some(window) = self.live_sessions.get(&session.id) {
+        if let Some(live) = self.live_sessions.get(&session.id) {
+            let place = match &live.place {
+                crate::services::live::LivePlace::Window { window_name, .. } => {
+                    format!("open in window '{window_name}'")
+                }
+                crate::services::live::LivePlace::Elsewhere { pid } => {
+                    format!("running elsewhere (pid {pid})")
+                }
+            };
             self.notify(
-                format!(
-                    "Session is open in window '{}' — close it first",
-                    window.window_name
-                ),
+                format!("Session is {place} — close it first"),
                 Severity::Warning,
             );
             return;

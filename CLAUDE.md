@@ -274,6 +274,16 @@ window instead.
   fresh session remembers the *resume* form (`claude -r '<id>'`), because
   `--session-id` refuses to run once the session exists and the up arrow
   exists precisely for the second run.
+- **Heartbeats** complete the picture for sessions forestui did not start.
+  The plugin's `heartbeat.sh` runs inside *every* Claude session on the
+  machine and keeps one file per session under `~/.config/forestui/live/`,
+  carrying the claude process id — validated against `ps` before it is
+  believed, swept when stale. `services/live.rs` merges heartbeats with the
+  window stamps: a heartbeat whose recorded pane sits on forestui's own tmux
+  session is switchable like a stamped window, anything else shows as
+  "live elsewhere" and resuming it is an eyes-open confirm. The hook also
+  re-stamps `@claude_session_id` on its window, healing a stale stamp left by
+  an earlier launch.
 - **`@claude_birth_name`**, a tmux window option stamped when the window is
   created, answers one question: did forestui open this window? A window the
   user made by hand carries none and is left alone, as is a bare `claude` in a

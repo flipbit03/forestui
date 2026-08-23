@@ -64,12 +64,12 @@ pub enum AppEvent {
         path: String,
         sessions: Option<Vec<ClaudeSession>>,
     },
-    /// The live-window scan finished: which tmux windows hold which Claude
-    /// sessions right now. A snapshot of the whole server view, so the fold
-    /// replaces rather than merges — a window that closed simply stops being
-    /// listed.
+    /// The live scan finished: where every Claude session on the machine is
+    /// running right now — stamped tmux windows plus plugin heartbeats. A
+    /// snapshot of the whole view, so the fold replaces rather than merges —
+    /// a session that ended simply stops being listed.
     LiveSessions {
-        windows: Vec<crate::services::tmux::ClaudeWindow>,
+        sessions: Vec<crate::services::live::LiveSession>,
     },
     /// A transcript deletion finished. Folded on the main loop so the list,
     /// the pin state and the toast all change together.

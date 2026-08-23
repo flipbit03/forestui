@@ -448,21 +448,31 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
             title_line.push(("◆ ".to_string(), theme::accent()));
         }
         title_line.push((crate::util::truncate(&session.title, 60), theme::primary()));
-        // A map hit means Claude is the pane's foreground process right now —
+        // A map hit means a claude process is running this session right now —
         // a window whose Claude exited never enters the map, because that
-        // session is free again (see the `LiveSessions` fold).
-        if let Some(window) = live {
-            // The window name and the session name are one string by design,
-            // so it is only worth printing when the two actually differ — a
-            // `:2`-uniquified window, or an unnamed session whose title is
-            // its first prompt while the window carries forestui's name.
-            let place = if window.window_name == session.title {
-                String::new()
-            } else {
-                format!(" in {}", crate::util::truncate(&window.window_name, 25))
-            };
+        // session is free again (see `services/live.rs`).
+        if let Some(live) = live {
             title_line.push((" · ".to_string(), theme::muted()));
-            title_line.push((format!("● live{place}"), theme::accent()));
+            match &live.place {
+                crate::services::live::LivePlace::Window { window_name, .. } => {
+                    // The window name and the session name are one string by
+                    // design, so it is only worth printing when the two
+                    // actually differ — a `:2`-uniquified window, or an
+                    // unnamed session whose title is its first prompt while
+                    // the window carries forestui's name.
+                    let place = if window_name == &session.title {
+                        String::new()
+                    } else {
+                        format!(" in {}", crate::util::truncate(window_name, 25))
+                    };
+                    title_line.push((format!("● live{place}"), theme::accent()));
+                }
+                // A heartbeat with no reachable window: another tmux session,
+                // or no tmux at all. Live, but not somewhere to jump to.
+                crate::services::live::LivePlace::Elsewhere { .. } => {
+                    title_line.push(("● live elsewhere".to_string(), theme::accent()));
+                }
+            }
         }
         nodes.push(DetailNode::Spans(title_line));
         // The name is what you scan the list for, so it gets the whitespace —

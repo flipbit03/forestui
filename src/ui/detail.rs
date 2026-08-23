@@ -870,11 +870,12 @@ mod tests {
         app.state.toggle_pin(&path, "abc");
         app.live_sessions.insert(
             "abc".into(),
-            crate::services::tmux::ClaudeWindow {
-                window_id: "@9".into(),
-                window_name: "claude:demo:wt".into(),
-                running: true,
+            crate::services::live::LiveSession {
                 session_id: "abc".into(),
+                place: crate::services::live::LivePlace::Window {
+                    window_id: "@9".into(),
+                    window_name: "claude:demo:wt".into(),
+                },
             },
         );
         let screen = render(&mut app);
@@ -917,8 +918,11 @@ mod tests {
 
         // A window named exactly after the session — the designed steady
         // state — is not worth repeating: the badge alone says live.
-        app.live_sessions.get_mut("abc").unwrap().window_name =
-            "Refactor the detail pane".to_string();
+        if let crate::services::live::LivePlace::Window { window_name, .. } =
+            &mut app.live_sessions.get_mut("abc").unwrap().place
+        {
+            *window_name = "Refactor the detail pane".to_string();
+        }
         let screen = render(&mut app);
         assert!(
             screen.contains("Refactor the detail pane · ● live"),

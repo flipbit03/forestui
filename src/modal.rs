@@ -108,6 +108,17 @@ pub enum ConfirmAction {
         window_id: String,
         window_name: String,
     },
+    /// The guard's other shape: the session is running somewhere forestui
+    /// cannot jump to (another tmux session, or no tmux at all — found via
+    /// the plugin's heartbeat). Confirming resumes here anyway, eyes open:
+    /// two Claudes on one transcript diverge.
+    ForceResume {
+        path: String,
+        session_id: String,
+        yolo: bool,
+        custom_button: Option<usize>,
+        seed: Option<String>,
+    },
 }
 
 impl ConfirmAction {
@@ -121,11 +132,13 @@ impl ConfirmAction {
             | ConfirmAction::RemoveRepository(_)
             | ConfirmAction::DeleteClaudeSession { .. } => "Delete",
             ConfirmAction::SwitchToWindow { .. } => "Switch",
+            ConfirmAction::ForceResume { .. } => "Resume anyway",
         }
     }
 
     /// Whether confirming destroys something. Drives the button's colour: a
-    /// "Switch" painted destructive-red would warn against the safe choice.
+    /// "Switch" painted destructive-red would warn against the safe choice,
+    /// while "Resume anyway" — forking a running conversation — earns it.
     pub fn is_destructive(&self) -> bool {
         !matches!(self, ConfirmAction::SwitchToWindow { .. })
     }
