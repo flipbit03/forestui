@@ -442,9 +442,12 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
         // The name carries the separation instead, where it does some work.
         nodes.push(DetailNode::CardStart { padded: false });
         let title = crate::util::truncate(&session.title, 60);
+        // `◆`, not `★`: the star is missing from JetBrains Mono and friends —
+        // the same tofu problem that retired `⟳` — while the diamond is in
+        // every monospace font the sync control's comment lists.
         if pinned {
             nodes.push(DetailNode::Spans(vec![
-                ("★ ".to_string(), theme::accent()),
+                ("◆ ".to_string(), theme::accent()),
                 (title, theme::primary()),
             ]));
         } else {

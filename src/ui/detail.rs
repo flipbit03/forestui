@@ -885,7 +885,7 @@ mod tests {
         assert!(screen.contains("on feat/x"), "{screen}");
         assert!(screen.contains("1.2M in / 50k out"), "{screen}");
         assert!(screen.contains("~$"), "{screen}");
-        assert!(screen.contains("★ Refactor the detail pane"), "{screen}");
+        assert!(screen.contains("◆ Refactor the detail pane"), "{screen}");
         assert!(screen.contains("Compacting conversation"), "{screen}");
         assert!(screen.contains("Unpin"), "{screen}");
 

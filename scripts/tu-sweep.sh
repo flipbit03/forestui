@@ -228,6 +228,13 @@ text = text.replace(root, "<ROOT>")
 # committed frame, making the baseline depend on who ran the sweep and from
 # where.
 text = text.replace(os.environ["FUI_BIN"], "<forestui>")
+# Fresh Claude sessions run under a pre-minted `--session-id <uuid>`, freshly
+# random per launch — before the 7-hex rule below eats fragments of it.
+text = re.sub(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+    "<uuid>",
+    text,
+)
 text = re.sub(r"\b[0-9a-f]{7}\b", "<sha>", text)
 # Bare or parenthesised: session cards and issue rows print "N days ago"
 # with no parentheses, and an unmasked one rots the committed frames daily.

@@ -405,22 +405,9 @@ impl App {
         self.live_scan_in_flight = true;
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let result = tokio::task::spawn_blocking(|| {
-                let windows = tmux::list_claude_windows();
-                let peeks: std::collections::HashMap<String, Vec<String>> = windows
-                    .iter()
-                    .filter(|window| window.running)
-                    .map(|window| {
-                        (
-                            window.session_id.clone(),
-                            tmux::capture_pane_tail(&window.window_id, detail::PEEK_LINES),
-                        )
-                    })
-                    .collect();
-                (windows, peeks)
-            })
-            .await
-            .unwrap_or_default();
+            let result = tokio::task::spawn_blocking(|| tmux::live_snapshot(detail::PEEK_LINES))
+                .await
+                .unwrap_or_default();
             tx.send(AppEvent::LiveSessions {
                 windows: result.0,
                 peeks: result.1,

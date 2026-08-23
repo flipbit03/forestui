@@ -1,4 +1,4 @@
-claude stub -n claude:alpha:wt-a
+claude stub -n claude:alpha:wt-a --session-id <uuid>
 
 
 
