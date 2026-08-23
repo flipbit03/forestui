@@ -13,6 +13,12 @@ use crate::util;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
+/// The plugin's directory name. Historical — the plugin has grown past title
+/// sync (it reports session liveness too) — but renaming it would orphan
+/// every existing install: status() would read the old directory as gone and
+/// the new one as never installed, and uninstall would refuse the old name.
+/// The user-facing surfaces say "Claude integration"; this identifier is
+/// compatibility, not description.
 pub const PLUGIN_NAME: &str = "forestui-tmux-title";
 
 /// The files that make up the plugin, relative to its directory. Shipped inside

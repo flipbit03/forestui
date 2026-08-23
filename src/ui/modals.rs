@@ -761,7 +761,7 @@ fn settings(frame: &mut Frame, modal: &SettingsModal, area: Rect, hits: &mut Hit
         frame,
         hits,
         vec![control(
-            "Session Name Sync...",
+            "Manage Integration...",
             modal.focus == SettingsModal::FOCUS_INTEGRATION,
             theme::Variant::Normal,
             SettingsModal::FOCUS_INTEGRATION,
@@ -1017,22 +1017,27 @@ fn claude_integration(
         _ => 0,
     };
     let height = CHROME
-        + 13
+        + 14
         + names.len() as u16
         + drifted as u16
         + modal.message.is_some() as u16
         + if claude_plugin::jq_available() { 0 } else { 3 };
     let rect = widgets::centered_rect(WIDTH, height, area);
-    let mut column = dialog(frame, rect, "Session Name Sync", theme::primary());
+    let mut column = dialog(frame, rect, "Claude Integration", theme::primary());
 
     column.text(
         frame,
-        "Names each Claude session after the tmux window it runs in, and keeps".to_string(),
+        "Keeps each session and its tmux tab under one name (rename either and".to_string(),
         theme::secondary(),
     );
     column.text(
         frame,
-        "the two in step: rename either and the other follows.".to_string(),
+        "the other follows), and reports where every session is running, so".to_string(),
+        theme::secondary(),
+    );
+    column.text(
+        frame,
+        "cards show live badges even for sessions started outside forestui.".to_string(),
         theme::secondary(),
     );
     column.gap();
@@ -1318,7 +1323,7 @@ mod tests {
             ),
             (
                 Modal::ClaudeIntegration(ClaudeIntegrationModal::new()),
-                "Session Name Sync",
+                "Claude Integration",
             ),
             (
                 Modal::CustomButtons(CustomButtonsModal::new(vec![button("Opus")])),
@@ -1526,7 +1531,10 @@ mod tests {
             ("feat/", SettingsModal::FOCUS_PREFIX),
             ("│ Forest Dark… │", SettingsModal::FOCUS_THEME),
             ("│ Manage Custom Buttons... │", SettingsModal::FOCUS_MANAGE),
-            ("│ Session Name Sync... │", SettingsModal::FOCUS_INTEGRATION),
+            (
+                "│ Manage Integration... │",
+                SettingsModal::FOCUS_INTEGRATION,
+            ),
             // Short labels are padded out to Textual's `min-width: 10`.
             ("│  Save  │", SettingsModal::FOCUS_SAVE),
             ("│ Cancel │", SettingsModal::FOCUS_CANCEL),

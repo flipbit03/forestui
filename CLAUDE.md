@@ -231,7 +231,7 @@ fast switching between editor, app, and Claude windows.
 The re-exec uses `std::env::current_exe()`, so a `cargo run` build re-launches
 itself rather than whatever `forestui` happens to be on `PATH`.
 
-### Session names follow tmux window names
+### The Claude integration: names follow tabs, liveness follows sessions
 
 A tmux window forestui opened and the Claude session running in it carry the
 same name, in both directions: renaming the tab renames the session, and
