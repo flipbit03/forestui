@@ -539,14 +539,15 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
                 theme::Variant::Destructive,
             )
         });
-        // On its own line, unlike the issue cards' meta: with the spend on it
-        // and six buttons beside it, sharing the button row pushed Pin and
-        // Del off the card's right edge at ordinary widths.
-        text(nodes, meta, theme::muted());
         nodes.push(DetailNode::Controls {
             lead: None,
             controls: row,
         });
+        // The meta closes the card, on a line of its own *below* the buttons:
+        // sharing the button row pushed Pin and Del off the card's right edge
+        // at ordinary widths, and sitting above them crammed it against the
+        // turns. The button block is what separates it from the conversation.
+        text(nodes, meta, theme::muted());
         nodes.push(DetailNode::CardEnd);
     }
 }
