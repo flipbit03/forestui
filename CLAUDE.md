@@ -264,6 +264,16 @@ a window still open for the same conversation — passing it would overwrite the
 real name with the suffixed one. The hook adopts the stored name onto the
 window instead.
 
+- **`@claude_session_id`**, a second window option stamped the same way (from
+  inside the window, ahead of the command), records which Claude session the
+  window holds — the pre-minted `--session-id` for a fresh session, the
+  resumed id otherwise. It is what makes window ↔ session a recorded fact:
+  the live badge, the duplicate-open guard, the pane peek and the delete
+  refusal all resolve against one `list-windows` sweep over these stamps,
+  never against transcript mtimes. Corollary: the shell history line for a
+  fresh session remembers the *resume* form (`claude -r '<id>'`), because
+  `--session-id` refuses to run once the session exists and the up arrow
+  exists precisely for the second run.
 - **`@claude_birth_name`**, a tmux window option stamped when the window is
   created, answers one question: did forestui open this window? A window the
   user made by hand carries none and is left alone, as is a bare `claude` in a
