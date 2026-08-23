@@ -543,53 +543,48 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
             lead: None,
             controls: row,
         });
-        // The meta closes the card, on a line of its own *below* the buttons:
-        // sharing the button row pushed Pin and Del off the card's right edge
-        // at ordinary widths, and sitting above them crammed it against the
-        // turns. The button block is what separates it from the conversation.
+        // Branch and meta close the card, each on a line of its own *below*
+        // the buttons: sharing the button row pushed Pin and Del off the
+        // card's right edge at ordinary widths, and sitting above the buttons
+        // crammed them against the turns. The button block is what separates
+        // them from the conversation.
+        if let Some(branch) = &session.git_branch {
+            nodes.push(DetailNode::Spans(vec![
+                ("on branch ".to_string(), theme::muted()),
+                (crate::util::truncate(branch, 40), theme::accent()),
+            ]));
+        }
         text(nodes, meta, theme::muted());
         nodes.push(DetailNode::CardEnd);
     }
 }
 
-/// The card's recognition line: live badge and branch. Skipped entirely when
-/// there is nothing to say, so old minimal transcripts render as before; the
-/// spend lives on the meta line beside the message count.
+/// The card's live badge, when the session has a window. The branch and the
+/// spend live at the bottom of the card, below the buttons.
 fn session_info_line(
     nodes: &mut Vec<DetailNode>,
-    session: &crate::models::ClaudeSession,
+    _session: &crate::models::ClaudeSession,
     live: Option<&crate::services::tmux::ClaudeWindow>,
 ) {
-    let mut spans: Vec<(String, Style)> = Vec::new();
     match live {
         // ● running: Claude is the pane's foreground process right now.
-        Some(window) if window.running => spans.push((
+        Some(window) if window.running => nodes.push(DetailNode::Spans(vec![(
             format!(
                 "● live in {}",
                 crate::util::truncate(&window.window_name, 25)
             ),
             theme::accent(),
-        )),
+        )])),
         // ○ the window is still open but Claude exited or was suspended —
         // resuming from here forks; the window's shell can `fg` it back.
-        Some(window) => spans.push((
+        Some(window) => nodes.push(DetailNode::Spans(vec![(
             format!(
                 "○ open in {}",
                 crate::util::truncate(&window.window_name, 25)
             ),
             theme::secondary(),
-        )),
+        )])),
         None => {}
-    }
-    if let Some(branch) = &session.git_branch {
-        let lead = if spans.is_empty() { "" } else { " · " };
-        spans.push((
-            format!("{lead}on {}", crate::util::truncate(branch, 30)),
-            theme::muted(),
-        ));
-    }
-    if !spans.is_empty() {
-        nodes.push(DetailNode::Spans(spans));
     }
 }
 

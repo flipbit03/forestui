@@ -879,7 +879,16 @@ mod tests {
         );
         let screen = render(&mut app);
         assert!(screen.contains("● live in claude:demo:wt"), "{screen}");
-        assert!(screen.contains("on feat/x"), "{screen}");
+        assert!(screen.contains("on branch feat/x"), "{screen}");
+        // Branch and meta sit below the button row, not above it.
+        let rows: Vec<&str> = screen.lines().collect();
+        let row_of = |needle: &str| {
+            rows.iter()
+                .position(|row| row.contains(needle))
+                .unwrap_or_else(|| panic!("{needle:?} is not on screen:\n{screen}"))
+        };
+        assert!(row_of("on branch feat/x") > row_of("Resume"), "{screen}");
+        assert!(row_of("12 msgs") > row_of("on branch feat/x"), "{screen}");
         // The spend rides the meta line, beside the count it explains.
         assert!(
             screen.contains("12 msgs • 1.2M in / 50k out • ~$"),
