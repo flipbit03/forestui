@@ -878,7 +878,12 @@ mod tests {
             },
         );
         let screen = render(&mut app);
-        assert!(screen.contains("● live in claude:demo:wt"), "{screen}");
+        // The badge rides the title line, naming the window only because it
+        // differs from the session name.
+        assert!(
+            screen.contains("Refactor the detail pane · ● live in claude:demo:wt"),
+            "{screen}"
+        );
         assert!(screen.contains("on branch feat/x"), "{screen}");
         // Branch and meta sit below the button row, not above it.
         let rows: Vec<&str> = screen.lines().collect();
@@ -915,10 +920,22 @@ mod tests {
         let screen = render(&mut app);
         assert!(screen.contains("○ open in claude:demo:wt"), "{screen}");
 
+        // A window named exactly after the session — the designed steady
+        // state — is not worth repeating: the badge alone says live.
+        app.live_sessions.get_mut("abc").unwrap().running = true;
+        app.live_sessions.get_mut("abc").unwrap().window_name =
+            "Refactor the detail pane".to_string();
+        let screen = render(&mut app);
+        assert!(
+            screen.contains("Refactor the detail pane · ● live"),
+            "{screen}"
+        );
+        assert!(!screen.contains("● live in"), "{screen}");
+
         // No window at all: no badge, Del enabled again.
         app.live_sessions.clear();
         let screen = render(&mut app);
-        assert!(!screen.contains("live in"), "{screen}");
+        assert!(!screen.contains("● live"), "{screen}");
         render_buffer(&mut app, 100, TALL);
         assert_eq!(
             app.drawn_items.get(del).map(|(_, enabled)| *enabled),

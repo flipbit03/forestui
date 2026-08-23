@@ -437,18 +437,38 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
         // session, and with five cards on screen that is ten rows of nothing.
         // The name carries the separation instead, where it does some work.
         nodes.push(DetailNode::CardStart { padded: false });
-        let title = crate::util::truncate(&session.title, 60);
+        // The title line carries everything that identifies the card: the pin
+        // marker, the name, and the live badge — there is horizontal room to
+        // spare, and a badge on its own line repeated the name for nothing.
         // `◆`, not `★`: the star is missing from JetBrains Mono and friends —
         // the same tofu problem that retired `⟳` — while the diamond is in
         // every monospace font the sync control's comment lists.
+        let mut title_line: Vec<(String, Style)> = Vec::new();
         if pinned {
-            nodes.push(DetailNode::Spans(vec![
-                ("◆ ".to_string(), theme::accent()),
-                (title, theme::primary()),
-            ]));
-        } else {
-            text(nodes, title, theme::primary());
+            title_line.push(("◆ ".to_string(), theme::accent()));
         }
+        title_line.push((crate::util::truncate(&session.title, 60), theme::primary()));
+        if let Some(window) = live {
+            // The window name and the session name are one string by design,
+            // so it is only worth printing when the two actually differ — a
+            // `:2`-uniquified window, or an unnamed session whose title is
+            // its first prompt while the window carries forestui's name.
+            let place = if window.window_name == session.title {
+                String::new()
+            } else {
+                format!(" in {}", crate::util::truncate(&window.window_name, 25))
+            };
+            title_line.push((" · ".to_string(), theme::muted()));
+            if window.running {
+                // ● running: Claude is the pane's foreground process.
+                title_line.push((format!("● live{place}"), theme::accent()));
+            } else {
+                // ○ the window is open but Claude exited or was suspended —
+                // resuming from here forks; the window's shell can `fg` it.
+                title_line.push((format!("○ open{place}"), theme::secondary()));
+            }
+        }
+        nodes.push(DetailNode::Spans(title_line));
         // The name is what you scan the list for, so it gets the whitespace —
         // everything below it reads as one block of detail about that name.
         nodes.push(DetailNode::Blank);
@@ -474,7 +494,6 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
                 style,
             );
         }
-        session_info_line(nodes, session, live);
         // A card being re-read says so on its meta line. Without it a
         // conversation that moved on while forestui was in the background just
         // sits at its old turn count and then changes with no explanation.
@@ -556,35 +575,6 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
         }
         text(nodes, meta, theme::muted());
         nodes.push(DetailNode::CardEnd);
-    }
-}
-
-/// The card's live badge, when the session has a window. The branch and the
-/// spend live at the bottom of the card, below the buttons.
-fn session_info_line(
-    nodes: &mut Vec<DetailNode>,
-    _session: &crate::models::ClaudeSession,
-    live: Option<&crate::services::tmux::ClaudeWindow>,
-) {
-    match live {
-        // ● running: Claude is the pane's foreground process right now.
-        Some(window) if window.running => nodes.push(DetailNode::Spans(vec![(
-            format!(
-                "● live in {}",
-                crate::util::truncate(&window.window_name, 25)
-            ),
-            theme::accent(),
-        )])),
-        // ○ the window is still open but Claude exited or was suspended —
-        // resuming from here forks; the window's shell can `fg` it back.
-        Some(window) => nodes.push(DetailNode::Spans(vec![(
-            format!(
-                "○ open in {}",
-                crate::util::truncate(&window.window_name, 25)
-            ),
-            theme::secondary(),
-        )])),
-        None => {}
     }
 }
 
