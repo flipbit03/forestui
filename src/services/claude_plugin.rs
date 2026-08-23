@@ -13,13 +13,7 @@ use crate::util;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-/// The plugin's directory name. Historical — the plugin has grown past title
-/// sync (it reports session liveness too) — but renaming it would orphan
-/// every existing install: status() would read the old directory as gone and
-/// the new one as never installed, and uninstall would refuse the old name.
-/// The user-facing surfaces say "Claude integration"; this identifier is
-/// compatibility, not description.
-pub const PLUGIN_NAME: &str = "forestui-tmux-title";
+pub const PLUGIN_NAME: &str = "forestui-integration";
 
 /// The files that make up the plugin, relative to its directory. Shipped inside
 /// the binary so an install is never a download and never a partial checkout.
@@ -207,7 +201,7 @@ pub fn uninstall_in(dir: &Path) -> Result<(), String> {
     let manifest = std::fs::read_to_string(dir.join(".claude-plugin/plugin.json"))
         .map_err(|_| format!("{} is not a forestui plugin directory", dir.display()))?;
     // Parsed, not substring-matched: this guards a recursive delete, and
-    // "forestui-tmux-title-fork" contains our name without being ours.
+    // "forestui-integration-fork" contains our name without being ours.
     let named_ours = serde_json::from_str::<serde_json::Value>(&manifest)
         .ok()
         .and_then(|v| v.get("name")?.as_str().map(str::to_string))
@@ -372,15 +366,15 @@ mod tests {
     }
 
     /// A recursive delete guarded by a substring match would take
-    /// "forestui-tmux-title-fork" with it.
+    /// "forestui-integration-fork" with it.
     #[test]
     fn uninstall_refuses_a_plugin_whose_name_merely_contains_ours() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("forestui-tmux-title-fork");
+        let dir = tmp.path().join("forestui-integration-fork");
         std::fs::create_dir_all(dir.join(".claude-plugin")).unwrap();
         std::fs::write(
             dir.join(".claude-plugin/plugin.json"),
-            "{\"name\":\"forestui-tmux-title-fork\"}",
+            "{\"name\":\"forestui-integration-fork\"}",
         )
         .unwrap();
 
