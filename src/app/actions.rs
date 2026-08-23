@@ -614,14 +614,17 @@ impl App {
             return;
         };
         let id = session.id.clone();
-        // The dialog opens on the name that would seed a resumed window: the
-        // chosen title. For a live session the window's current name is even
-        // truer — the two are one string by design.
+        // The dialog opens on the name the card shows, cursor at the end —
+        // the way tmux's own rename prompt continues the existing name. For a
+        // live session the window's current name is the truest form (the two
+        // are one string by design); a stopped one falls back through the
+        // chosen title to whatever the card is displaying, so the field is
+        // never empty on a session that visibly has a name.
         let live = self.live_sessions.get(&id);
         let current = live
             .map(|window| window.window_name.clone())
             .or_else(|| session.custom_title.clone())
-            .unwrap_or_default();
+            .unwrap_or_else(|| session.title.clone());
         let live_window = live.map(|window| (window.window_id.clone(), window.window_name.clone()));
         self.modals
             .push(Modal::RenameSession(crate::modal::RenameSessionModal::new(

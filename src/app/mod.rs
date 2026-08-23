@@ -2384,6 +2384,58 @@ mod tests {
         assert_eq!(app.state.pinned_for(&path), vec!["new", "old"]);
     }
 
+    /// The rename dialog continues the name that already exists, the way
+    /// tmux's own rename prompt does: the window's name for a live session,
+    /// the card's shown title otherwise — never an empty field on a session
+    /// that visibly has a name.
+    #[tokio::test]
+    async fn the_rename_dialog_seeds_with_the_current_name() {
+        let (_dir, mut app) = app_with_fixture();
+        let path = app.state.selected_path().expect("a selection");
+        app.meta.path = path.clone();
+
+        // Unnamed session: the shown title is its first prompt.
+        app.sessions = Some(vec![a_session("one")]);
+        app.run_action(Action::RenameSession(0));
+        let Some(crate::modal::Modal::RenameSession(modal)) = app.modals.last() else {
+            panic!("no rename dialog");
+        };
+        assert_eq!(modal.name.value(), "session one");
+        app.modals.clear();
+
+        // A chosen name outranks the fallback title.
+        app.sessions.as_mut().unwrap()[0].custom_title = Some("chosen name".into());
+        app.run_action(Action::RenameSession(0));
+        let Some(crate::modal::Modal::RenameSession(modal)) = app.modals.last() else {
+            panic!("no rename dialog");
+        };
+        assert_eq!(modal.name.value(), "chosen name");
+        app.modals.clear();
+
+        // Live: the window's name is the truest form of the current name.
+        app.live_sessions
+            .insert("one".into(), a_live_window("one", true));
+        app.run_action(Action::RenameSession(0));
+        let Some(crate::modal::Modal::RenameSession(modal)) = app.modals.last() else {
+            panic!("no rename dialog");
+        };
+        assert_eq!(modal.name.value(), "claude:demo:wt");
+        app.modals.clear();
+
+        // An over-long fallback title is clipped to what typing could produce.
+        app.live_sessions.clear();
+        app.sessions.as_mut().unwrap()[0].custom_title = None;
+        app.sessions.as_mut().unwrap()[0].title = "x".repeat(100);
+        app.run_action(Action::RenameSession(0));
+        let Some(crate::modal::Modal::RenameSession(modal)) = app.modals.last() else {
+            panic!("no rename dialog");
+        };
+        assert_eq!(
+            modal.name.value().chars().count(),
+            crate::modal::MAX_SESSION_NAME_LENGTH
+        );
+    }
+
     /// The live scan's fold replaces the map and repaints only on change.
     #[tokio::test]
     async fn the_live_scan_folds_quietly_when_nothing_changed() {

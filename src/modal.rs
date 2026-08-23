@@ -1403,6 +1403,11 @@ impl RenameSessionModal {
         current_name: String,
         live_window: Option<(String, String)>,
     ) -> Self {
+        // The seed can be an unnamed session's first-prompt title, which runs
+        // to 100 characters; the field's cap only gates *typed* input, so an
+        // over-long seed is clipped here or Save would accept what typing
+        // could never produce.
+        let current_name: String = current_name.chars().take(MAX_SESSION_NAME_LENGTH).collect();
         Self {
             path,
             session_id,
