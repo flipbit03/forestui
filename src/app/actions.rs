@@ -172,6 +172,76 @@ impl App {
             | ModalResult::CustomButtonSaved(_)
             | ModalResult::ThemeChosen(_) => {}
             ModalResult::Confirmed(action) => self.apply_confirmed(action),
+            ModalResult::SessionRenamed {
+                path,
+                session_id,
+                name,
+                live_window_id,
+            } => self.apply_session_rename(path, session_id, name, live_window_id),
+        }
+    }
+
+    /// Run a committed session rename, live or stopped.
+    fn apply_session_rename(
+        &mut self,
+        path: String,
+        session_id: String,
+        name: String,
+        live_window_id: Option<String>,
+    ) {
+        match live_window_id {
+            // Live: rename the tmux window and let the sync plugin adopt the
+            // name into the session on its next hook — the same path a manual
+            // tab rename takes, and the only safe one while Claude holds the
+            // transcript open.
+            Some(window_id) => {
+                let tx = self.tx.clone();
+                let shown = name.clone();
+                tokio::spawn(async move {
+                    let renamed = tokio::task::spawn_blocking(move || {
+                        tmux::rename_window_by_id(&window_id, &name)
+                    })
+                    .await
+                    .unwrap_or(false);
+                    if renamed {
+                        tx.info(format!(
+                            "Window renamed to '{shown}' — the session follows on its next prompt"
+                        ));
+                    } else {
+                        tx.error("Could not rename the window");
+                    }
+                });
+            }
+            // Stopped: append the same record `/rename` writes, then re-read
+            // the transcript so the card shows the new name in the same fold
+            // that announces it.
+            None => {
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let (read_path, read_id, rename_name) =
+                        (path.clone(), session_id.clone(), name.clone());
+                    let result = tokio::task::spawn_blocking(move || {
+                        claude_session::rename_session(&read_path, &read_id, &rename_name)
+                    })
+                    .await
+                    .unwrap_or_else(|_| Err("the rename task panicked".to_string()));
+                    let session = if result.is_ok() {
+                        let (p, id) = (path.clone(), session_id.clone());
+                        tokio::task::spawn_blocking(move || claude_session::refresh_one(&p, &id))
+                            .await
+                            .ok()
+                            .flatten()
+                    } else {
+                        None
+                    };
+                    tx.send(AppEvent::SessionRenamed {
+                        path,
+                        session_id,
+                        session: Box::new(session),
+                        result,
+                    });
+                });
+            }
         }
     }
 
@@ -188,6 +258,40 @@ impl App {
             }
             ConfirmAction::ForceDeleteWorktree(worktree_id) => {
                 self.spawn_worktree_removal(worktree_id, true);
+            }
+            ConfirmAction::DeleteClaudeSession {
+                path,
+                session_id,
+                title,
+            } => {
+                let tx = self.tx.clone();
+                let (task_path, task_id) = (path.clone(), session_id.clone());
+                tokio::spawn(async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        claude_session::delete_session(&task_path, &task_id)
+                    })
+                    .await
+                    .unwrap_or_else(|_| Err("the delete task panicked".to_string()));
+                    tx.send(AppEvent::SessionDeleted {
+                        path,
+                        session_id,
+                        title,
+                        result,
+                    });
+                });
+            }
+            ConfirmAction::SwitchToWindow {
+                window_id,
+                window_name,
+            } => {
+                if tmux::select_window(&window_id) {
+                    self.notify(format!("Switched to {window_name}"), Severity::Information);
+                } else {
+                    // The window closed between the scan and the click; the
+                    // next sweep drops its badge.
+                    self.notify(format!("Window {window_name} is gone"), Severity::Warning);
+                    self.scan_live_sessions();
+                }
             }
         }
     }
@@ -342,6 +446,42 @@ impl App {
             .map(|s| s.id.clone())
     }
 
+    fn session_at(&self, index: usize) -> Option<&crate::models::ClaudeSession> {
+        self.sessions.as_ref().and_then(|s| s.get(index))
+    }
+
+    /// The duplicate-open guard. A resume aimed at a session that already has
+    /// a window would start a second Claude on the same transcript — two
+    /// conversations diverging from one history, exactly the mess the
+    /// `@claude_session_id` stamp exists to prevent. Offer the window instead.
+    /// Returns true when the guard took the action over.
+    fn guard_open_session(&mut self, index: usize) -> bool {
+        let Some(session) = self.session_at(index) else {
+            return false;
+        };
+        let Some(window) = self.live_sessions.get(&session.id) else {
+            return false;
+        };
+        let (window_id, window_name) = (window.window_id.clone(), window.window_name.clone());
+        let message = if window.running {
+            format!("This session is running in window '{window_name}'.\nSwitch to it?")
+        } else {
+            format!(
+                "Claude exited, but its window '{window_name}' is still open —\n\
+                 the up arrow there restarts it. Switch to it?"
+            )
+        };
+        self.modals.push(Modal::Confirm(ConfirmModal::new(
+            "Session Already Open",
+            message,
+            ConfirmAction::SwitchToWindow {
+                window_id,
+                window_name,
+            },
+        )));
+        true
+    }
+
     /// The name the user gave this session, if any. Resuming a named session
     /// names its window after the session, so the tab says which conversation
     /// it holds rather than repeating the worktree already selected on screen.
@@ -394,25 +534,33 @@ impl App {
                 }
             }
             Action::ResumeSession(index) => {
-                if let Some(id) = self.session_id(index) {
+                if !self.guard_open_session(index)
+                    && let Some(id) = self.session_id(index)
+                {
                     let seed = self.session_window_name(index);
                     self.start_claude(&path, Some(&id), false, None, seed);
                 }
             }
             Action::ResumeYolo(index) => {
-                if let Some(id) = self.session_id(index) {
+                if !self.guard_open_session(index)
+                    && let Some(id) = self.session_id(index)
+                {
                     let seed = self.session_window_name(index);
                     self.start_claude(&path, Some(&id), true, None, seed);
                 }
             }
             Action::ResumeCustom { button, session } => {
-                if let (Some(id), Some(button)) =
-                    (self.session_id(session), self.custom_button(button))
+                if !self.guard_open_session(session)
+                    && let (Some(id), Some(button)) =
+                        (self.session_id(session), self.custom_button(button))
                 {
                     let seed = self.session_window_name(session);
                     self.start_claude(&path, Some(&id), false, Some(button), seed);
                 }
             }
+            Action::RenameSession(index) => self.action_rename_session(index, &path),
+            Action::TogglePinSession(index) => self.action_toggle_pin(index, &path),
+            Action::DeleteSession(index) => self.action_delete_session(index, &path),
             Action::RefreshIssues => {
                 // The cache is keyed by the *repository* path — `path` here is
                 // the selected path, which for a worktree row would be the
@@ -443,6 +591,68 @@ impl App {
             Action::RemoveRepository | Action::Delete => self.action_delete(),
             Action::Archive | Action::Unarchive => self.action_toggle_archive(),
         }
+    }
+
+    fn action_rename_session(&mut self, index: usize, path: &str) {
+        let Some(session) = self.session_at(index) else {
+            return;
+        };
+        let id = session.id.clone();
+        // The dialog opens on the name that would seed a resumed window: the
+        // chosen title. For a live session the window's current name is even
+        // truer — the two are one string by design.
+        let live = self.live_sessions.get(&id);
+        let current = live
+            .map(|window| window.window_name.clone())
+            .or_else(|| session.custom_title.clone())
+            .unwrap_or_default();
+        let live_window = live.map(|window| (window.window_id.clone(), window.window_name.clone()));
+        self.modals
+            .push(Modal::RenameSession(crate::modal::RenameSessionModal::new(
+                path.to_string(),
+                id,
+                current,
+                live_window,
+            )));
+    }
+
+    fn action_toggle_pin(&mut self, index: usize, path: &str) {
+        let Some(id) = self.session_id(index) else {
+            return;
+        };
+        self.state.toggle_pin(path, &id);
+        self.sort_visible_sessions();
+        self.report_save_error();
+    }
+
+    fn action_delete_session(&mut self, index: usize, path: &str) {
+        let Some(session) = self.session_at(index) else {
+            return;
+        };
+        // The control is drawn disabled for a live session, but the drawn
+        // snapshot can be a sweep older than the map — refuse here too.
+        if let Some(window) = self.live_sessions.get(&session.id) {
+            self.notify(
+                format!(
+                    "Session is open in window '{}' — close it first",
+                    window.window_name
+                ),
+                Severity::Warning,
+            );
+            return;
+        }
+        let title = crate::util::truncate(&session.title, 40);
+        let count = session.message_count;
+        let msgs = if count == 1 { "message" } else { "messages" };
+        self.modals.push(Modal::Confirm(ConfirmModal::new(
+            "Delete Session",
+            format!("Permanently delete '{title}' ({count} {msgs})?\nThere is no undo."),
+            ConfirmAction::DeleteClaudeSession {
+                path: path.to_string(),
+                session_id: session.id.clone(),
+                title: session.title.clone(),
+            },
+        )));
     }
 
     fn sync(&mut self, path: String) {

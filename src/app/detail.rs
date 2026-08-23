@@ -30,6 +30,9 @@ pub enum Action {
     ResumeSession(usize),
     ResumeYolo(usize),
     ResumeCustom { button: usize, session: usize },
+    RenameSession(usize),
+    TogglePinSession(usize),
+    DeleteSession(usize),
     RefreshIssues,
     CreateFromIssue(usize),
     RemoveRepository,
@@ -94,6 +97,9 @@ pub enum DetailNode {
         text: String,
         style: Style,
     },
+    /// One line built from differently styled pieces — the session info line
+    /// needs its live badge coloured apart from the rest.
+    Spans(Vec<(String, Style)>),
     Blank,
     /// The horizontal rule between major sections, with its margin row above.
     Rule,
@@ -410,6 +416,10 @@ fn custom_controls<'a>(
 /// Shared by the issue header and the per-session refresh indicator.
 const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
 
+/// Rows of a live pane shown inside the card. Enough to see what Claude is
+/// doing without the card swallowing the pane.
+pub const PEEK_LINES: usize = 5;
+
 fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
     nodes.push(DetailNode::Section("RECENT SESSIONS"));
     let Some(list) = app.sessions.as_deref() else {
@@ -420,19 +430,26 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
         text(nodes, "No sessions found", theme::muted());
         return;
     }
+    let path = app.state.selected_path().unwrap_or_default();
     // Every card is spaced away from what precedes it — the header included,
     // which is Textual's `.session-item { margin: 0 2 1 0 }` seen from above.
     for (index, session) in list.iter().enumerate() {
+        let live = app.live_sessions.get(&session.id);
+        let pinned = app.state.is_pinned(&path, &session.id);
         nodes.push(DetailNode::Blank);
         // Unpadded: the card's own top and bottom blanks cost two rows per
         // session, and with five cards on screen that is ten rows of nothing.
         // The name carries the separation instead, where it does some work.
         nodes.push(DetailNode::CardStart { padded: false });
-        text(
-            nodes,
-            crate::util::truncate(&session.title, 60),
-            theme::primary(),
-        );
+        let title = crate::util::truncate(&session.title, 60);
+        if pinned {
+            nodes.push(DetailNode::Spans(vec![
+                ("★ ".to_string(), theme::accent()),
+                (title, theme::primary()),
+            ]));
+        } else {
+            text(nodes, title, theme::primary());
+        }
         // The name is what you scan the list for, so it gets the whitespace —
         // everything below it reads as one block of detail about that name.
         nodes.push(DetailNode::Blank);
@@ -457,6 +474,20 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
                 ),
                 style,
             );
+        }
+        session_info_line(nodes, session, live);
+        // The live peek: what the pane is showing right now, for the session
+        // that is actually running. Reading it here beats switching windows to
+        // check whether Claude is waiting on something.
+        if live.is_some_and(|window| window.running)
+            && let Some(peek) = app.session_peeks.get(&session.id)
+        {
+            for line in peek.iter().take(PEEK_LINES) {
+                nodes.push(DetailNode::Spans(vec![
+                    ("│ ".to_string(), theme::border()),
+                    (crate::util::truncate(line, 70), theme::muted()),
+                ]));
+            }
         }
         // A card being re-read says so on its meta line. Without it a
         // conversation that moved on while forestui was in the background just
@@ -487,6 +518,28 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
             button,
             session: index,
         }));
+        row.push(ControlSpec::new(
+            Action::RenameSession(index),
+            "Rename",
+            theme::Variant::Normal,
+        ));
+        row.push(ControlSpec::new(
+            Action::TogglePinSession(index),
+            if pinned { "Unpin" } else { "Pin" },
+            theme::Variant::Normal,
+        ));
+        // Deleting a session that is open in a window would pull the
+        // transcript out from under a running Claude; the control keeps its
+        // slot so the row never shifts, but it cannot fire.
+        row.push(if live.is_some() {
+            ControlSpec::disabled(Action::DeleteSession(index), "Del")
+        } else {
+            ControlSpec::new(
+                Action::DeleteSession(index),
+                "Del",
+                theme::Variant::Destructive,
+            )
+        });
         // The meta rides the button row rather than taking one of its own, as
         // the issue cards already do. It costs no height and fills the empty
         // stretch the buttons leave to their left.
@@ -495,6 +548,61 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
             controls: row,
         });
         nodes.push(DetailNode::CardEnd);
+    }
+}
+
+/// The card's recognition line: live badge, branch, tokens, estimated cost.
+/// Skipped entirely when there is nothing to say, so old minimal transcripts
+/// render exactly as before.
+fn session_info_line(
+    nodes: &mut Vec<DetailNode>,
+    session: &crate::models::ClaudeSession,
+    live: Option<&crate::services::tmux::ClaudeWindow>,
+) {
+    use crate::services::claude_session as sessions;
+
+    let mut spans: Vec<(String, Style)> = Vec::new();
+    match live {
+        // ● running: Claude is the pane's foreground process right now.
+        Some(window) if window.running => spans.push((
+            format!(
+                "● live in {}",
+                crate::util::truncate(&window.window_name, 25)
+            ),
+            theme::accent(),
+        )),
+        // ○ the window is still open but Claude exited or was suspended —
+        // resuming from here forks; the window's shell can `fg` it back.
+        Some(window) => spans.push((
+            format!(
+                "○ open in {}",
+                crate::util::truncate(&window.window_name, 25)
+            ),
+            theme::secondary(),
+        )),
+        None => {}
+    }
+
+    let mut details: Vec<String> = Vec::new();
+    if let Some(branch) = &session.git_branch {
+        details.push(format!("on {}", crate::util::truncate(branch, 30)));
+    }
+    if !session.tokens.is_zero() {
+        details.push(format!(
+            "{} in / {} out",
+            sessions::fmt_tokens(session.tokens.total_in()),
+            sessions::fmt_tokens(session.tokens.output),
+        ));
+        if let Some(cost) = sessions::cost_estimate(session.model.as_deref(), session.tokens) {
+            details.push(sessions::fmt_cost(cost));
+        }
+    }
+    if !details.is_empty() {
+        let lead = if spans.is_empty() { "" } else { " · " };
+        spans.push((format!("{lead}{}", details.join(" · ")), theme::muted()));
+    }
+    if !spans.is_empty() {
+        nodes.push(DetailNode::Spans(spans));
     }
 }
 

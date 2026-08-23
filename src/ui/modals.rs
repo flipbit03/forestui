@@ -9,8 +9,8 @@
 use crate::app::{App, Direction, HitTarget, ModalClick};
 use crate::modal::{
     AddRepositoryModal, AddWorktreeModal, ClaudeIntegrationModal, ConfirmModal,
-    CreateFromIssueModal, CustomButtonsModal, EDITORS, EditButtonModal, Modal, SPINNER,
-    SettingsModal, ThemePickerModal,
+    CreateFromIssueModal, CustomButtonsModal, EDITORS, EditButtonModal, Modal, RenameSessionModal,
+    SPINNER, SettingsModal, ThemePickerModal,
 };
 use crate::theme;
 use crate::ui::widgets::{self, BUTTON_HEIGHT, TextInput};
@@ -80,6 +80,7 @@ pub fn render_modal(frame: &mut Frame, modal: &Modal, area: Rect) -> Hits {
         Modal::ThemePicker(m) => theme_picker(frame, m, area, &mut hits),
         Modal::ClaudeIntegration(m) => claude_integration(frame, m, area, &mut hits),
         Modal::Confirm(m) => confirm(frame, m, area, &mut hits),
+        Modal::RenameSession(m) => rename_session(frame, m, area, &mut hits),
     }
     hits
 }
@@ -1097,6 +1098,59 @@ fn claude_integration(
 
 // ------------------------------------------------------------------ Confirm
 
+// ----------------------------------------------------------- Rename session
+
+fn rename_session(frame: &mut Frame, modal: &RenameSessionModal, area: Rect, hits: &mut Hits) {
+    // Label, input, mechanism note, error, gap, buttons.
+    let rect = widgets::centered_rect(WIDTH, CHROME + 10, area);
+    let mut column = dialog(frame, rect, "Rename Session", theme::title());
+
+    column.line(frame, widgets::section("Session Name"));
+    column.input(
+        frame,
+        hits,
+        &modal.name,
+        modal.focus,
+        RenameSessionModal::FOCUS_NAME,
+    );
+
+    // Say which mechanism will run, so a tab renaming itself (live) or the
+    // rename waiting for the next prompt is never a surprise.
+    let note = match &modal.live_window {
+        Some((_, window_name)) => format!(
+            "Live session: renames tmux window '{}' too",
+            util::truncate(window_name, 30)
+        ),
+        None => "Stopped session: the name is written to its transcript".to_string(),
+    };
+    column.text(frame, note, theme::secondary());
+    if modal.error.is_empty() {
+        column.gap();
+    } else {
+        column.text(frame, modal.error.clone(), theme::destructive());
+    }
+    column.gap();
+    column.controls(
+        frame,
+        hits,
+        vec![
+            control(
+                "Save",
+                modal.focus == RenameSessionModal::FOCUS_SAVE,
+                theme::Variant::Primary,
+                RenameSessionModal::FOCUS_SAVE,
+            ),
+            control(
+                "Cancel",
+                modal.focus == RenameSessionModal::FOCUS_CANCEL,
+                theme::Variant::Normal,
+                RenameSessionModal::FOCUS_CANCEL,
+            ),
+        ],
+        true,
+    );
+}
+
 fn confirm(frame: &mut Frame, modal: &ConfirmModal, area: Rect, hits: &mut Hits) {
     let message: Vec<&str> = modal.message.split('\n').collect();
     // The message, gap, buttons, gap, key hints.
@@ -1117,7 +1171,13 @@ fn confirm(frame: &mut Frame, modal: &ConfirmModal, area: Rect, hits: &mut Hits)
             control(
                 modal.action.confirm_label(),
                 modal.confirm_focused,
-                theme::Variant::Destructive,
+                // "Switch" painted destructive-red would warn against the
+                // safe choice — the colour follows what confirming does.
+                if modal.action.is_destructive() {
+                    theme::Variant::Destructive
+                } else {
+                    theme::Variant::Primary
+                },
                 1,
             ),
         ],

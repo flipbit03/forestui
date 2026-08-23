@@ -233,6 +233,35 @@ pub struct ClaudeSession {
     pub recent_turns: Vec<SessionTurn>,
     pub last_timestamp: DateTime<Utc>,
     pub message_count: usize,
+    /// The branch the conversation last saw (`gitBranch` on its records).
+    /// Recognition data: a conversation is remembered by where it happened.
+    pub git_branch: Option<String>,
+    /// Token totals summed over every assistant record's `usage`. Kept as the
+    /// API's own four categories because they are priced differently; the
+    /// display and the cost estimate both derive from these.
+    pub tokens: TokenUsage,
+    /// The model of the last assistant record, for the cost estimate.
+    pub model: Option<String>,
+}
+
+/// Token counts as the API reports them, summed across a transcript.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TokenUsage {
+    pub input: u64,
+    pub cache_write: u64,
+    pub cache_read: u64,
+    pub output: u64,
+}
+
+impl TokenUsage {
+    /// Everything the model read, whatever the price tier.
+    pub fn total_in(&self) -> u64 {
+        self.input + self.cache_write + self.cache_read
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.total_in() == 0 && self.output == 0
+    }
 }
 
 impl ClaudeSession {
@@ -369,6 +398,12 @@ impl GitHubIssue {
 pub struct AppStateData {
     #[serde(default)]
     pub repositories: Vec<Repository>,
+    /// Pinned Claude sessions, keyed by the path whose pane shows them (a
+    /// worktree's path or a repository's source path) — session ids in pin
+    /// order, which is the order they are shown in. Additive and defaulted,
+    /// like `theme_name`: files from either build load in both.
+    #[serde(default)]
+    pub pinned_sessions: std::collections::HashMap<String, Vec<String>>,
 }
 
 /// Marker so `serde` keeps `default_true` referenced even if unused by fields.

@@ -160,6 +160,12 @@ fn render_node(pane: &mut Pane, app: &App, node: DetailNode) {
     match node {
         DetailNode::Section(title) => pane.section(title),
         DetailNode::Text { text, style } => pane.text(text, style),
+        DetailNode::Spans(spans) => pane.row(
+            spans
+                .into_iter()
+                .map(|(text, style)| Span::styled(text, style))
+                .collect(),
+        ),
         DetailNode::Blank => pane.blank(),
         DetailNode::Rule => pane.rule(),
         DetailNode::PathBox { path, style } => path_box(pane, path, style),
@@ -657,6 +663,9 @@ mod tests {
             recent_turns: Vec::new(),
             last_timestamp: Utc::now(),
             message_count: 12,
+            git_branch: None,
+            tokens: Default::default(),
+            model: None,
         }
     }
 
@@ -836,6 +845,79 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The session card's new furniture: the live badge and peek for an open
+    /// session, the recognition line's branch/token/cost details, the pin
+    /// star, and a Del that cannot fire while a window holds the transcript.
+    #[tokio::test]
+    async fn session_cards_show_liveness_pins_and_spend() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = test_app(&dir);
+        with_worktree(&mut app);
+        let path = app.state.selected_path().expect("a selection");
+
+        let mut session = a_session();
+        session.git_branch = Some("feat/x".into());
+        session.model = Some("claude-opus-5".into());
+        session.tokens = crate::models::TokenUsage {
+            input: 1_000,
+            cache_write: 1_199_000,
+            cache_read: 0,
+            output: 50_000,
+        };
+        app.sessions = Some(vec![session]);
+        app.state.toggle_pin(&path, "abc");
+        app.live_sessions.insert(
+            "abc".into(),
+            crate::services::tmux::ClaudeWindow {
+                window_id: "@9".into(),
+                window_name: "claude:demo:wt".into(),
+                running: true,
+                session_id: "abc".into(),
+            },
+        );
+        app.session_peeks
+            .insert("abc".into(), vec!["✳ Compacting conversation…".into()]);
+
+        let screen = render(&mut app);
+        assert!(screen.contains("● live in claude:demo:wt"), "{screen}");
+        assert!(screen.contains("on feat/x"), "{screen}");
+        assert!(screen.contains("1.2M in / 50k out"), "{screen}");
+        assert!(screen.contains("~$"), "{screen}");
+        assert!(screen.contains("★ Refactor the detail pane"), "{screen}");
+        assert!(screen.contains("Compacting conversation"), "{screen}");
+        assert!(screen.contains("Unpin"), "{screen}");
+
+        // Del keeps its slot but is disabled while the window is open.
+        let del = app
+            .detail_items()
+            .iter()
+            .position(|item| *item == DetailItem::Action(Action::DeleteSession(0)))
+            .expect("Del renders");
+        render_buffer(&mut app, 100, TALL);
+        assert_eq!(
+            app.drawn_items.get(del).map(|(_, enabled)| *enabled),
+            Some(false),
+            "Del must not fire on a live session"
+        );
+
+        // Claude exited but the window is open: the badge changes register
+        // and the peek disappears with the process it was peeking at.
+        app.live_sessions.get_mut("abc").unwrap().running = false;
+        let screen = render(&mut app);
+        assert!(screen.contains("○ open in claude:demo:wt"), "{screen}");
+        assert!(!screen.contains("Compacting conversation"), "{screen}");
+
+        // No window at all: no badge, Del enabled again.
+        app.live_sessions.clear();
+        let screen = render(&mut app);
+        assert!(!screen.contains("live in"), "{screen}");
+        render_buffer(&mut app, 100, TALL);
+        assert_eq!(
+            app.drawn_items.get(del).map(|(_, enabled)| *enabled),
+            Some(true)
+        );
     }
 
     #[tokio::test]

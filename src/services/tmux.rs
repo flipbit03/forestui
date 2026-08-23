@@ -119,6 +119,21 @@ pub fn rename_window(name: &str) -> bool {
     tmux(&["rename-window", "-t", &window, name]).is_some()
 }
 
+/// Rename an arbitrary window by id.
+///
+/// This is how a *live* session is renamed: the title-sync plugin sees the tab
+/// move and adopts the new name into the session on its next hook, exactly as
+/// if the user had renamed the tab by hand. Nothing touches the transcript —
+/// Claude holds it open, and the plugin path is the one that already works.
+pub fn rename_window_by_id(window_id: &str, name: &str) -> bool {
+    tmux(&["rename-window", "-t", window_id, name]).is_some()
+}
+
+/// Jump to a window, for the duplicate-open guard's "switch there" choice.
+pub fn select_window(window_id: &str) -> bool {
+    tmux(&["select-window", "-t", window_id]).is_some()
+}
+
 /// What `ensure_focus_events` found, and therefore what exit has to undo.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FocusEvents {
@@ -253,6 +268,101 @@ pub fn stamp_birth_name(window_id: &str, window_name: &str) -> bool {
     .is_some()
 }
 
+/// Record which Claude session a window holds.
+///
+/// Written for every Claude window forestui opens — fresh sessions carry the
+/// pre-minted `--session-id`, resumed ones the id being resumed — so window ↔
+/// session becomes a recorded fact instead of a guess from mtimes. Everything
+/// the live badge, the duplicate-open guard and the pane peek know starts here.
+pub fn stamp_session_id(window_id: &str, session_id: &str) -> bool {
+    tmux(&[
+        "set-option",
+        "-w",
+        "-t",
+        window_id,
+        "@claude_session_id",
+        session_id,
+    ])
+    .is_some()
+}
+
+/// A window forestui opened for Claude, as the live scan sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaudeWindow {
+    pub window_id: String,
+    pub window_name: String,
+    /// Whether the pane's foreground process is still Claude (or anything that
+    /// is not a shell). `false` means the window is open but Claude exited or
+    /// was suspended — the shell prompt is what is running.
+    pub running: bool,
+    pub session_id: String,
+}
+
+/// Shells a Claude window can drop back to. A pane whose foreground command is
+/// one of these holds no running Claude — see [`ClaudeWindow::running`].
+const SHELLS: [&str; 13] = [
+    "zsh", "bash", "sh", "dash", "ash", "ksh", "ksh93", "mksh", "loksh", "yash", "fish", "nu",
+    "nushell",
+];
+
+/// Every window on our session that carries a `@claude_session_id` stamp.
+///
+/// One tmux round trip for the whole session, not one per window: this runs on
+/// the same cadence as the session refresh and has to stay that cheap.
+pub fn list_claude_windows() -> Vec<ClaudeWindow> {
+    let Some(session) = current_session() else {
+        return Vec::new();
+    };
+    let Some(out) = tmux(&[
+        "list-windows",
+        "-t",
+        &session,
+        "-F",
+        "#{window_id}\t#{pane_current_command}\t#{@claude_session_id}\t#{window_name}",
+    ]) else {
+        return Vec::new();
+    };
+    parse_claude_windows(&out)
+}
+
+/// Pure form of [`list_claude_windows`], for testing.
+fn parse_claude_windows(out: &str) -> Vec<ClaudeWindow> {
+    let mut windows = Vec::new();
+    for line in out.lines() {
+        let mut parts = line.splitn(4, '\t');
+        let (Some(id), Some(command), Some(session_id), Some(name)) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        // Windows without the stamp are not Claude windows forestui opened.
+        if session_id.is_empty() {
+            continue;
+        }
+        windows.push(ClaudeWindow {
+            window_id: id.to_string(),
+            window_name: name.to_string(),
+            running: !SHELLS.contains(&command),
+            session_id: session_id.to_string(),
+        });
+    }
+    windows
+}
+
+/// The last `lines` non-blank rows of a window's pane, for the live peek.
+pub fn capture_pane_tail(window_id: &str, lines: usize) -> Vec<String> {
+    let Some(out) = tmux(&["capture-pane", "-p", "-t", window_id]) else {
+        return Vec::new();
+    };
+    let kept: Vec<String> = out
+        .lines()
+        .map(|line| line.trim_end().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+    let start = kept.len().saturating_sub(lines);
+    kept[start..].to_vec()
+}
+
 /// Append `:2`, `:3`, … until the window name is unused.
 pub fn find_unique_window_name(base_name: &str) -> String {
     unique_name_among(base_name, &window_names())
@@ -373,6 +483,7 @@ pub fn claude_command_line(
     custom_command: Option<&str>,
     custom_prefix: Option<&str>,
     window_name: &str,
+    new_session_id: Option<&str>,
 ) -> String {
     let mut cmd = custom_command.unwrap_or("claude").to_string();
     // The YOLO flag belongs to the built-in YOLO button only, never to a custom one.
@@ -391,6 +502,11 @@ pub fn claude_command_line(
         // hook can do: a title set before the session's UI is live is stored
         // but never drawn.
         cmd.push_str(&format!(" -n {}", sh_quote(window_name)));
+        // The pre-minted id, so the window knows which session it holds from
+        // birth instead of forestui guessing later from transcript mtimes.
+        if let Some(id) = new_session_id {
+            cmd.push_str(&format!(" --session-id {id}"));
+        }
     }
     single_line(&cmd)
 }
@@ -410,10 +526,16 @@ pub fn claude_command_line(
 /// always was: the shell starts Claude on its own, so a stamp forestui sends
 /// after `new-window` returns is a separate tmux call that a fast-starting
 /// Claude can beat to its first hook.
-fn startup_tail(window_name: &str, line: &str) -> String {
+fn startup_tail(window_name: &str, session_id: &str, line: &str) -> String {
+    // The session-id stamp rides along for the same reason as the birth name:
+    // written from inside the window, ahead of the command, it cannot lose a
+    // race to anything reading window options once Claude is up.
     format!(
-        "tmux set-option -w @claude_birth_name {} >/dev/null 2>&1\nset -m\n{line}\n",
-        sh_quote(window_name)
+        "tmux set-option -w @claude_birth_name {} >/dev/null 2>&1\n\
+         tmux set-option -w @claude_session_id {} >/dev/null 2>&1\n\
+         set -m\n{line}\n",
+        sh_quote(window_name),
+        sh_quote(session_id)
     )
 }
 
@@ -459,6 +581,7 @@ fn startup_for(
     dir: &Path,
     home: &ShellHome,
     window_name: &str,
+    session_id: &str,
     line: &str,
 ) -> Option<Startup> {
     let base = Path::new(shell).file_name()?.to_str()?;
@@ -471,7 +594,10 @@ fn startup_for(
         "bash" => format!("history -s {}\n", sh_quote(line)),
         _ => String::new(),
     };
-    let tail = format!("{remembered}{}", startup_tail(window_name, line));
+    let tail = format!(
+        "{remembered}{}",
+        startup_tail(window_name, session_id, line)
+    );
     let tail = tail.as_str();
     let sweep = format!("rm -rf {}\n", sh_quote(dir_str));
     let source = |path: String| {
@@ -532,7 +658,7 @@ fn startup_for(
 }
 
 /// Write the startup files for this launch, or `None` to fall back to typing.
-fn prepare_startup(window_name: &str, line: &str) -> Option<Startup> {
+fn prepare_startup(window_name: &str, session_id: &str, line: &str) -> Option<Startup> {
     let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty())?;
     let dir = std::env::temp_dir().join(format!(
         "forestui-launch-{}-{}",
@@ -542,7 +668,14 @@ fn prepare_startup(window_name: &str, line: &str) -> Option<Startup> {
             .map(|d| d.as_nanos())
             .unwrap_or_default()
     ));
-    let startup = startup_for(&shell, &dir, &ShellHome::from_env(), window_name, line)?;
+    let startup = startup_for(
+        &shell,
+        &dir,
+        &ShellHome::from_env(),
+        window_name,
+        session_id,
+        line,
+    )?;
 
     // A launch that cannot write its files is not an error to show anyone:
     // typing the line still works, so fall back to it.
@@ -602,6 +735,19 @@ pub fn create_claude_window(
 ) -> Option<String> {
     current_session()?;
 
+    // The window knows its session from birth, both ways round: a fresh
+    // session runs under an id forestui minted and passed as `--session-id`,
+    // a resumed one under the id being resumed. Either way the stamp makes
+    // "which window holds this conversation" a lookup, not a heuristic.
+    let minted;
+    let session_id = match resume_session_id {
+        Some(id) => id,
+        None => {
+            minted = uuid::Uuid::new_v4().to_string();
+            &minted
+        }
+    };
+
     let window_name = find_unique_window_name(base_name);
     let line = claude_command_line(
         resume_session_id,
@@ -609,18 +755,20 @@ pub fn create_claude_window(
         custom_command,
         custom_prefix,
         &window_name,
+        resume_session_id.is_none().then_some(session_id),
     );
 
-    match prepare_startup(&window_name, &line) {
+    match prepare_startup(&window_name, session_id, &line) {
         // The window's command is the user's shell, interactive, reading a
         // startup file that ends in the Claude command. Nothing is typed, so
         // there is nothing to race the shell's startup.
         Some(startup) => {
             let id = new_window(&window_name, path, Some(&startup.command))?;
-            // Belt and braces: the stamp inside the startup file is what
-            // orders it correctly, this covers a shell that never read it.
-            // Same value either way.
+            // Belt and braces: the stamps inside the startup file are what
+            // order correctly, this covers a shell that never read them.
+            // Same values either way.
             stamp_birth_name(&id, &window_name);
+            stamp_session_id(&id, session_id);
             Some(window_name)
         }
         // A shell with no startup hook we know. The window runs the plain
@@ -630,6 +778,7 @@ pub fn create_claude_window(
         None => {
             let id = new_window(&window_name, path, None)?;
             stamp_birth_name(&id, &window_name);
+            stamp_session_id(&id, session_id);
             send_line(&id, &line).then_some(window_name)
         }
     }
@@ -730,8 +879,9 @@ mod tests {
 
     #[test]
     fn claude_command_building() {
-        let build =
-            |resume, yolo, cmd, prefix| claude_command_line(resume, yolo, cmd, prefix, "claude:wt");
+        let build = |resume, yolo, cmd, prefix| {
+            claude_command_line(resume, yolo, cmd, prefix, "claude:wt", None)
+        };
 
         // A fresh session is named at launch; a resumed one keeps its own name.
         assert_eq!(build(None, false, None, None), "claude -n 'claude:wt'");
@@ -745,6 +895,49 @@ mod tests {
             build(None, true, Some("claude --model opus"), Some("opus")),
             "claude --model opus -n 'claude:wt'"
         );
+    }
+
+    /// A fresh session runs under the id forestui minted, so the window knows
+    /// which session it holds from birth. A resumed session must never get the
+    /// flag — it already *has* an id, and `--session-id` alongside `-r` would
+    /// be a contradiction for Claude to resolve.
+    #[test]
+    fn a_preminted_session_id_reaches_fresh_sessions_only() {
+        assert_eq!(
+            claude_command_line(None, false, None, None, "claude:wt", Some("id-123")),
+            "claude -n 'claude:wt' --session-id id-123"
+        );
+        assert_eq!(
+            claude_command_line(Some("abc"), false, None, None, "claude:wt", Some("id-123")),
+            "claude -r abc"
+        );
+    }
+
+    /// The live scan trusts only stamped windows, and decides "running" from
+    /// the pane's foreground command: a shell at the prompt is an open window
+    /// whose Claude has exited, not a live session.
+    #[test]
+    fn claude_windows_parse_from_stamps_and_foreground_command() {
+        let out = "@1\tnode\tsess-a\tclaude:wt\n\
+                   @2\tzsh\tsess-b\tyolo:other\n\
+                   @3\tvim\t\tedit:wt\n\
+                   garbage-line\n";
+        let windows = parse_claude_windows(out);
+        assert_eq!(windows.len(), 2, "unstamped windows are not Claude's");
+        assert_eq!(windows[0].session_id, "sess-a");
+        assert!(windows[0].running);
+        assert_eq!(windows[0].window_name, "claude:wt");
+        assert_eq!(windows[1].session_id, "sess-b");
+        assert!(!windows[1].running, "a shell at the prompt is not running");
+    }
+
+    /// Window names may contain tabs? They cannot — but the name field is last
+    /// in the format string on purpose, so a name containing the separator
+    /// still parses: `splitn(4)` leaves everything after the third tab intact.
+    #[test]
+    fn a_tab_in_a_window_name_does_not_shift_fields() {
+        let windows = parse_claude_windows("@1\tnode\tsess-a\tweird\tname\n");
+        assert_eq!(windows[0].window_name, "weird\tname");
     }
 
     /// Window names come from session titles, and a session title can be set by
@@ -780,7 +973,7 @@ mod tests {
 
         // And the name is still literal in the line the window is given.
         assert_eq!(
-            claude_command_line(None, false, None, None, "$(id); rm -rf /"),
+            claude_command_line(None, false, None, None, "$(id); rm -rf /", None),
             "claude -n '$(id); rm -rf /'"
         );
     }
@@ -791,7 +984,7 @@ mod tests {
     /// never survive that far.
     #[test]
     fn a_newline_in_a_name_cannot_smuggle_a_command() {
-        let built = claude_command_line(None, false, None, None, "wt'\nrm -rf /\n#");
+        let built = claude_command_line(None, false, None, None, "wt'\nrm -rf /\n#", None);
         assert!(!built.contains('\n'), "a newline survived: {built:?}");
         assert_eq!(built, "claude -n 'wt'\\''rm -rf /#'");
     }
@@ -811,11 +1004,18 @@ mod tests {
     #[test]
     fn a_generated_startup_file_sources_the_one_it_replaced() {
         let dir = Path::new("/tmp/launch");
-        let tail = startup_tail("claude:wt", "claude");
+        let tail = startup_tail("claude:wt", "sess-1", "claude");
         let tail = tail.as_str();
 
-        let zsh =
-            startup_for("/usr/bin/zsh", dir, &home(), "claude:wt", "claude").expect("zsh is known");
+        let zsh = startup_for(
+            "/usr/bin/zsh",
+            dir,
+            &home(),
+            "claude:wt",
+            "sess-1",
+            "claude",
+        )
+        .expect("zsh is known");
         assert_eq!(zsh.command, "env ZDOTDIR='/tmp/launch' '/usr/bin/zsh' -i");
         let names: Vec<_> = zsh.files.iter().map(|(p, _)| p.clone()).collect();
         assert_eq!(names, vec![dir.join(".zshenv"), dir.join(".zshrc")]);
@@ -825,14 +1025,14 @@ mod tests {
         assert!(zsh.files[1].1.contains("'/home/u/.zshrc'"));
         assert!(zsh.files[1].1.ends_with(tail));
 
-        let bash =
-            startup_for("/bin/bash", dir, &home(), "claude:wt", "claude").expect("bash is known");
+        let bash = startup_for("/bin/bash", dir, &home(), "claude:wt", "sess-1", "claude")
+            .expect("bash is known");
         assert_eq!(bash.command, "'/bin/bash' --rcfile '/tmp/launch/rc' -i");
         assert!(bash.files[0].1.contains("'/home/u/.bashrc'"));
         assert!(bash.files[0].1.ends_with(tail));
 
-        let sh =
-            startup_for("/bin/dash", dir, &home(), "claude:wt", "claude").expect("dash is known");
+        let sh = startup_for("/bin/dash", dir, &home(), "claude:wt", "sess-1", "claude")
+            .expect("dash is known");
         assert_eq!(sh.command, "env ENV='/tmp/launch/rc' '/bin/dash' -i");
         assert!(sh.files[0].1.ends_with(tail));
 
@@ -847,8 +1047,8 @@ mod tests {
             env_file: Some("/home/u/.shinit".into()),
             ..home()
         };
-        let sh =
-            startup_for("/bin/sh", dir, &inherited, "claude:wt", "claude").expect("sh is known");
+        let sh = startup_for("/bin/sh", dir, &inherited, "claude:wt", "sess-1", "claude")
+            .expect("sh is known");
         assert!(sh.files[0].1.contains("'/home/u/.shinit'"));
     }
 
@@ -858,8 +1058,8 @@ mod tests {
     fn a_generated_startup_file_sweeps_itself_up() {
         let dir = Path::new("/tmp/launch");
         for shell in ["/usr/bin/zsh", "/bin/bash", "/bin/sh"] {
-            let startup =
-                startup_for(shell, dir, &home(), "claude:wt", "claude").expect("a known shell");
+            let startup = startup_for(shell, dir, &home(), "claude:wt", "sess-1", "claude")
+                .expect("a known shell");
             let last = &startup.files.last().expect("a file").1;
             assert!(
                 last.contains("rm -rf '/tmp/launch'"),
@@ -872,7 +1072,16 @@ mod tests {
     /// shell instead, which needs no hook at all.
     #[test]
     fn an_unknown_shell_falls_back_to_typing() {
-        let call = |shell| startup_for(shell, Path::new("/tmp/l"), &home(), "claude:wt", "claude");
+        let call = |shell| {
+            startup_for(
+                shell,
+                Path::new("/tmp/l"),
+                &home(),
+                "claude:wt",
+                "sess-1",
+                "claude",
+            )
+        };
         assert!(call("/usr/bin/fish").is_none());
         assert!(call("/usr/bin/nu").is_none());
     }
@@ -882,7 +1091,7 @@ mod tests {
     /// returns can lose the race to Claude's first hook.
     #[test]
     fn the_startup_file_stamps_before_it_launches() {
-        let tail = startup_tail("yolo:wt", "claude -n 'yolo:wt'");
+        let tail = startup_tail("yolo:wt", "sess-1", "claude -n 'yolo:wt'");
         let stamp = tail.find("@claude_birth_name").expect("a stamp");
         let monitor = tail.find("set -m").expect("job control");
         let launch = tail.find("claude -n").expect("the command");

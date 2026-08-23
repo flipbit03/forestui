@@ -150,6 +150,15 @@ pub struct App {
     /// Session ids being re-read right now. Each one draws a spinner on its own
     /// card, so a slow transcript is visibly working rather than silently old.
     pub sessions_refreshing: std::collections::HashSet<String>,
+    /// Which tmux window currently holds each Claude session, from the last
+    /// live scan. The `@claude_session_id` stamp makes this a lookup: a card
+    /// whose id is here is open somewhere, and `running` says whether Claude
+    /// is actually the pane's foreground process.
+    pub live_sessions: std::collections::HashMap<String, tmux::ClaudeWindow>,
+    /// The last few pane lines of each *running* session, for the card peek.
+    pub session_peeks: std::collections::HashMap<String, Vec<String>>,
+    /// One live scan at a time — it shells out to tmux once per sweep.
+    live_scan_in_flight: bool,
     /// Per-repository worktree mutation counter; see
     /// [`AppEvent::WorktreesScanned`]. Missing means 0 — repositories only
     /// enter the map once something about their worktrees changes.
@@ -264,6 +273,9 @@ impl App {
             last_worktree_scan: Instant::now(),
             last_session_refresh: Instant::now(),
             sessions_refreshing: std::collections::HashSet::new(),
+            live_sessions: std::collections::HashMap::new(),
+            session_peeks: std::collections::HashMap::new(),
+            live_scan_in_flight: false,
             worktree_epochs: std::collections::HashMap::new(),
             renames_in_flight: std::collections::HashSet::new(),
             removals_in_flight: std::collections::HashSet::new(),
@@ -367,9 +379,12 @@ impl App {
         let tx = self.tx.clone();
         let session_path = path.to_string();
         let event_path = path.to_string();
+        // Cloned here so the task needs nothing from state: pins are the app's
+        // to own, the scan only honours them.
+        let pinned = self.state.pinned_for(path);
         tokio::spawn(async move {
             let sessions = tokio::task::spawn_blocking(move || {
-                claude_session::get_sessions_for_path(&session_path, SESSION_LIMIT)
+                claude_session::get_sessions_with_pins(&session_path, SESSION_LIMIT, &pinned)
             })
             .await
             .ok();
@@ -378,6 +393,110 @@ impl App {
                 sessions,
             });
         });
+    }
+
+    /// Ask tmux which windows hold which Claude sessions, and capture a tail
+    /// of every running pane for the peek. One tmux listing plus one capture
+    /// per running session, all off the loop.
+    pub(super) fn scan_live_sessions(&mut self) {
+        if self.live_scan_in_flight {
+            return;
+        }
+        self.live_scan_in_flight = true;
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(|| {
+                let windows = tmux::list_claude_windows();
+                let peeks: std::collections::HashMap<String, Vec<String>> = windows
+                    .iter()
+                    .filter(|window| window.running)
+                    .map(|window| {
+                        (
+                            window.session_id.clone(),
+                            tmux::capture_pane_tail(&window.window_id, detail::PEEK_LINES),
+                        )
+                    })
+                    .collect();
+                (windows, peeks)
+            })
+            .await
+            .unwrap_or_default();
+            tx.send(AppEvent::LiveSessions {
+                windows: result.0,
+                peeks: result.1,
+            });
+        });
+    }
+
+    /// Which session card the focused detail control belongs to, if any.
+    /// Read from the drawn snapshot, like every other act on the focus.
+    fn focused_session_index(&self) -> Option<usize> {
+        match self.drawn_items.get(self.detail_index)? {
+            (
+                DetailItem::Action(
+                    Action::ResumeSession(index)
+                    | Action::ResumeYolo(index)
+                    | Action::RenameSession(index)
+                    | Action::TogglePinSession(index)
+                    | Action::DeleteSession(index)
+                    | Action::ResumeCustom { session: index, .. },
+                ),
+                _,
+            ) => Some(*index),
+            _ => None,
+        }
+    }
+
+    /// Move the pinned session under the cursor one slot up or down within
+    /// the pinned block, keeping the cursor on the card it moved with.
+    /// Returns false when the cursor is not on a pinned card, so the caller
+    /// can let the key fall through.
+    pub(super) fn move_focused_pin(&mut self, delta: isize) -> bool {
+        let Some(path) = self.state.selected_path() else {
+            return false;
+        };
+        let Some(index) = self.focused_session_index() else {
+            return false;
+        };
+        let Some(id) = self
+            .sessions
+            .as_ref()
+            .and_then(|list| list.get(index))
+            .map(|s| s.id.clone())
+        else {
+            return false;
+        };
+        if !self.state.is_pinned(&path, &id) {
+            return false;
+        }
+        if !self.state.move_pin(&path, &id, delta) {
+            // Pinned but already at the end of the pinned block: the key was
+            // still for us, it just has nowhere to go.
+            return true;
+        }
+        self.sort_visible_sessions();
+        // Every card carries the same controls, so the moved card's slots sit
+        // exactly one card-width away and the cursor can ride along.
+        let per_card = 5 + self.settings.custom_buttons.len();
+        let target = self.detail_index as isize + delta * per_card as isize;
+        if target >= 0 {
+            self.detail_index = target as usize;
+            self.detail_follow_focus = true;
+        }
+        self.report_save_error();
+        self.redraw = true;
+        true
+    }
+
+    /// Re-sort the visible session list around the current pin order.
+    pub(super) fn sort_visible_sessions(&mut self) {
+        let Some(path) = self.state.selected_path() else {
+            return;
+        };
+        let pinned = self.state.pinned_for(&path);
+        if let Some(list) = self.sessions.as_mut() {
+            claude_session::sort_sessions(list, &pinned);
+        }
     }
 
     /// Re-read every session card on screen, each in its own task.
@@ -684,9 +803,12 @@ impl App {
         // dropping to "Loading…" on every switch with a warm cache in hand —
         // is the flash issue #29 is about.
         self.sessions = claude_session::peek_sessions(&path, SESSION_LIMIT);
+        // The cache holds plain recency order; the pane shows pins first.
+        self.sort_visible_sessions();
         // A new selection has nothing of the old one's refreshes to wait for.
         self.sessions_refreshing.clear();
         self.scan_sessions(&path);
+        self.scan_live_sessions();
 
         if is_repository {
             match github::peek_issues(&path) {
@@ -810,6 +932,10 @@ impl App {
             if let Some(path) = self.state.selected_path() {
                 self.scan_sessions(&path);
             }
+            // The live map ages the same way: a window closed in another tab
+            // should drop its badge without being asked. Its fold repaints
+            // only on change, so the common no-change sweep stays free.
+            self.scan_live_sessions();
         }
 
         if self.last_issue_refresh.elapsed() >= ISSUE_REFRESH_INTERVAL {
@@ -853,7 +979,10 @@ impl App {
         if !mouse::is_pointer_motion(&event)
             && !matches!(
                 event,
-                AppEvent::Tick | AppEvent::WorktreesScanned { .. } | AppEvent::Sessions { .. }
+                AppEvent::Tick
+                    | AppEvent::WorktreesScanned { .. }
+                    | AppEvent::Sessions { .. }
+                    | AppEvent::LiveSessions { .. }
             )
         {
             self.redraw = true;
@@ -886,8 +1015,9 @@ impl App {
                         }
                     }
                     // A turn taken while we were away makes a session the most
-                    // recent one, and the list is ordered newest first.
-                    list.sort_by_key(|s| std::cmp::Reverse(s.last_timestamp));
+                    // recent one — within the recency half of the list, which
+                    // pins always precede.
+                    self.sort_visible_sessions();
                 }
             }
             AppEvent::Sessions { path, sessions } => {
@@ -895,17 +1025,81 @@ impl App {
                 self.sessions_in_flight.remove(&path);
                 // A failed scan (None) keeps whatever the cache painted; an
                 // empty *successful* scan is real content and lands normally.
-                if let Some(sessions) = sessions
+                if let Some(mut sessions) = sessions
                     && path == self.meta.path
-                    && self.sessions.as_deref() != Some(sessions.as_slice())
                 {
-                    // Claims its own repaint, like the worktree sweep: this runs
-                    // on a timer and almost always finds exactly what is already
-                    // on screen.
-                    self.sessions = Some(sessions);
+                    // The scan already sorted around the pins it was handed,
+                    // but a pin toggled while it ran wins here.
+                    claude_session::sort_sessions(&mut sessions, &self.state.pinned_for(&path));
+                    if self.sessions.as_deref() != Some(sessions.as_slice()) {
+                        // Claims its own repaint, like the worktree sweep: this
+                        // runs on a timer and almost always finds exactly what
+                        // is already on screen.
+                        self.sessions = Some(sessions);
+                        self.redraw = true;
+                    }
+                }
+            }
+            AppEvent::LiveSessions { windows, peeks } => {
+                self.live_scan_in_flight = false;
+                let fresh: std::collections::HashMap<String, tmux::ClaudeWindow> = windows
+                    .into_iter()
+                    .map(|window| (window.session_id.clone(), window))
+                    .collect();
+                // Claims its own repaint: this runs on the ten-second sweep
+                // and usually finds exactly the map it replaced.
+                if fresh != self.live_sessions || peeks != self.session_peeks {
+                    self.live_sessions = fresh;
+                    self.session_peeks = peeks;
                     self.redraw = true;
                 }
             }
+            AppEvent::SessionDeleted {
+                path,
+                session_id,
+                title,
+                result,
+            } => match result {
+                Ok(()) => {
+                    // The pin dies with the transcript, whichever path it was
+                    // pinned under — this is the one the card was deleted from.
+                    self.state.remove_pin(&path, &session_id);
+                    if path == self.meta.path
+                        && let Some(list) = self.sessions.as_mut()
+                    {
+                        list.retain(|s| s.id != session_id);
+                    }
+                    self.notify(
+                        format!("Deleted session '{}'", crate::util::truncate(&title, 40)),
+                        Severity::Information,
+                    );
+                }
+                Err(error) => self.notify(
+                    format!("Could not delete the session: {error}"),
+                    Severity::Error,
+                ),
+            },
+            AppEvent::SessionRenamed {
+                path,
+                session_id,
+                session,
+                result,
+            } => match result {
+                Ok(()) => {
+                    if path == self.meta.path
+                        && let Some(list) = self.sessions.as_mut()
+                        && let Some(fresh) = *session
+                        && let Some(slot) = list.iter_mut().find(|s| s.id == session_id)
+                    {
+                        *slot = fresh;
+                    }
+                    self.notify("Session renamed", Severity::Information);
+                }
+                Err(error) => self.notify(
+                    format!("Could not rename the session: {error}"),
+                    Severity::Error,
+                ),
+            },
             AppEvent::Issues { path, issues } => {
                 self.issues_in_flight.remove(&path);
                 if self.state.selection.is_repository()
@@ -1156,6 +1350,7 @@ impl App {
                 // from under someone who just switched back to the window.
                 self.last_session_refresh = Instant::now();
                 self.refresh_visible_sessions();
+                self.scan_live_sessions();
                 self.scan_all_worktrees();
             }
             _ => {}
@@ -1345,9 +1540,12 @@ mod tests {
             recent_turns: Vec::new(),
             last_timestamp: chrono::Utc::now(),
             message_count: 1,
+            git_branch: None,
+            tokens: Default::default(),
+            model: None,
         }]);
-        // Resume + YOLO + one per custom button.
-        assert_eq!(app.detail_items().len(), baseline + 1 + 3);
+        // Resume + YOLO + one per custom button + Rename + Pin + Del.
+        assert_eq!(app.detail_items().len(), baseline + 1 + 6);
     }
 
     #[tokio::test]
@@ -1929,6 +2127,9 @@ mod tests {
             recent_turns: Vec::new(),
             last_timestamp: chrono::Utc::now(),
             message_count: 1,
+            git_branch: None,
+            tokens: Default::default(),
+            model: None,
         }
     }
 
@@ -2044,6 +2245,198 @@ mod tests {
         let list = app.sessions.as_ref().expect("sessions");
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, "two");
+    }
+
+    fn a_live_window(session_id: &str, running: bool) -> crate::services::tmux::ClaudeWindow {
+        crate::services::tmux::ClaudeWindow {
+            window_id: "@7".into(),
+            window_name: "claude:demo:wt".into(),
+            running,
+            session_id: session_id.into(),
+        }
+    }
+
+    /// Resuming a session that already has a window must offer that window,
+    /// not fork the conversation — running or suspended alike, because either
+    /// way a second `claude -r` diverges from the same transcript.
+    #[tokio::test]
+    async fn resuming_an_open_session_offers_its_window_instead() {
+        let (_dir, mut app) = app_with_fixture();
+        let path = app.state.selected_path().expect("a selection");
+        std::fs::create_dir_all(&path).expect("the selected path exists");
+        app.sessions = Some(vec![a_session("one")]);
+        app.live_sessions
+            .insert("one".into(), a_live_window("one", true));
+
+        app.run_action(Action::ResumeSession(0));
+
+        let Some(crate::modal::Modal::Confirm(confirm)) = app.modals.last() else {
+            panic!("the guard did not open a dialog: {:?}", app.modals.last());
+        };
+        assert!(matches!(
+            confirm.action,
+            crate::modal::ConfirmAction::SwitchToWindow { .. }
+        ));
+        assert!(confirm.message.contains("claude:demo:wt"));
+
+        // The suspended form guards too, with its own wording.
+        app.modals.clear();
+        app.live_sessions
+            .insert("one".into(), a_live_window("one", false));
+        app.run_action(Action::ResumeYolo(0));
+        let Some(crate::modal::Modal::Confirm(confirm)) = app.modals.last() else {
+            panic!("the suspended guard did not open a dialog");
+        };
+        assert!(confirm.message.contains("up arrow"), "{}", confirm.message);
+    }
+
+    /// Deleting a session asks first and really deletes after — and refuses
+    /// outright while a window holds the transcript open.
+    #[tokio::test]
+    async fn deleting_a_session_confirms_then_folds_the_result() {
+        let (_dir, mut app) = app_with_fixture();
+        let path = app.state.selected_path().expect("a selection");
+        app.meta.path = path.clone();
+        app.sessions = Some(vec![a_session("one")]);
+        app.state.toggle_pin(&path, "one");
+
+        // Open in a window: refused with a warning, no dialog.
+        app.live_sessions
+            .insert("one".into(), a_live_window("one", true));
+        app.run_action(Action::DeleteSession(0));
+        assert!(app.modals.is_empty(), "a live session must not confirm");
+        assert!(
+            app.notifications
+                .iter()
+                .any(|n| n.text.contains("close it first"))
+        );
+
+        // Not open: the confirm carries the session, and the fold removes the
+        // card, drops the pin and announces.
+        app.live_sessions.clear();
+        app.run_action(Action::DeleteSession(0));
+        let Some(crate::modal::Modal::Confirm(confirm)) = app.modals.last() else {
+            panic!("no confirmation dialog");
+        };
+        assert!(matches!(
+            confirm.action,
+            crate::modal::ConfirmAction::DeleteClaudeSession { .. }
+        ));
+
+        app.handle_event(AppEvent::SessionDeleted {
+            path: path.clone(),
+            session_id: "one".into(),
+            title: "session one".into(),
+            result: Ok(()),
+        });
+        assert!(app.sessions.as_ref().is_some_and(Vec::is_empty));
+        assert!(!app.state.is_pinned(&path, "one"), "the pin outlived it");
+        assert!(
+            app.notifications
+                .iter()
+                .any(|n| n.text.contains("Deleted session"))
+        );
+
+        // A failed delete keeps the card and says why.
+        app.sessions = Some(vec![a_session("two")]);
+        app.handle_event(AppEvent::SessionDeleted {
+            path,
+            session_id: "two".into(),
+            title: "session two".into(),
+            result: Err("permission denied".into()),
+        });
+        assert_eq!(app.sessions.as_ref().map(Vec::len), Some(1));
+        assert!(
+            app.notifications
+                .iter()
+                .any(|n| n.text.contains("permission denied"))
+        );
+    }
+
+    /// Pinning floats the card to the top; K/J rearrange within the pinned
+    /// block, from whichever of the card's controls holds the cursor.
+    #[tokio::test]
+    async fn pins_reorder_the_list_and_follow_the_keys() {
+        let (_dir, mut app) = app_with_fixture();
+        let path = app.state.selected_path().expect("a selection");
+        app.meta.path = path.clone();
+        let mut old = a_session("old");
+        old.last_timestamp = chrono::Utc::now() - chrono::Duration::hours(10);
+        app.sessions = Some(vec![a_session("new"), old]);
+
+        // Pin the older session: it leads the list.
+        app.run_action(Action::TogglePinSession(1));
+        assert!(app.state.is_pinned(&path, "old"));
+        assert_eq!(app.sessions.as_ref().unwrap()[0].id, "old");
+
+        // Pin the other one too (now at index 1) and move it up with K.
+        app.run_action(Action::TogglePinSession(1));
+        assert_eq!(app.state.pinned_for(&path), vec!["old", "new"]);
+
+        // The cursor sits on a control of the second pinned card.
+        app.drawn_items = detail::drawn(&detail::content(&app));
+        let second_card_control = app
+            .drawn_items
+            .iter()
+            .position(|(item, _)| *item == DetailItem::Action(Action::ResumeSession(1)))
+            .expect("the second card renders");
+        app.focus = Focus::Detail;
+        app.detail_index = second_card_control;
+
+        app.handle_key(key(KeyCode::Char('K')));
+        assert_eq!(app.state.pinned_for(&path), vec!["new", "old"]);
+        assert_eq!(app.sessions.as_ref().unwrap()[0].id, "new");
+
+        // The cursor rode along: it now points at the same control on the
+        // card's new position, one card-width up.
+        let per_card = 5 + app.settings.custom_buttons.len();
+        assert_eq!(app.detail_index, second_card_control - per_card);
+
+        // On an unpinned card the key falls through to the (absent) binding.
+        app.sessions.as_mut().unwrap().push(a_session("loose"));
+        app.drawn_items = detail::drawn(&detail::content(&app));
+        let loose_control = app
+            .drawn_items
+            .iter()
+            .position(|(item, _)| *item == DetailItem::Action(Action::ResumeSession(2)))
+            .expect("the loose card renders");
+        app.detail_index = loose_control;
+        app.handle_key(key(KeyCode::Char('J')));
+        assert_eq!(app.state.pinned_for(&path), vec!["new", "old"]);
+    }
+
+    /// The live scan's fold replaces the maps and repaints only on change.
+    #[tokio::test]
+    async fn the_live_scan_folds_quietly_when_nothing_changed() {
+        let (_dir, mut app) = app_with_fixture();
+        let windows = vec![a_live_window("one", true)];
+        let peeks: std::collections::HashMap<String, Vec<String>> =
+            [("one".to_string(), vec!["$ cargo test".to_string()])]
+                .into_iter()
+                .collect();
+
+        app.redraw = false;
+        app.handle_event(AppEvent::LiveSessions {
+            windows: windows.clone(),
+            peeks: peeks.clone(),
+        });
+        assert!(app.redraw, "the first result changes the frame");
+        assert_eq!(app.live_sessions.len(), 1);
+
+        app.redraw = false;
+        app.handle_event(AppEvent::LiveSessions {
+            windows,
+            peeks: peeks.clone(),
+        });
+        assert!(!app.redraw, "an identical sweep must not repaint");
+
+        // A closed window disappears from the map wholesale.
+        app.handle_event(AppEvent::LiveSessions {
+            windows: Vec::new(),
+            peeks: std::collections::HashMap::new(),
+        });
+        assert!(app.live_sessions.is_empty());
+        assert!(app.session_peeks.is_empty());
     }
 
     /// A late answer for a selection the user has already left must not put
