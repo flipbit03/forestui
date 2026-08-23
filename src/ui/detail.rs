@@ -173,7 +173,7 @@ fn render_node(pane: &mut Pane, app: &App, node: DetailNode) {
                 .unwrap_or_default();
             pane.controls(lead, &controls);
         }
-        DetailNode::SessionBody { left, rows } => session_body(pane, left, rows),
+        DetailNode::CardBody { left, rows } => card_body(pane, left, rows),
         DetailNode::Field { field, label } => {
             let input = match field {
                 Field::WorktreeName => &app.name_input,
@@ -495,7 +495,7 @@ impl Pane {
 /// Claims happen exactly as [`Pane::controls`] makes them — top sub-row, three
 /// rows tall, left to right, row after row — so the flattened order matches
 /// what `detail::drawn` reports for the node.
-fn session_body(pane: &mut Pane, left: Vec<Vec<(String, Style)>>, rows: Vec<Vec<ControlSpec>>) {
+fn card_body(pane: &mut Pane, left: Vec<Vec<(String, Style)>>, rows: Vec<Vec<ControlSpec>>) {
     let Some(card) = pane.card else {
         return;
     };

@@ -120,7 +120,7 @@ pub enum DetailNode {
     /// full-width button band cost three rows that held nothing but buttons
     /// and read as a divider; here the text and the buttons interleave, and
     /// the renderer clips the text so the two never collide.
-    SessionBody {
+    CardBody {
         left: Vec<Vec<(String, Style)>>,
         rows: Vec<Vec<ControlSpec>>,
     },
@@ -169,7 +169,7 @@ pub fn drawn(nodes: &[DetailNode]) -> Vec<(DetailItem, bool)> {
                         .map(|control| (control.item.clone(), control.enabled)),
                 );
             }
-            DetailNode::SessionBody { rows, .. } => {
+            DetailNode::CardBody { rows, .. } => {
                 for row in rows {
                     items.extend(
                         row.iter()
@@ -599,7 +599,7 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
                 )
             },
         ];
-        nodes.push(DetailNode::SessionBody {
+        nodes.push(DetailNode::CardBody {
             left,
             rows: vec![launch, manage],
         });
@@ -629,15 +629,6 @@ fn issues(nodes: &mut Vec<DetailNode>, app: &App) {
     for (index, issue) in list.iter().enumerate() {
         nodes.push(DetailNode::Blank);
         nodes.push(DetailNode::CardStart { padded: true });
-        text(
-            nodes,
-            format!(
-                "#{} {}",
-                issue.number,
-                crate::util::truncate(&issue.title, 45)
-            ),
-            theme::primary(),
-        );
 
         let mut meta = issue.relative_time();
         let labels: Vec<&str> = issue
@@ -649,13 +640,27 @@ fn issues(nodes: &mut Vec<DetailNode>, app: &App) {
         if !labels.is_empty() {
             meta.push_str(&format!(" • {}", labels.join(", ")));
         }
-        nodes.push(DetailNode::Controls {
-            lead: Some((format!("{meta}  "), theme::muted())),
-            controls: vec![ControlSpec::new(
+        // The button floats beside the text instead of taking a full-width
+        // band, same as the session cards: title, a blank, the meta on the
+        // left; Create WT's three rows share those same lines on the right.
+        nodes.push(DetailNode::CardBody {
+            left: vec![
+                vec![(
+                    format!(
+                        "#{} {}",
+                        issue.number,
+                        crate::util::truncate(&issue.title, 45)
+                    ),
+                    theme::primary(),
+                )],
+                Vec::new(),
+                vec![(meta, theme::muted())],
+            ],
+            rows: vec![vec![ControlSpec::new(
                 Action::CreateFromIssue(index),
                 "Create WT",
                 theme::Variant::Normal,
-            )],
+            )]],
         });
         nodes.push(DetailNode::CardEnd);
     }
