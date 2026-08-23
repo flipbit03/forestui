@@ -160,12 +160,6 @@ fn render_node(pane: &mut Pane, app: &App, node: DetailNode) {
     match node {
         DetailNode::Section(title) => pane.section(title),
         DetailNode::Text { text, style } => pane.text(text, style),
-        DetailNode::Spans(spans) => pane.row(
-            spans
-                .into_iter()
-                .map(|(text, style)| Span::styled(text, style))
-                .collect(),
-        ),
         DetailNode::Blank => pane.blank(),
         DetailNode::Rule => pane.rule(),
         DetailNode::PathBox { path, style } => path_box(pane, path, style),
@@ -179,6 +173,7 @@ fn render_node(pane: &mut Pane, app: &App, node: DetailNode) {
                 .unwrap_or_default();
             pane.controls(lead, &controls);
         }
+        DetailNode::SessionBody { left, rows } => session_body(pane, left, rows),
         DetailNode::Field { field, label } => {
             let input = match field {
                 Field::WorktreeName => &app.name_input,
@@ -490,6 +485,98 @@ impl Pane {
         app.detail_scroll = offset;
         offset
     }
+}
+
+/// A session card's body: text lines on the left, stacked button rows
+/// floating flush right, sharing the same screen rows. Each visual row is
+/// composed as left text (clipped so it can never run under a button), a
+/// stretch of card fill, then that row's slice of the button boxes.
+///
+/// Claims happen exactly as [`Pane::controls`] makes them — top sub-row, three
+/// rows tall, left to right, row after row — so the flattened order matches
+/// what `detail::drawn` reports for the node.
+fn session_body(pane: &mut Pane, left: Vec<Vec<(String, Style)>>, rows: Vec<Vec<ControlSpec>>) {
+    let Some(card) = pane.card else {
+        return;
+    };
+    // What `push_line` can hold between the card's left border+pad and its
+    // right border.
+    let content = card.width.saturating_sub(CARD_INSET + 1);
+    // Right-aligned x (in content coordinates) and width of each button row.
+    let geometry: Vec<(u16, u16)> = rows
+        .iter()
+        .map(|row| {
+            let width = row
+                .iter()
+                .map(|control| control_width(&control.label))
+                .sum::<u16>()
+                .saturating_add(as_u16(row.len().saturating_sub(1)));
+            (content.saturating_sub(width), width)
+        })
+        .collect();
+    let button_rows = as_u16(rows.len()) * CONTROL_HEIGHT;
+    let total = as_u16(left.len()).max(button_rows);
+
+    // The three composed sub-rows of the button row currently being emitted.
+    let mut pending: Vec<[Vec<Span<'static>>; 3]> = Vec::new();
+    for i in 0..total {
+        let sub = (i % CONTROL_HEIGHT) as usize;
+        let row_index = (i / CONTROL_HEIGHT) as usize;
+        let has_buttons = i < button_rows;
+
+        if has_buttons && sub == 0 {
+            pending.clear();
+            let mut x = geometry[row_index].0;
+            for (j, control) in rows[row_index].iter().enumerate() {
+                if j > 0 {
+                    x = x.saturating_add(1);
+                }
+                let width = control_width(&control.label);
+                // +CARD_INSET: item x is measured from the pane edge, and the
+                // card's border and padding sit before the content.
+                let (focused, hovered) = pane.claim(x + CARD_INSET, width, CONTROL_HEIGHT);
+                pending.push(control_box(control, focused, hovered));
+                x = x.saturating_add(width);
+            }
+        }
+
+        // The left text, clipped so it always stops short of the buttons.
+        let avail = if has_buttons {
+            geometry[row_index].0.saturating_sub(2)
+        } else {
+            content
+        };
+        let mut spans = clip_spans(left.get(i as usize), avail as usize);
+        if has_buttons {
+            let used = as_u16(spans.iter().map(Span::width).sum::<usize>());
+            spans.push(Span::raw(
+                " ".repeat(geometry[row_index].0.saturating_sub(used) as usize),
+            ));
+            for (j, tri) in pending.iter().enumerate() {
+                if j > 0 {
+                    spans.push(Span::raw(" "));
+                }
+                spans.extend(tri[sub].iter().cloned());
+            }
+        }
+        pane.push_line(spans);
+    }
+}
+
+/// A left-column line cut to `avail` characters, span boundaries respected.
+fn clip_spans(line: Option<&Vec<(String, Style)>>, avail: usize) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut used = 0usize;
+    for (text, style) in line.into_iter().flatten() {
+        if used >= avail {
+            break;
+        }
+        let room = avail - used;
+        let piece: String = text.chars().take(room).collect();
+        used += piece.chars().count();
+        spans.push(Span::styled(piece, *style));
+    }
+    spans
 }
 
 /// The scrollbar on the right edge, drawn only when the content is taller than
@@ -836,8 +923,12 @@ mod tests {
                 "{label}: border colour"
             );
             // The background has to reach past the text, or the card is a frame
-            // around the page colour rather than a filled box.
-            for probe in [x, right - 1] {
+            // around the page colour rather than a filled box. Probed just
+            // after the label rather than at the far edge: on a session card
+            // the right side of the title row is a floating button, whose box
+            // carries its own fill.
+            let past_label = x + as_u16(label.chars().count()) + 2;
+            for probe in [x, past_label] {
                 assert_eq!(
                     cell(probe, y).bg,
                     theme::active().bg_elevated,
@@ -886,14 +977,17 @@ mod tests {
             "{screen}"
         );
         assert!(screen.contains("on branch feat/x"), "{screen}");
-        // Branch and meta sit below the button row, not above it.
+        // The buttons float on the right of the card's own rows rather than
+        // taking a full-width band: the launch row starts level with the
+        // title, the manage row below it, and the left column keeps its own
+        // order — branch above meta at the bottom.
         let rows: Vec<&str> = screen.lines().collect();
         let row_of = |needle: &str| {
             rows.iter()
                 .position(|row| row.contains(needle))
                 .unwrap_or_else(|| panic!("{needle:?} is not on screen:\n{screen}"))
         };
-        assert!(row_of("on branch feat/x") > row_of("Resume"), "{screen}");
+        assert!(row_of("Rename") > row_of("Claude │"), "{screen}");
         assert!(row_of("12 msgs") > row_of("on branch feat/x"), "{screen}");
         // The spend rides the meta line, beside the count it explains.
         assert!(
@@ -1174,7 +1268,7 @@ mod tests {
             ("Editor", DetailItem::Action(Action::Editor)),
             ("Terminal", DetailItem::Action(Action::Terminal)),
             ("Files", DetailItem::Action(Action::Files)),
-            ("Resume", DetailItem::Action(Action::ResumeSession(0))),
+            ("Claude", DetailItem::Action(Action::ResumeSession(0))),
             ("Delete", DetailItem::Action(Action::Delete)),
             ("Worktree name", DetailItem::Field(Field::WorktreeName)),
         ] {

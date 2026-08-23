@@ -97,9 +97,6 @@ pub enum DetailNode {
         text: String,
         style: Style,
     },
-    /// One line built from differently styled pieces — the session info line
-    /// needs its live badge coloured apart from the rest.
-    Spans(Vec<(String, Style)>),
     Blank,
     /// The horizontal rule between major sections, with its margin row above.
     Rule,
@@ -117,6 +114,15 @@ pub enum DetailNode {
     Controls {
         lead: Option<(String, Style)>,
         controls: Vec<ControlSpec>,
+    },
+    /// A session card's body: a column of text lines on the left and stacked
+    /// button rows floating on the right, sharing the same screen rows. A
+    /// full-width button band cost three rows that held nothing but buttons
+    /// and read as a divider; here the text and the buttons interleave, and
+    /// the renderer clips the text so the two never collide.
+    SessionBody {
+        left: Vec<Vec<(String, Style)>>,
+        rows: Vec<Vec<ControlSpec>>,
     },
     /// A rename field, rendered from the app's live input for `field`.
     Field {
@@ -162,6 +168,14 @@ pub fn drawn(nodes: &[DetailNode]) -> Vec<(DetailItem, bool)> {
                         .iter()
                         .map(|control| (control.item.clone(), control.enabled)),
                 );
+            }
+            DetailNode::SessionBody { rows, .. } => {
+                for row in rows {
+                    items.extend(
+                        row.iter()
+                            .map(|control| (control.item.clone(), control.enabled)),
+                    );
+                }
             }
             DetailNode::Field { field, .. } => items.push((DetailItem::Field(*field), true)),
             DetailNode::IssuesHeader { .. } => {
@@ -437,6 +451,13 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
         // session, and with five cards on screen that is ten rows of nothing.
         // The name carries the separation instead, where it does some work.
         nodes.push(DetailNode::CardStart { padded: false });
+
+        // The left column, top to bottom: title, a blank, the turns, a blank,
+        // the branch, the meta. The buttons float to its right, sharing these
+        // rows — a full-width button band cost three rows that held nothing
+        // but buttons and read as a divider through the card.
+        let mut left: Vec<Vec<(String, Style)>> = Vec::new();
+
         // The title line carries everything that identifies the card: the pin
         // marker, the name, and the live badge — there is horizontal room to
         // spare, and a badge on its own line repeated the name for nothing.
@@ -474,10 +495,10 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
                 }
             }
         }
-        nodes.push(DetailNode::Spans(title_line));
+        left.push(title_line);
         // The name is what you scan the list for, so it gets the whitespace —
         // everything below it reads as one block of detail about that name.
-        nodes.push(DetailNode::Blank);
+        left.push(Vec::new());
         // The exchange the conversation stopped on. A turn identical to the
         // name is not worth a line of its own — that happens on an unnamed
         // session, whose name *is* its first message.
@@ -490,15 +511,22 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
                 Speaker::User => theme::secondary(),
                 Speaker::Claude => theme::muted(),
             };
-            text(
-                nodes,
+            left.push(vec![(
                 format!(
                     "{} {}",
                     turn.speaker.label(),
                     crate::util::truncate(&turn.text, 60)
                 ),
                 style,
-            );
+            )]);
+        }
+        // Exactly one blank between the conversation and the closing lines.
+        left.push(Vec::new());
+        if let Some(branch) = &session.git_branch {
+            left.push(vec![
+                ("on branch ".to_string(), theme::muted()),
+                (crate::util::truncate(branch, 40), theme::accent()),
+            ]);
         }
         // A card being re-read says so on its meta line. Without it a
         // conversation that moved on while forestui was in the background just
@@ -526,10 +554,15 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
                 meta.push_str(&format!(" • {}", service::fmt_cost(cost)));
             }
         }
-        let mut row = vec![
+        left.push(vec![(meta, theme::muted())]);
+
+        // Two stacked button rows floating on the right: what launches Claude
+        // on top, what manages the record below. Flattened top-then-bottom
+        // they keep the item order the actions always had.
+        let mut launch = vec![
             ControlSpec::new(
                 Action::ResumeSession(index),
-                "Resume",
+                "Claude",
                 theme::Variant::Normal,
             ),
             ControlSpec::new(
@@ -538,48 +571,38 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
                 theme::Variant::Destructive,
             ),
         ];
-        row.extend(custom_controls(app, move |button| Action::ResumeCustom {
+        launch.extend(custom_controls(app, move |button| Action::ResumeCustom {
             button,
             session: index,
         }));
-        row.push(ControlSpec::new(
-            Action::RenameSession(index),
-            "Rename",
-            theme::Variant::Normal,
-        ));
-        row.push(ControlSpec::new(
-            Action::TogglePinSession(index),
-            if pinned { "Unpin" } else { "Pin" },
-            theme::Variant::Normal,
-        ));
-        // Deleting a session that is open in a window would pull the
-        // transcript out from under a running Claude; the control keeps its
-        // slot so the row never shifts, but it cannot fire.
-        row.push(if live.is_some() {
-            ControlSpec::disabled(Action::DeleteSession(index), "Del")
-        } else {
+        let manage = vec![
             ControlSpec::new(
-                Action::DeleteSession(index),
-                "Del",
-                theme::Variant::Destructive,
-            )
+                Action::RenameSession(index),
+                "Rename",
+                theme::Variant::Normal,
+            ),
+            ControlSpec::new(
+                Action::TogglePinSession(index),
+                if pinned { "Unpin" } else { "Pin" },
+                theme::Variant::Normal,
+            ),
+            // Deleting a session that is open in a window would pull the
+            // transcript out from under a running Claude; the control keeps
+            // its slot so the row never shifts, but it cannot fire.
+            if live.is_some() {
+                ControlSpec::disabled(Action::DeleteSession(index), "Del")
+            } else {
+                ControlSpec::new(
+                    Action::DeleteSession(index),
+                    "Del",
+                    theme::Variant::Destructive,
+                )
+            },
+        ];
+        nodes.push(DetailNode::SessionBody {
+            left,
+            rows: vec![launch, manage],
         });
-        nodes.push(DetailNode::Controls {
-            lead: None,
-            controls: row,
-        });
-        // Branch and meta close the card, each on a line of its own *below*
-        // the buttons: sharing the button row pushed Pin and Del off the
-        // card's right edge at ordinary widths, and sitting above the buttons
-        // crammed them against the turns. The button block is what separates
-        // them from the conversation.
-        if let Some(branch) = &session.git_branch {
-            nodes.push(DetailNode::Spans(vec![
-                ("on branch ".to_string(), theme::muted()),
-                (crate::util::truncate(branch, 40), theme::accent()),
-            ]));
-        }
-        text(nodes, meta, theme::muted());
         nodes.push(DetailNode::CardEnd);
     }
 }

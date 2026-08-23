@@ -36,36 +36,30 @@
                                   │  RECENT SESSIONS
                                   │
                                   │  ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
-                                  │  │ session 3: refactor the detail pane so the cards line up                                       │
-                                  │  │                                                                                                │
-                                  │  │ claude: looking at the card layout now                                                         │
-                                  │  │ user: and then check it against the python build                                               │
-                                  │  │                                        ┌────────┐ ┌──────┐ ┌──────┐ ┌────────┐ ┌─────┐ ┌─────┐ │
-                                  │  │                                        │ Resume │ │ YOLO │ │ Opus │ │ Rename │ │ Pin │ │ Del │ │
-                                  │  │                                        └────────┘ └──────┘ └──────┘ └────────┘ └─────┘ └─────┘ │
-                                  │  │ <rel> • 2 msgs                                                                           │
+                                  │  │ session 3: refactor the detail pane so the cards line up           ┌────────┐ ┌──────┐ ┌──────┐│
+                                  │  │                                                                    │ Claude │ │ YOLO │ │ Opus ││
+                                  │  │ claude: looking at the card layout now                             └────────┘ └──────┘ └──────┘│
+                                  │  │ user: and then check it against the python build                     ┌────────┐ ┌─────┐ ┌─────┐│
+                                  │  │                                                                      │ Rename │ │ Pin │ │ Del ││
+                                  │  │ <rel> • 2 msgs                                                 └────────┘ └─────┘ └─────┘│
                                   │  └────────────────────────────────────────────────────────────────────────────────────────────────┘
                                   │
                                   │  ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
-                                  │  │ session 2: refactor the detail pane so the cards line up                                       │
-                                  │  │                                                                                                │
-                                  │  │ claude: looking at the card layout now                                                         │
-                                  │  │ user: and then check it against the python build                                               │
-                                  │  │                                        ┌────────┐ ┌──────┐ ┌──────┐ ┌────────┐ ┌─────┐ ┌─────┐ │
-                                  │  │                                        │ Resume │ │ YOLO │ │ Opus │ │ Rename │ │ Pin │ │ Del │ │
-                                  │  │                                        └────────┘ └──────┘ └──────┘ └────────┘ └─────┘ └─────┘ │
-                                  │  │ <rel> • 2 msgs                                                                           │
+                                  │  │ session 2: refactor the detail pane so the cards line up           ┌────────┐ ┌──────┐ ┌──────┐│
+                                  │  │                                                                    │ Claude │ │ YOLO │ │ Opus ││
+                                  │  │ claude: looking at the card layout now                             └────────┘ └──────┘ └──────┘│
+                                  │  │ user: and then check it against the python build                     ┌────────┐ ┌─────┐ ┌─────┐│
+                                  │  │                                                                      │ Rename │ │ Pin │ │ Del ││
+                                  │  │ <rel> • 2 msgs                                                 └────────┘ └─────┘ └─────┘│
                                   │  └────────────────────────────────────────────────────────────────────────────────────────────────┘
                                   │
                                   │  ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
-                                  │  │ session 1: refactor the detail pane so the cards line up                                       │
-                                  │  │                                                                                                │
-                                  │  │ claude: looking at the card layout now                                                         │
-                                  │  │ user: and then check it against the python build                                               │
-                                  │  │                                        ┌────────┐ ┌──────┐ ┌──────┐ ┌────────┐ ┌─────┐ ┌─────┐ │
-                                  │  │                                        │ Resume │ │ YOLO │ │ Opus │ │ Rename │ │ Pin │ │ Del │ │
-                                  │  │                                        └────────┘ └──────┘ └──────┘ └────────┘ └─────┘ └─────┘ │
-                                  │  │ <rel> • 2 msgs                                                                           │
+                                  │  │ session 1: refactor the detail pane so the cards line up           ┌────────┐ ┌──────┐ ┌──────┐│
+                                  │  │                                                                    │ Claude │ │ YOLO │ │ Opus ││
+                                  │  │ claude: looking at the card layout now                             └────────┘ └──────┘ └──────┘│
+                                  │  │ user: and then check it against the python build                     ┌────────┐ ┌─────┐ ┌─────┐│
+                                  │  │                                                                      │ Rename │ │ Pin │ │ Del ││
+                                  │  │ <rel> • 2 msgs                                                 └────────┘ └─────┘ └─────┘│
                                   │  └────────────────────────────────────────────────────────────────────────────────────────────────┘
                                   │
                                   │  ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -97,6 +91,12 @@
                                   │  ┌───────────────────┐
                                   │  │ Remove Repository │
                                   │  └───────────────────┘
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
+                                  │
                                   │
                                   │
                                   │
