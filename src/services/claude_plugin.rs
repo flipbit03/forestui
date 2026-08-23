@@ -72,6 +72,23 @@ impl Status {
     }
 }
 
+/// The startup nag for an install an older forestui wrote, and only that.
+///
+/// `NotInstalled` is a choice the user never made and `Drifted` is their own
+/// edit — neither is forestui's to warn about. Outdated is different: the
+/// user opted in, and a newer build ships hooks their install lacks (the
+/// liveness heartbeat arrived in version 4), so silence would look like the
+/// feature not working.
+pub fn upgrade_notice(status: &Status) -> Option<String> {
+    match status {
+        Status::Outdated { installed } => Some(format!(
+            "Claude integration is outdated (v{installed}, this build ships v{SHIPPED_VERSION}) — \
+             upgrade it in Settings > Claude Code Integration"
+        )),
+        _ => None,
+    }
+}
+
 /// Where Claude Code keeps its configuration. `CLAUDE_CONFIG_DIR` wins so that
 /// installing lands wherever Claude will actually read from.
 pub fn claude_config_dir() -> PathBuf {
@@ -304,6 +321,48 @@ mod tests {
 
         install_in(&dir, true).expect("an explicit overwrite is allowed");
         assert_eq!(status_in(&dir), Status::Installed);
+    }
+
+    /// The startup nag fires for an outdated install and nothing else:
+    /// not-installed was never chosen, drift is the user's own edit, and a
+    /// current install has nothing to say.
+    #[test]
+    fn only_an_outdated_install_earns_the_startup_notice() {
+        let outdated = Status::Outdated {
+            installed: "3".into(),
+        };
+        let notice = upgrade_notice(&outdated).expect("outdated must notify");
+        assert!(notice.contains("v3"), "{notice}");
+        assert!(notice.contains(SHIPPED_VERSION), "{notice}");
+        assert!(
+            notice.contains("Settings > Claude Code Integration"),
+            "{notice}"
+        );
+
+        assert_eq!(upgrade_notice(&Status::NotInstalled), None);
+        assert_eq!(upgrade_notice(&Status::Installed), None);
+        assert_eq!(
+            upgrade_notice(&Status::Drifted(vec!["hooks/tmux-title.sh".into()])),
+            None
+        );
+    }
+
+    /// And the real status of a freshly written old-version install produces
+    /// that notice end to end.
+    #[test]
+    fn an_old_install_reads_as_outdated_and_notifies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(PLUGIN_NAME);
+        install_in(&dir, false).unwrap();
+        std::fs::write(
+            dir.join(".claude-plugin/plugin.json"),
+            format!("{{\"name\":\"{PLUGIN_NAME}\",\"version\":\"3\"}}"),
+        )
+        .unwrap();
+
+        let status = status_in(&dir);
+        assert!(matches!(status, Status::Outdated { .. }), "{status:?}");
+        assert!(upgrade_notice(&status).is_some());
     }
 
     /// A recursive delete guarded by a substring match would take

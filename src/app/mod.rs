@@ -361,6 +361,28 @@ impl App {
         if self.self_update {
             self.check_for_update();
         }
+        self.check_plugin_version();
+    }
+
+    /// Nag once per launch when the installed Claude integration is behind
+    /// this build. Off the loop like every other startup check: the status
+    /// read hashes the installed files, and a slow home directory must not
+    /// stall the first frame.
+    fn check_plugin_version(&self) {
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let notice = tokio::task::spawn_blocking(|| {
+                crate::services::claude_plugin::upgrade_notice(
+                    &crate::services::claude_plugin::status(),
+                )
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(notice) = notice {
+                tx.notify(notice, Severity::Warning);
+            }
+        });
     }
 
     /// Kick a directory walk for one path's sessions. This is what finds
