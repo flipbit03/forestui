@@ -563,18 +563,34 @@ fn card_body(pane: &mut Pane, left: Vec<Vec<(String, Style)>>, rows: Vec<Vec<Con
     }
 }
 
-/// A left-column line cut to `avail` characters, span boundaries respected.
+/// A left-column line cut to `avail` *columns*, span boundaries respected.
+///
+/// Display width, not chars: turns routinely carry emoji, which occupy two
+/// columns each — clipped by character count, a line of them ran under the
+/// gap and pushed the card's right border out of alignment. Measured with
+/// the same `unicode-width` the padding math (`Span::width`) resolves to, so
+/// the two can never disagree about where the text ends.
 fn clip_spans(line: Option<&Vec<(String, Style)>>, avail: usize) -> Vec<Span<'static>> {
+    use unicode_width::UnicodeWidthChar;
     let mut spans = Vec::new();
     let mut used = 0usize;
     for (text, style) in line.into_iter().flatten() {
         if used >= avail {
             break;
         }
-        let room = avail - used;
-        let piece: String = text.chars().take(room).collect();
-        used += piece.chars().count();
+        let mut piece = String::new();
+        for ch in text.chars() {
+            let width = ch.width().unwrap_or(0);
+            if used + width > avail {
+                break;
+            }
+            used += width;
+            piece.push(ch);
+        }
         spans.push(Span::styled(piece, *style));
+        if used >= avail {
+            break;
+        }
     }
     spans
 }
@@ -1046,6 +1062,59 @@ mod tests {
             app.drawn_items.get(del).map(|(_, enabled)| *enabled),
             Some(true)
         );
+    }
+
+    /// Turns routinely carry emoji, which occupy two columns each. Clipped by
+    /// character count instead of display width, a wide-charactered line ran
+    /// under the gap beside the floating buttons and pushed the card's right
+    /// border out of line. Every row of the card must keep its border in the
+    /// same column, whatever the text is made of.
+    #[tokio::test]
+    async fn wide_characters_never_break_the_card_border() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = test_app(&dir);
+        with_worktree(&mut app);
+        let mut session = a_session();
+        session.recent_turns = vec![
+            crate::models::SessionTurn {
+                speaker: crate::models::Speaker::User,
+                // Sixty bananas: at two columns each, far past where the
+                // buttons start, so a char-counted clip visibly overflows.
+                text: "🍌".repeat(60),
+            },
+            crate::models::SessionTurn {
+                speaker: crate::models::Speaker::Claude,
+                text: "Anytime, painho. 🍌 Two threads landed today, for the record and then some more words".into(),
+            },
+        ];
+        app.sessions = Some(vec![session]);
+        let buffer = render_buffer(&mut app, 100, TALL);
+
+        let (x, y) = find_cell(&buffer, "Refactor the detail pane");
+        let left = x - CARD_INSET;
+        // Walk from the card's top border to its bottom border and demand the
+        // right border column agrees with the top-right corner on every row.
+        let top = y - 1;
+        let width = buffer.area.width;
+        let right = (left..width)
+            .rev()
+            .find(|&col| buffer.cell((col, top)).is_some_and(|c| c.symbol() == "┐"))
+            .expect("a top-right corner");
+        let mut row = top + 1;
+        loop {
+            let cell = buffer.cell((right, row)).expect("inside the buffer");
+            if cell.symbol() == "┘" {
+                break;
+            }
+            assert_eq!(
+                cell.symbol(),
+                "│",
+                "row {row}: the right border broke:\n{}",
+                buffer_text(&buffer)
+            );
+            row += 1;
+            assert!(row < buffer.area.height, "no bottom corner found");
+        }
     }
 
     #[tokio::test]

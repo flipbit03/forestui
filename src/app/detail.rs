@@ -519,6 +519,13 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
         }
         // Exactly one blank between the conversation and the closing lines.
         left.push(Vec::new());
+        // The branch and the meta must clear the button block entirely: the
+        // meta carries the spend, and beside the manage row's bottom border a
+        // sparse card (a one-turn session) had it clipped mid-price. Six is
+        // the two stacked button rows at three rows each.
+        while left.len() < 6 {
+            left.push(Vec::new());
+        }
         if let Some(branch) = &session.git_branch {
             left.push(vec![
                 ("on branch ".to_string(), theme::muted()),

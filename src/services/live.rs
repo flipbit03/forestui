@@ -151,6 +151,12 @@ pub fn read_heartbeats_in(dir: &Path, alive: impl Fn(&[u32]) -> HashSet<u32>) ->
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            // The plugin writes via a `.tmp` sibling and renames; a crash
+            // between the two leaves the sibling forever. The directory is
+            // wholly ours, so anything that is not a heartbeat is litter.
+            if path.extension().and_then(|e| e.to_str()) == Some("tmp") {
+                let _ = std::fs::remove_file(&path);
+            }
             continue;
         }
         let Some(beat) = std::fs::read_to_string(&path)
@@ -209,7 +215,9 @@ fn alive_claude_pids(pids: &[u32]) -> HashSet<u32> {
         .filter_map(|line| {
             let mut parts = line.split_whitespace();
             let pid: u32 = parts.next()?.parse().ok()?;
-            let comm = parts.next()?;
+            // macOS ps prints comm as the executable's full path; Linux the
+            // bare name. Compared by basename so both answer alike.
+            let comm = parts.next()?.rsplit('/').next()?;
             (comm.starts_with("claude") || comm.starts_with("node")).then_some(pid)
         })
         .collect()
@@ -238,6 +246,8 @@ mod tests {
         write_beat(dir.path(), "alive-1", 100, "%5");
         write_beat(dir.path(), "dead-1", 200, "");
         std::fs::write(dir.path().join("garbage.json"), "not json").unwrap();
+        // A crash between write and rename leaves the temp sibling behind.
+        std::fs::write(dir.path().join(".x.123.tmp"), "half a beat").unwrap();
         // A file whose name disagrees with its content is not trusted.
         std::fs::write(
             dir.path().join("mismatch.json"),
@@ -253,6 +263,10 @@ mod tests {
 
         assert!(!dir.path().join("dead-1.json").exists(), "dead pid swept");
         assert!(!dir.path().join("garbage.json").exists(), "garbage swept");
+        assert!(
+            !dir.path().join(".x.123.tmp").exists(),
+            "a crashed write's temp file swept"
+        );
         assert!(
             !dir.path().join("mismatch.json").exists(),
             "mismatched file swept"

@@ -46,7 +46,10 @@ i=0
 while [ "$i" -lt 6 ]; do
   pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
   case "$pid" in '' | 0 | 1) break ;; esac
+  # macOS ps prints comm as the executable's full path; Linux prints the bare
+  # name. Compared by basename so both answer the same question.
   comm=$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')
+  comm=${comm##*/}
   case "$comm" in
     claude* | node*)
       found="$pid"
