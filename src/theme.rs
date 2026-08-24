@@ -269,10 +269,9 @@ pub fn cursor_unfocused() -> Style {
 
 /// Which of Textual's button variants a control carries.
 ///
-/// `Primary` is `Button.-primary` — the accent pair the Textual build put on
-/// "New Session" and every non-YOLO custom button. Without it those read as
-/// ordinary buttons, which is a real difference: the green is how the safe
-/// Claude action is told apart from the red one beside it.
+/// `Primary` is `Button.-primary` — the filled accent pair, kept for modal
+/// affirmatives (Save, Install and friends). `Destructive` marks what
+/// destroys: Delete, Remove Repository.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Variant {
     #[default]
@@ -280,24 +279,14 @@ pub enum Variant {
     Primary,
     Destructive,
     /// A quiet button whose label carries the theme accent — the colour the
-    /// pane gives branch names. The session cards use it for their whole
-    /// launch row: five cards of `-destructive` YOLO buttons read as a wall
-    /// of warnings, and the card is not the place to relitigate a choice the
-    /// CLAUDE section already colours at its full strength.
+    /// pane gives branch names. Every Claude *launch* button wears it, in the
+    /// CLAUDE section and on the session cards alike, YOLO-style or not: one
+    /// standardized vocabulary, instead of a wall of `-destructive` red
+    /// repeating a warning on every card.
     Accent,
 }
 
 impl Variant {
-    /// `-destructive` for a YOLO-style action, `-primary` otherwise — the split
-    /// `repository_detail.py` made from `CustomClaudeButton.is_yolo_style`.
-    pub fn claude(yolo: bool) -> Self {
-        if yolo {
-            Self::Destructive
-        } else {
-            Self::Primary
-        }
-    }
-
     pub fn is_destructive(self) -> bool {
         self == Self::Destructive
     }

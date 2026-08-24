@@ -883,7 +883,7 @@ fn edit_button(frame: &mut Frame, modal: &EditButtonModal, area: Rect, hits: &mu
     );
     column.text(
         frame,
-        "Shown on the button (e.g., 'New Session: YoloDisc')",
+        "Shown on the button, next to Claude and YOLO",
         theme::muted(),
     );
 
@@ -911,7 +911,7 @@ fn edit_button(frame: &mut Frame, modal: &EditButtonModal, area: Rect, hits: &mu
     );
     column.text(
         frame,
-        "Run as-is. If it contains --dangerously-skip-permissions the button is styled red.",
+        "Run as-is, with the window name (or resume id) appended.",
         theme::muted(),
     );
 

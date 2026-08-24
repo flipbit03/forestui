@@ -393,15 +393,15 @@ fn open_in(nodes: &mut Vec<DetailNode>) {
     );
 }
 
+/// One launch vocabulary everywhere: the CLAUDE section and every session
+/// card offer the same buttons under the same names in the same accent —
+/// `Claude`, `YOLO`, then the user's own. The section header already says
+/// these start something; "New Session" restated it on every button.
 fn claude(nodes: &mut Vec<DetailNode>, app: &App) {
-    nodes.push(DetailNode::Section("CLAUDE"));
+    nodes.push(DetailNode::Section("CLAUDE: NEW SESSION"));
     let mut row = vec![
-        ControlSpec::new(Action::ClaudeNew, "New Session", theme::Variant::Primary),
-        ControlSpec::new(
-            Action::ClaudeYolo,
-            "New Session: YOLO",
-            theme::Variant::Destructive,
-        ),
+        ControlSpec::new(Action::ClaudeNew, "Claude", theme::Variant::Accent),
+        ControlSpec::new(Action::ClaudeYolo, "YOLO", theme::Variant::Accent),
     ];
     row.extend(custom_controls(app, Action::ClaudeCustom));
     controls(nodes, row);
@@ -409,7 +409,8 @@ fn claude(nodes: &mut Vec<DetailNode>, app: &App) {
 
 /// The user's own Claude buttons, which follow both the new-session and the
 /// resume controls. `action` maps a button index to the action it fires in
-/// this particular row.
+/// this particular row. Accent like the built-ins beside them — YOLO-style
+/// or not, the launch rows are one standardized vocabulary.
 fn custom_controls<'a>(
     app: &'a App,
     action: impl Fn(usize) -> Action + 'a,
@@ -419,11 +420,7 @@ fn custom_controls<'a>(
         .iter()
         .enumerate()
         .map(move |(index, custom)| {
-            ControlSpec::new(
-                action(index),
-                custom.label.as_str(),
-                theme::Variant::claude(custom.is_yolo_style()),
-            )
+            ControlSpec::new(action(index), custom.label.as_str(), theme::Variant::Accent)
         })
 }
 
@@ -431,7 +428,7 @@ fn custom_controls<'a>(
 const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
 
 fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
-    nodes.push(DetailNode::Section("RECENT SESSIONS"));
+    nodes.push(DetailNode::Section("CLAUDE: RECENT SESSIONS"));
     let Some(list) = app.sessions.as_deref() else {
         text(nodes, "Loading...", theme::muted());
         return;
@@ -571,16 +568,10 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
             ),
             ControlSpec::new(Action::ResumeYolo(index), "YOLO", theme::Variant::Accent),
         ];
-        launch.extend(
-            custom_controls(app, move |button| Action::ResumeCustom {
-                button,
-                session: index,
-            })
-            .map(|mut control| {
-                control.variant = theme::Variant::Accent;
-                control
-            }),
-        );
+        launch.extend(custom_controls(app, move |button| Action::ResumeCustom {
+            button,
+            session: index,
+        }));
         let manage = vec![
             ControlSpec::new(
                 Action::RenameSession(index),

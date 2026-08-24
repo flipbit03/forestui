@@ -789,14 +789,27 @@ mod tests {
     /// Cell of the first occurrence of `needle`. Byte offsets would not do: the
     /// pill caps around every control are multi-byte.
     fn find_cell(buffer: &Buffer, needle: &str) -> (u16, u16) {
+        find_cell_nth(buffer, needle, 0)
+    }
+
+    /// Cell of the `nth` occurrence, top-to-bottom then left-to-right — for
+    /// labels the standardized launch rows deliberately repeat.
+    fn find_cell_nth(buffer: &Buffer, needle: &str, nth: usize) -> (u16, u16) {
         let width = buffer.area.width as usize;
+        let mut seen = 0usize;
         for (y, row) in buffer.content.chunks(width).enumerate() {
             let line: String = row.iter().map(|cell| cell.symbol()).collect();
-            if let Some(byte) = line.find(needle) {
-                return (as_u16(line[..byte].chars().count()), as_u16(y));
+            let mut from = 0usize;
+            while let Some(byte) = line[from..].find(needle) {
+                let byte = from + byte;
+                if seen == nth {
+                    return (as_u16(line[..byte].chars().count()), as_u16(y));
+                }
+                seen += 1;
+                from = byte + needle.len();
             }
         }
-        panic!("{needle:?} is not on screen");
+        panic!("occurrence {nth} of {needle:?} is not on screen");
     }
 
     fn detail_hits(app: &App) -> usize {
@@ -1066,7 +1079,7 @@ mod tests {
         assert!(screen.contains("LOCATION"), "{screen}");
         assert!(screen.contains("/tmp/demo"), "{screen}");
         assert!(screen.contains("CLAUDE"), "{screen}");
-        assert!(screen.contains("New Session"), "{screen}");
+        assert!(screen.contains("│ Claude │"), "{screen}");
     }
 
     #[tokio::test]
@@ -1263,20 +1276,24 @@ mod tests {
         };
 
         // Editor, Terminal and Files share a line, so getting these three right
-        // is what proves the x extents are, and not just the rows.
-        for (label, item) in [
-            ("Editor", DetailItem::Action(Action::Editor)),
-            ("Terminal", DetailItem::Action(Action::Terminal)),
-            ("Files", DetailItem::Action(Action::Files)),
-            ("Claude", DetailItem::Action(Action::ResumeSession(0))),
-            ("Delete", DetailItem::Action(Action::Delete)),
-            ("Worktree name", DetailItem::Field(Field::WorktreeName)),
+        // is what proves the x extents are, and not just the rows. "Claude"
+        // appears twice by design — the CLAUDE section's launch button and the
+        // card's resume button share the standardized label — so both
+        // occurrences are asserted onto their own actions.
+        for (label, nth, item) in [
+            ("Editor", 0, DetailItem::Action(Action::Editor)),
+            ("Terminal", 0, DetailItem::Action(Action::Terminal)),
+            ("Files", 0, DetailItem::Action(Action::Files)),
+            ("Claude", 0, DetailItem::Action(Action::ClaudeNew)),
+            ("Claude", 1, DetailItem::Action(Action::ResumeSession(0))),
+            ("Delete", 0, DetailItem::Action(Action::Delete)),
+            ("Worktree name", 0, DetailItem::Field(Field::WorktreeName)),
         ] {
-            let (x, y) = find_cell(&buffer, label);
+            let (x, y) = find_cell_nth(&buffer, label, nth);
             assert_eq!(
                 app.hit_at(x, y),
                 Some(HitTarget::DetailItem(index_of(&item))),
-                "{label} at {x},{y}"
+                "{label}#{nth} at {x},{y}"
             );
         }
     }

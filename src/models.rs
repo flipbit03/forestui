@@ -92,8 +92,7 @@ pub fn validate_claude_command(command: &str) -> Option<String> {
 /// A user-configured custom Claude command button.
 ///
 /// `label` is shown on the button. `prefix` is the tmux window prefix
-/// (`"yolodisc"` produces `yolodisc:<name>`). `command` runs as-is; if it
-/// contains `--dangerously-skip-permissions` the button is styled red.
+/// (`"yolodisc"` produces `yolodisc:<name>`). `command` runs as-is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomClaudeButton {
     pub label: String,
