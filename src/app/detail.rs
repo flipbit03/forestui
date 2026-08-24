@@ -30,6 +30,9 @@ pub enum Action {
     ResumeSession(usize),
     ResumeYolo(usize),
     ResumeCustom { button: usize, session: usize },
+    RenameSession(usize),
+    TogglePinSession(usize),
+    DeleteSession(usize),
     RefreshIssues,
     CreateFromIssue(usize),
     RemoveRepository,
@@ -112,6 +115,15 @@ pub enum DetailNode {
         lead: Option<(String, Style)>,
         controls: Vec<ControlSpec>,
     },
+    /// A session card's body: a column of text lines on the left and stacked
+    /// button rows floating on the right, sharing the same screen rows. A
+    /// full-width button band cost three rows that held nothing but buttons
+    /// and read as a divider; here the text and the buttons interleave, and
+    /// the renderer clips the text so the two never collide.
+    CardBody {
+        left: Vec<Vec<(String, Style)>>,
+        rows: Vec<Vec<ControlSpec>>,
+    },
     /// A rename field, rendered from the app's live input for `field`.
     Field {
         field: Field,
@@ -156,6 +168,14 @@ pub fn drawn(nodes: &[DetailNode]) -> Vec<(DetailItem, bool)> {
                         .iter()
                         .map(|control| (control.item.clone(), control.enabled)),
                 );
+            }
+            DetailNode::CardBody { rows, .. } => {
+                for row in rows {
+                    items.extend(
+                        row.iter()
+                            .map(|control| (control.item.clone(), control.enabled)),
+                    );
+                }
             }
             DetailNode::Field { field, .. } => items.push((DetailItem::Field(*field), true)),
             DetailNode::IssuesHeader { .. } => {
@@ -373,15 +393,15 @@ fn open_in(nodes: &mut Vec<DetailNode>) {
     );
 }
 
+/// One launch vocabulary everywhere: the CLAUDE section and every session
+/// card offer the same buttons under the same names in the same accent —
+/// `Claude`, `YOLO`, then the user's own. The section header already says
+/// these start something; "New Session" restated it on every button.
 fn claude(nodes: &mut Vec<DetailNode>, app: &App) {
-    nodes.push(DetailNode::Section("CLAUDE"));
+    nodes.push(DetailNode::Section("CLAUDE: NEW SESSION"));
     let mut row = vec![
-        ControlSpec::new(Action::ClaudeNew, "New Session", theme::Variant::Primary),
-        ControlSpec::new(
-            Action::ClaudeYolo,
-            "New Session: YOLO",
-            theme::Variant::Destructive,
-        ),
+        ControlSpec::new(Action::ClaudeNew, "Claude", theme::Variant::Accent),
+        ControlSpec::new(Action::ClaudeYolo, "YOLO", theme::Variant::Accent),
     ];
     row.extend(custom_controls(app, Action::ClaudeCustom));
     controls(nodes, row);
@@ -389,7 +409,8 @@ fn claude(nodes: &mut Vec<DetailNode>, app: &App) {
 
 /// The user's own Claude buttons, which follow both the new-session and the
 /// resume controls. `action` maps a button index to the action it fires in
-/// this particular row.
+/// this particular row. Accent like the built-ins beside them — YOLO-style
+/// or not, the launch rows are one standardized vocabulary.
 fn custom_controls<'a>(
     app: &'a App,
     action: impl Fn(usize) -> Action + 'a,
@@ -399,11 +420,7 @@ fn custom_controls<'a>(
         .iter()
         .enumerate()
         .map(move |(index, custom)| {
-            ControlSpec::new(
-                action(index),
-                custom.label.as_str(),
-                theme::Variant::claude(custom.is_yolo_style()),
-            )
+            ControlSpec::new(action(index), custom.label.as_str(), theme::Variant::Accent)
         })
 }
 
@@ -411,7 +428,7 @@ fn custom_controls<'a>(
 const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
 
 fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
-    nodes.push(DetailNode::Section("RECENT SESSIONS"));
+    nodes.push(DetailNode::Section("CLAUDE: RECENT SESSIONS"));
     let Some(list) = app.sessions.as_deref() else {
         text(nodes, "Loading...", theme::muted());
         return;
@@ -420,22 +437,65 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
         text(nodes, "No sessions found", theme::muted());
         return;
     }
+    let path = app.state.selected_path().unwrap_or_default();
     // Every card is spaced away from what precedes it — the header included,
     // which is Textual's `.session-item { margin: 0 2 1 0 }` seen from above.
     for (index, session) in list.iter().enumerate() {
+        let live = app.live_sessions.get(&session.id);
+        let pinned = app.state.is_pinned(&path, &session.id);
         nodes.push(DetailNode::Blank);
         // Unpadded: the card's own top and bottom blanks cost two rows per
         // session, and with five cards on screen that is ten rows of nothing.
         // The name carries the separation instead, where it does some work.
         nodes.push(DetailNode::CardStart { padded: false });
-        text(
-            nodes,
-            crate::util::truncate(&session.title, 60),
-            theme::primary(),
-        );
+
+        // The left column, top to bottom: title, a blank, the turns, a blank,
+        // the branch, the meta. The buttons float to its right, sharing these
+        // rows — a full-width button band cost three rows that held nothing
+        // but buttons and read as a divider through the card.
+        let mut left: Vec<Vec<(String, Style)>> = Vec::new();
+
+        // The title line carries everything that identifies the card: the pin
+        // marker, the name, and the live badge — there is horizontal room to
+        // spare, and a badge on its own line repeated the name for nothing.
+        // `◆`, not `★`: the star is missing from JetBrains Mono and friends —
+        // the same tofu problem that retired `⟳` — while the diamond is in
+        // every monospace font the sync control's comment lists.
+        let mut title_line: Vec<(String, Style)> = Vec::new();
+        if pinned {
+            title_line.push(("◆ ".to_string(), theme::accent()));
+        }
+        title_line.push((crate::util::truncate(&session.title, 60), theme::primary()));
+        // A map hit means a claude process is running this session right now —
+        // a window whose Claude exited never enters the map, because that
+        // session is free again (see `services/live.rs`).
+        if let Some(live) = live {
+            title_line.push((" · ".to_string(), theme::muted()));
+            match &live.place {
+                crate::services::live::LivePlace::Window { window_name, .. } => {
+                    // The window name and the session name are one string by
+                    // design, so it is only worth printing when the two
+                    // actually differ — a `:2`-uniquified window, or an
+                    // unnamed session whose title is its first prompt while
+                    // the window carries forestui's name.
+                    let place = if window_name == &session.title {
+                        String::new()
+                    } else {
+                        format!(" in {}", crate::util::truncate(window_name, 25))
+                    };
+                    title_line.push((format!("● live{place}"), theme::accent()));
+                }
+                // A heartbeat with no reachable window: another tmux session,
+                // or no tmux at all. Live, but not somewhere to jump to.
+                crate::services::live::LivePlace::Elsewhere { .. } => {
+                    title_line.push(("● live elsewhere".to_string(), theme::accent()));
+                }
+            }
+        }
+        left.push(title_line);
         // The name is what you scan the list for, so it gets the whitespace —
         // everything below it reads as one block of detail about that name.
-        nodes.push(DetailNode::Blank);
+        left.push(Vec::new());
         // The exchange the conversation stopped on. A turn identical to the
         // name is not worth a line of its own — that happens on an unnamed
         // session, whose name *is* its first message.
@@ -448,22 +508,36 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
                 Speaker::User => theme::secondary(),
                 Speaker::Claude => theme::muted(),
             };
-            text(
-                nodes,
+            left.push(vec![(
                 format!(
                     "{} {}",
                     turn.speaker.label(),
                     crate::util::truncate(&turn.text, 60)
                 ),
                 style,
-            );
+            )]);
+        }
+        // Exactly one blank between the conversation and the closing lines.
+        left.push(Vec::new());
+        // The branch and the meta must clear the button block entirely: the
+        // meta carries the spend, and beside the manage row's bottom border a
+        // sparse card (a one-turn session) had it clipped mid-price. Six is
+        // the two stacked button rows at three rows each.
+        while left.len() < 6 {
+            left.push(Vec::new());
+        }
+        if let Some(branch) = &session.git_branch {
+            left.push(vec![
+                ("on branch ".to_string(), theme::muted()),
+                (crate::util::truncate(branch, 40), theme::accent()),
+            ]);
         }
         // A card being re-read says so on its meta line. Without it a
         // conversation that moved on while forestui was in the background just
         // sits at its old turn count and then changes with no explanation.
         let count = session.message_count;
         let msgs = if count == 1 { "msg" } else { "msgs" };
-        let meta = if app.sessions_refreshing.contains(&session.id) {
+        let mut meta = if app.sessions_refreshing.contains(&session.id) {
             format!(
                 "{} refreshing • {count} {msgs}",
                 SPINNER[app.spinner_index % SPINNER.len()],
@@ -471,28 +545,67 @@ fn sessions(nodes: &mut Vec<DetailNode>, app: &App) {
         } else {
             format!("{} • {count} {msgs}", session.relative_time())
         };
-        let mut row = vec![
+        // The spend rides the meta line, next to the message count it
+        // explains. Old minimal transcripts carry no usage and add nothing.
+        if !session.tokens.is_zero() {
+            use crate::services::claude_session as service;
+            meta.push_str(&format!(
+                " • {} in / {} out",
+                service::fmt_tokens(session.tokens.total_in()),
+                service::fmt_tokens(session.tokens.output),
+            ));
+            if let Some(cost) = service::cost_estimate(session.model.as_deref(), session.tokens) {
+                meta.push_str(&format!(" • {}", service::fmt_cost(cost)));
+            }
+        }
+        left.push(vec![(meta, theme::muted())]);
+
+        // Two stacked button rows floating on the right: what launches Claude
+        // on top, what manages the record below. Flattened top-then-bottom
+        // they keep the item order the actions always had.
+        //
+        // The whole launch row wears the accent, YOLO-style customs included:
+        // five cards of red YOLO buttons read as a wall of warnings, and the
+        // CLAUDE section above already colours that choice at full strength.
+        let mut launch = vec![
             ControlSpec::new(
                 Action::ResumeSession(index),
-                "Resume",
-                theme::Variant::Normal,
+                "Claude",
+                theme::Variant::Accent,
             ),
-            ControlSpec::new(
-                Action::ResumeYolo(index),
-                "YOLO",
-                theme::Variant::Destructive,
-            ),
+            ControlSpec::new(Action::ResumeYolo(index), "YOLO", theme::Variant::Accent),
         ];
-        row.extend(custom_controls(app, move |button| Action::ResumeCustom {
+        launch.extend(custom_controls(app, move |button| Action::ResumeCustom {
             button,
             session: index,
         }));
-        // The meta rides the button row rather than taking one of its own, as
-        // the issue cards already do. It costs no height and fills the empty
-        // stretch the buttons leave to their left.
-        nodes.push(DetailNode::Controls {
-            lead: Some((format!("{meta}  "), theme::muted())),
-            controls: row,
+        let manage = vec![
+            ControlSpec::new(
+                Action::RenameSession(index),
+                "Rename",
+                theme::Variant::Normal,
+            ),
+            ControlSpec::new(
+                Action::TogglePinSession(index),
+                if pinned { "Unpin" } else { "Pin" },
+                theme::Variant::Normal,
+            ),
+            // Deleting a session that is open in a window would pull the
+            // transcript out from under a running Claude; the control keeps
+            // its slot so the row never shifts, but it cannot fire.
+            if live.is_some() {
+                ControlSpec::disabled(Action::DeleteSession(index), "Del")
+            } else {
+                ControlSpec::new(
+                    Action::DeleteSession(index),
+                    "Del",
+                    theme::Variant::Destructive,
+                )
+            },
+        ];
+        nodes.push(DetailNode::CardBody {
+            left,
+            rows: vec![launch, manage],
         });
         nodes.push(DetailNode::CardEnd);
     }
@@ -520,15 +633,6 @@ fn issues(nodes: &mut Vec<DetailNode>, app: &App) {
     for (index, issue) in list.iter().enumerate() {
         nodes.push(DetailNode::Blank);
         nodes.push(DetailNode::CardStart { padded: true });
-        text(
-            nodes,
-            format!(
-                "#{} {}",
-                issue.number,
-                crate::util::truncate(&issue.title, 45)
-            ),
-            theme::primary(),
-        );
 
         let mut meta = issue.relative_time();
         let labels: Vec<&str> = issue
@@ -540,13 +644,27 @@ fn issues(nodes: &mut Vec<DetailNode>, app: &App) {
         if !labels.is_empty() {
             meta.push_str(&format!(" • {}", labels.join(", ")));
         }
-        nodes.push(DetailNode::Controls {
-            lead: Some((format!("{meta}  "), theme::muted())),
-            controls: vec![ControlSpec::new(
+        // The button floats beside the text instead of taking a full-width
+        // band, same as the session cards: title, a blank, the meta on the
+        // left; Create WT's three rows share those same lines on the right.
+        nodes.push(DetailNode::CardBody {
+            left: vec![
+                vec![(
+                    format!(
+                        "#{} {}",
+                        issue.number,
+                        crate::util::truncate(&issue.title, 45)
+                    ),
+                    theme::primary(),
+                )],
+                Vec::new(),
+                vec![(meta, theme::muted())],
+            ],
+            rows: vec![vec![ControlSpec::new(
                 Action::CreateFromIssue(index),
                 "Create WT",
                 theme::Variant::Normal,
-            )],
+            )]],
         });
         nodes.push(DetailNode::CardEnd);
     }

@@ -122,6 +122,18 @@ impl App {
             _ => {}
         }
 
+        // K/J reorder the *pinned* sessions while the cursor is on one of a
+        // pinned card's controls. Contextual on purpose: the footer is full,
+        // and outside a pinned card the keys mean nothing — recency orders the
+        // rest and cannot be rearranged.
+        if self.focus == Focus::Detail
+            && let KeyCode::Char(step @ ('K' | 'J')) = key.code
+            && is_plain_press(key)
+            && self.move_focused_pin(if step == 'K' { -1 } else { 1 })
+        {
+            return;
+        }
+
         if let KeyCode::Char(binding) = key.code
             && is_plain_press(key)
         {

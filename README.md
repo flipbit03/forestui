@@ -14,6 +14,9 @@ forestui brings Git worktree management to the terminal with a TUI built on
 - **Worktree Operations**: Create, rename, archive, and delete worktrees
 - **TUI Editor Integration**: Opens TUI editors (vim, nvim, helix, etc.) in tmux windows
 - **Claude Code Integration**: Track and resume Claude Code sessions per worktree
+- **Session Management**: See which sessions are live in a tmux window,
+  rename, pin, and delete sessions, and read each conversation's branch,
+  token totals, and estimated cost off its card
 - **GitHub Issues**: Create a worktree straight from an issue assigned to you
 - **Multi-Forest Support**: Manage multiple forest directories via CLI argument
 - **tmux Native**: Runs inside tmux for a cohesive terminal experience
@@ -81,13 +84,29 @@ day, so this is not a network call on every launch, and a build from source
 > your repositories, worktrees, and settings carry over untouched. Remove the
 > old install so the new binary wins: `uv tool uninstall forestui`.
 
-## Claude session names
+## The Claude integration
 
-forestui can keep each tmux tab and the Claude session inside it under one
-name. A session opened from forestui is named after its tab from the moment it
-opens. Rename the tab and the session follows; `/rename` inside Claude renames
-the tab. The name is used verbatim — no prefix is added or stripped, and
-resuming a session keeps the name it already had.
+One installable plugin gives forestui two abilities: shared names and
+liveness. Each tmux tab and the Claude session inside it stay under one name —
+a session opened from forestui is named after its tab from the moment it
+opens, renaming the tab renames the session, and `/rename` inside Claude
+renames the tab; the name is used verbatim, no prefix added or stripped, and
+resuming keeps it. And every session on the machine reports where it is
+running, so forestui sees sessions it did not start — a `claude -r` typed
+into a hand-made window, or a terminal with no tmux at all.
+
+Every session card shows what forestui knows about the conversation: the
+branch it last saw, its token totals with an estimated cost, and — when the
+session is running — a live badge: the window's name when it sits in a tmux
+window forestui can jump to, or "live elsewhere" when the plugin's heartbeat
+finds it running in some other terminal entirely.
+Resuming a session that is already open offers to
+switch to its window instead of starting a second Claude on the same
+transcript. Cards also carry `Rename` (a live session renames through its tmux
+window, a stopped one through its transcript), `Pin` (pinned sessions stay at
+the top of the list however old they get; reorder them with `K`/`J` while the
+cursor is on a pinned card), and `Del` (permanent, confirmed, and refused
+while a window holds the transcript open).
 
 ```bash
 forestui --claude-plugin status      # what an install would write

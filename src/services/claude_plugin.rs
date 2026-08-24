@@ -13,7 +13,7 @@ use crate::util;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-pub const PLUGIN_NAME: &str = "forestui-tmux-title";
+pub const PLUGIN_NAME: &str = "forestui-integration";
 
 /// The files that make up the plugin, relative to its directory. Shipped inside
 /// the binary so an install is never a download and never a partial checkout.
@@ -30,14 +30,18 @@ const ASSETS: &[(&str, &str)] = &[
         "hooks/tmux-title.sh",
         include_str!("../../assets/claude-plugin/tmux-title.sh"),
     ),
+    (
+        "hooks/heartbeat.sh",
+        include_str!("../../assets/claude-plugin/heartbeat.sh"),
+    ),
 ];
 
-/// The only file that has to be executable — Claude runs it as a command.
-const EXECUTABLE: &str = "hooks/tmux-title.sh";
+/// The files that have to be executable — Claude runs them as commands.
+const EXECUTABLES: &[&str] = &["hooks/tmux-title.sh", "hooks/heartbeat.sh"];
 
 /// Bumped whenever a shipped file changes, so an install by an older forestui
 /// is recognised as old rather than reported as the user having edited it.
-const SHIPPED_VERSION: &str = "3";
+const SHIPPED_VERSION: &str = "5";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
@@ -65,6 +69,23 @@ impl Status {
             }
             Status::Drifted(files) => format!("Installed, {} file(s) modified", files.len()),
         }
+    }
+}
+
+/// The startup nag for an install an older forestui wrote, and only that.
+///
+/// `NotInstalled` is a choice the user never made and `Drifted` is their own
+/// edit — neither is forestui's to warn about. Outdated is different: the
+/// user opted in, and a newer build ships hooks their install lacks (the
+/// liveness heartbeat arrived in version 4), so silence would look like the
+/// feature not working.
+pub fn upgrade_notice(status: &Status) -> Option<String> {
+    match status {
+        Status::Outdated { installed } => Some(format!(
+            "Claude integration is outdated (v{installed}, this build ships v{SHIPPED_VERSION}) — \
+             upgrade it in Settings > Claude Code Integration"
+        )),
+        _ => None,
     }
 }
 
@@ -158,7 +179,9 @@ pub fn install_in(dir: &Path, overwrite_drift: bool) -> Result<(), String> {
         util::write_atomically(&target, contents)
             .map_err(|e| format!("could not write {}: {e}", target.display()))?;
     }
-    make_executable(&dir.join(EXECUTABLE))?;
+    for rel in EXECUTABLES {
+        make_executable(&dir.join(rel))?;
+    }
     Ok(())
 }
 
@@ -178,7 +201,7 @@ pub fn uninstall_in(dir: &Path) -> Result<(), String> {
     let manifest = std::fs::read_to_string(dir.join(".claude-plugin/plugin.json"))
         .map_err(|_| format!("{} is not a forestui plugin directory", dir.display()))?;
     // Parsed, not substring-matched: this guards a recursive delete, and
-    // "forestui-tmux-title-fork" contains our name without being ours.
+    // "forestui-integration-fork" contains our name without being ours.
     let named_ours = serde_json::from_str::<serde_json::Value>(&manifest)
         .ok()
         .and_then(|v| v.get("name")?.as_str().map(str::to_string))
@@ -280,16 +303,16 @@ mod tests {
         let dir = tmp.path().join(PLUGIN_NAME);
         install_in(&dir, false).unwrap();
 
-        let script = dir.join(EXECUTABLE);
+        let script = dir.join(EXECUTABLES[0]);
         std::fs::write(&script, "#!/bin/sh\n# my own version\n").unwrap();
 
         match status_in(&dir) {
-            Status::Drifted(files) => assert_eq!(files, vec![EXECUTABLE.to_string()]),
+            Status::Drifted(files) => assert_eq!(files, vec![EXECUTABLES[0].to_string()]),
             other => panic!("expected drift, got {other:?}"),
         }
 
         let refused = install_in(&dir, false).expect_err("install must refuse to clobber");
-        assert!(refused.contains(EXECUTABLE));
+        assert!(refused.contains(EXECUTABLES[0]));
         assert!(
             std::fs::read_to_string(&script)
                 .unwrap()
@@ -300,16 +323,58 @@ mod tests {
         assert_eq!(status_in(&dir), Status::Installed);
     }
 
+    /// The startup nag fires for an outdated install and nothing else:
+    /// not-installed was never chosen, drift is the user's own edit, and a
+    /// current install has nothing to say.
+    #[test]
+    fn only_an_outdated_install_earns_the_startup_notice() {
+        let outdated = Status::Outdated {
+            installed: "3".into(),
+        };
+        let notice = upgrade_notice(&outdated).expect("outdated must notify");
+        assert!(notice.contains("v3"), "{notice}");
+        assert!(notice.contains(SHIPPED_VERSION), "{notice}");
+        assert!(
+            notice.contains("Settings > Claude Code Integration"),
+            "{notice}"
+        );
+
+        assert_eq!(upgrade_notice(&Status::NotInstalled), None);
+        assert_eq!(upgrade_notice(&Status::Installed), None);
+        assert_eq!(
+            upgrade_notice(&Status::Drifted(vec!["hooks/tmux-title.sh".into()])),
+            None
+        );
+    }
+
+    /// And the real status of a freshly written old-version install produces
+    /// that notice end to end.
+    #[test]
+    fn an_old_install_reads_as_outdated_and_notifies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(PLUGIN_NAME);
+        install_in(&dir, false).unwrap();
+        std::fs::write(
+            dir.join(".claude-plugin/plugin.json"),
+            format!("{{\"name\":\"{PLUGIN_NAME}\",\"version\":\"3\"}}"),
+        )
+        .unwrap();
+
+        let status = status_in(&dir);
+        assert!(matches!(status, Status::Outdated { .. }), "{status:?}");
+        assert!(upgrade_notice(&status).is_some());
+    }
+
     /// A recursive delete guarded by a substring match would take
-    /// "forestui-tmux-title-fork" with it.
+    /// "forestui-integration-fork" with it.
     #[test]
     fn uninstall_refuses_a_plugin_whose_name_merely_contains_ours() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("forestui-tmux-title-fork");
+        let dir = tmp.path().join("forestui-integration-fork");
         std::fs::create_dir_all(dir.join(".claude-plugin")).unwrap();
         std::fs::write(
             dir.join(".claude-plugin/plugin.json"),
-            "{\"name\":\"forestui-tmux-title-fork\"}",
+            "{\"name\":\"forestui-integration-fork\"}",
         )
         .unwrap();
 
@@ -342,10 +407,12 @@ mod tests {
         let dir = tmp.path().join(PLUGIN_NAME);
         install_in(&dir, false).unwrap();
 
-        let mode = std::fs::metadata(dir.join(EXECUTABLE))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o111, 0o111, "owner/group/other execute bits");
+        for rel in EXECUTABLES {
+            let mode = std::fs::metadata(dir.join(rel))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o111, 0o111, "{rel}: owner/group/other execute");
+        }
     }
 }

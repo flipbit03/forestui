@@ -94,17 +94,53 @@ pub enum ConfirmAction {
     /// Second-step confirm: the worktree was seen to hold uncommitted work.
     ForceDeleteWorktree(Uuid),
     RemoveRepository(Uuid),
+    /// Permanently delete a Claude session's transcript. No undo — the dialog
+    /// says so, and that is the design: a trash can nobody empties is clutter.
+    DeleteClaudeSession {
+        path: String,
+        session_id: String,
+        title: String,
+    },
+    /// The duplicate-open guard's offer: the session is already open in a tmux
+    /// window, so jump there instead of starting a second Claude on the same
+    /// transcript and letting the two halves diverge.
+    SwitchToWindow {
+        window_id: String,
+        window_name: String,
+    },
+    /// The guard's other shape: the session is running somewhere forestui
+    /// cannot jump to (another tmux session, or no tmux at all — found via
+    /// the plugin's heartbeat). Confirming resumes here anyway, eyes open:
+    /// two Claudes on one transcript diverge.
+    ForceResume {
+        path: String,
+        session_id: String,
+        yolo: bool,
+        custom_button: Option<usize>,
+        seed: Option<String>,
+    },
 }
 
 impl ConfirmAction {
-    /// Label on the destructive button. Derived from the action so a
-    /// construction site cannot pair a discard-your-work action with a bland
-    /// "Delete" button.
+    /// Label on the confirm button. Derived from the action so a construction
+    /// site cannot pair a discard-your-work action with a bland "Delete"
+    /// button.
     pub fn confirm_label(&self) -> &'static str {
         match self {
             ConfirmAction::ForceDeleteWorktree(_) => "Delete anyway",
-            ConfirmAction::DeleteWorktree(_) | ConfirmAction::RemoveRepository(_) => "Delete",
+            ConfirmAction::DeleteWorktree(_)
+            | ConfirmAction::RemoveRepository(_)
+            | ConfirmAction::DeleteClaudeSession { .. } => "Delete",
+            ConfirmAction::SwitchToWindow { .. } => "Switch",
+            ConfirmAction::ForceResume { .. } => "Resume anyway",
         }
+    }
+
+    /// Whether confirming destroys something. Drives the button's colour: a
+    /// "Switch" painted destructive-red would warn against the safe choice,
+    /// while "Resume anyway" — forking a running conversation — earns it.
+    pub fn is_destructive(&self) -> bool {
+        !matches!(self, ConfirmAction::SwitchToWindow { .. })
     }
 }
 
@@ -134,6 +170,16 @@ pub enum ModalResult {
     /// slug lives in `theme::THEMES` — a non-theme value is unrepresentable.
     ThemeChosen(&'static str),
     Confirmed(ConfirmAction),
+    /// The rename-session dialog committed a name. `live_window_id` decides
+    /// the mechanism: a live session is renamed through its tmux window (the
+    /// sync plugin carries it into the session), a stopped one by appending a
+    /// `custom-title` record to its transcript.
+    SessionRenamed {
+        path: String,
+        session_id: String,
+        name: String,
+        live_window_id: Option<String>,
+    },
 }
 
 #[derive(Debug)]
@@ -147,6 +193,7 @@ pub enum Modal {
     ThemePicker(ThemePickerModal),
     ClaudeIntegration(ClaudeIntegrationModal),
     Confirm(ConfirmModal),
+    RenameSession(RenameSessionModal),
 }
 
 impl Modal {
@@ -169,6 +216,7 @@ impl Modal {
             Modal::ThemePicker(m) => m.handle_key(key),
             Modal::ClaudeIntegration(m) => m.handle_key(key),
             Modal::Confirm(m) => m.handle_key(key),
+            Modal::RenameSession(m) => m.handle_key(key),
         }
     }
 
@@ -208,6 +256,7 @@ impl Modal {
             }
             // Confirm has two choices rather than a ring: 0 Cancel, 1 Delete.
             Modal::Confirm(m) => m.confirm_focused = index == 1,
+            Modal::RenameSession(m) => m.focus = index.min(RenameSessionModal::FIELDS - 1),
         }
     }
 
@@ -1330,6 +1379,100 @@ impl ClaudeIntegrationModal {
     }
 }
 
+// --------------------------------------------------------------- Rename session
+
+/// The longest name worth having: it becomes a tmux tab and a prompt-box
+/// title, both of which truncate far sooner than this.
+pub const MAX_SESSION_NAME_LENGTH: usize = 60;
+
+/// Rename a Claude session, live or stopped.
+///
+/// One dialog for both cases; only the submit differs, and the dialog says
+/// which mechanism will run so the user is never surprised by a tab renaming
+/// itself (live) or not (stopped).
+#[derive(Debug)]
+pub struct RenameSessionModal {
+    pub path: String,
+    pub session_id: String,
+    pub name: TextInput,
+    /// The tmux window holding this session right now, if any. Some means the
+    /// rename goes through the window; the sync plugin does the rest.
+    pub live_window: Option<(String, String)>,
+    pub error: String,
+    /// One of the `FOCUS_*` constants; see [`RenameSessionModal`].
+    pub focus: usize,
+}
+
+impl RenameSessionModal {
+    /// The focus ring, in the order `ui/modals.rs` draws it.
+    pub const FOCUS_NAME: usize = 0;
+    pub const FOCUS_SAVE: usize = 1;
+    pub const FOCUS_CANCEL: usize = 2;
+    pub const FIELDS: usize = Self::FOCUS_CANCEL + 1;
+
+    pub fn new(
+        path: String,
+        session_id: String,
+        current_name: String,
+        live_window: Option<(String, String)>,
+    ) -> Self {
+        // The seed can be an unnamed session's first-prompt title, which runs
+        // to 100 characters; the field's cap only gates *typed* input, so an
+        // over-long seed is clipped here or Save would accept what typing
+        // could never produce.
+        let current_name: String = current_name.chars().take(MAX_SESSION_NAME_LENGTH).collect();
+        Self {
+            path,
+            session_id,
+            name: TextInput::new(current_name)
+                .with_placeholder("session name")
+                .with_max_length(MAX_SESSION_NAME_LENGTH),
+            live_window,
+            error: String::new(),
+            focus: Self::FOCUS_NAME,
+        }
+    }
+
+    fn save(&mut self) -> ModalOutcome {
+        let name = self.name.value().trim().to_string();
+        if name.is_empty() {
+            self.error = "Name cannot be empty".into();
+            return ModalOutcome::None;
+        }
+        // The name becomes a tmux window name, which reaches a shell via the
+        // quoting in `services/tmux.rs` — but a control character would end a
+        // startup-file line, so it is refused at the door like button labels.
+        if name.chars().any(char::is_control) {
+            self.error = "Name cannot contain control characters".into();
+            return ModalOutcome::None;
+        }
+        ModalOutcome::Submit(ModalResult::SessionRenamed {
+            path: self.path.clone(),
+            session_id: self.session_id.clone(),
+            name,
+            live_window_id: self.live_window.as_ref().map(|(id, _)| id.clone()),
+        })
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
+        if is_escape(key) {
+            return ModalOutcome::Close;
+        }
+        if self.focus == Self::FOCUS_NAME && edit_input(&mut self.name, key) {
+            self.error.clear();
+            return ModalOutcome::None;
+        }
+        if cycle_focus(&mut self.focus, Self::FIELDS, key) {
+            return ModalOutcome::None;
+        }
+        match (self.focus, key.code) {
+            (Self::FOCUS_CANCEL, KeyCode::Enter) => ModalOutcome::Close,
+            (_, KeyCode::Enter) => self.save(),
+            _ => ModalOutcome::None,
+        }
+    }
+}
+
 // ----------------------------------------------------------------------- Confirm
 
 #[derive(Debug)]
@@ -1449,6 +1592,12 @@ mod tests {
             Modal::Settings(Box::new(SettingsModal::new(&Settings::default()))),
             Modal::CustomButtons(CustomButtonsModal::new(vec![])),
             Modal::EditButton(Box::new(EditButtonModal::new(None, &[], None))),
+            Modal::RenameSession(RenameSessionModal::new(
+                "/tmp/x".into(),
+                "sess".into(),
+                "old name".into(),
+                None,
+            )),
         ];
         for modal in &mut modals {
             assert!(matches!(
@@ -1700,6 +1849,75 @@ mod tests {
             }
             other => panic!("unexpected outcome: {other:?}"),
         }
+    }
+
+    /// The rename dialog refuses what cannot become a name — empty, or text
+    /// with control characters, which would end a startup-file line — and
+    /// carries the live window through so the submit knows its mechanism.
+    #[test]
+    fn rename_session_validates_and_carries_the_mechanism() {
+        let mut modal = RenameSessionModal::new(
+            "/tmp/x".into(),
+            "sess".into(),
+            String::new(),
+            Some(("@3".into(), "claude:wt".into())),
+        );
+        modal.focus = RenameSessionModal::FOCUS_SAVE;
+        assert!(matches!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::None
+        ));
+        assert_eq!(modal.error, "Name cannot be empty");
+
+        modal.name.set_value("bad\nname");
+        modal.handle_key(key(KeyCode::Enter));
+        assert!(modal.error.contains("control characters"));
+
+        modal.name.set_value("  retry loop  ");
+        let ModalOutcome::Submit(ModalResult::SessionRenamed {
+            name,
+            live_window_id,
+            session_id,
+            ..
+        }) = modal.handle_key(key(KeyCode::Enter))
+        else {
+            panic!("a valid name must submit");
+        };
+        assert_eq!(name, "retry loop", "the name is trimmed");
+        assert_eq!(live_window_id.as_deref(), Some("@3"));
+        assert_eq!(session_id, "sess");
+
+        // A stopped session submits with no window, which is the transcript
+        // path on the other side.
+        let mut stopped =
+            RenameSessionModal::new("/tmp/x".into(), "sess".into(), "old".into(), None);
+        stopped.focus = RenameSessionModal::FOCUS_SAVE;
+        let ModalOutcome::Submit(ModalResult::SessionRenamed { live_window_id, .. }) =
+            stopped.handle_key(key(KeyCode::Enter))
+        else {
+            panic!("a valid name must submit");
+        };
+        assert_eq!(live_window_id, None);
+    }
+
+    /// "Switch" is the safe choice and must not wear the destructive colour.
+    #[test]
+    fn only_destructive_confirms_read_as_destructive() {
+        assert!(ConfirmAction::DeleteWorktree(Uuid::new_v4()).is_destructive());
+        assert!(
+            ConfirmAction::DeleteClaudeSession {
+                path: "/x".into(),
+                session_id: "s".into(),
+                title: "t".into(),
+            }
+            .is_destructive()
+        );
+        let switch = ConfirmAction::SwitchToWindow {
+            window_id: "@1".into(),
+            window_name: "claude:wt".into(),
+        };
+        assert!(!switch.is_destructive());
+        assert_eq!(switch.confirm_label(), "Switch");
     }
 
     #[test]

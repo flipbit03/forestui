@@ -1,5 +1,5 @@
 {
-  "name": "forestui-tmux-title",
-  "description": "Names each Claude Code session after the tmux window forestui opened it in.",
-  "version": "3"
+  "name": "forestui-integration",
+  "description": "Names each Claude Code session after the tmux window forestui opened it in, and records where every session is running.",
+  "version": "5"
 }

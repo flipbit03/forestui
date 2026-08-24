@@ -64,6 +64,29 @@ pub enum AppEvent {
         path: String,
         sessions: Option<Vec<ClaudeSession>>,
     },
+    /// The live scan finished: where every Claude session on the machine is
+    /// running right now — stamped tmux windows plus plugin heartbeats. A
+    /// snapshot of the whole view, so the fold replaces rather than merges —
+    /// a session that ended simply stops being listed.
+    LiveSessions {
+        sessions: Vec<crate::services::live::LiveSession>,
+    },
+    /// A transcript deletion finished. Folded on the main loop so the list,
+    /// the pin state and the toast all change together.
+    SessionDeleted {
+        path: String,
+        session_id: String,
+        title: String,
+        result: Result<(), String>,
+    },
+    /// A stopped session's transcript was renamed on disk. Carries the re-read
+    /// session so the card updates in the same fold that announces it.
+    SessionRenamed {
+        path: String,
+        session_id: String,
+        session: Box<Option<ClaudeSession>>,
+        result: Result<(), String>,
+    },
     /// GitHub issues for a repository finished loading.
     Issues {
         path: String,

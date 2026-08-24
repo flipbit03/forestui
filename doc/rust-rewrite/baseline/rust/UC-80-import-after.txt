@@ -27,13 +27,13 @@
                                   │
                                   │  ──────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
-                                  │  CLAUDE
+                                  │  CLAUDE: NEW SESSION
                                   │
-                                  │  ┌─────────────┐ ┌───────────────────┐ ┌──────┐
-                                  │  │ New Session │ │ New Session: YOLO │ │ Opus │
-                                  │  └─────────────┘ └───────────────────┘ └──────┘
+                                  │  ┌────────┐ ┌──────┐ ┌──────┐
+                                  │  │ Claude │ │ YOLO │ │ Opus │
+                                  │  └────────┘ └──────┘ └──────┘
                                   │
-                                  │  RECENT SESSIONS
+                                  │  CLAUDE: RECENT SESSIONS
                                   │  No sessions found
                                   │
                                   │  ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -42,19 +42,17 @@
                                   │
                                   │  ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
                                   │  │                                                                                                │
-                                  │  │ #326 Fansly conversation discovery has no backoff                                              │
-                                  │  │                                                                                  ┌───────────┐ │
-                                  │  │                                                                                  │ Create WT │ │
-                                  │  │ <rel> • bug                                                                └───────────┘ │
+                                  │  │ #326 Fansly conversation discovery has no backoff                                 ┌───────────┐│
+                                  │  │                                                                                   │ Create WT ││
+                                  │  │ <rel> • bug                                                                 └───────────┘│
                                   │  │                                                                                                │
                                   │  └────────────────────────────────────────────────────────────────────────────────────────────────┘
                                   │
                                   │  ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
                                   │  │                                                                                                │
-                                  │  │ #298 Proactive metrics: coalesced FIRE rows overco...                                          │
-                                  │  │                                                                                  ┌───────────┐ │
-                                  │  │                                                                                  │ Create WT │ │
-                                  │  │ <rel> • metrics, p2                                                        └───────────┘ │
+                                  │  │ #298 Proactive metrics: coalesced FIRE rows overco...                             ┌───────────┐│
+                                  │  │                                                                                   │ Create WT ││
+                                  │  │ <rel> • metrics, p2                                                         └───────────┘│
                                   │  │                                                                                                │
                                   │  └────────────────────────────────────────────────────────────────────────────────────────────────┘
                                   │
@@ -64,7 +62,9 @@
                                   │
                                   │  ┌───────────────────┐
                                   │  │ Remove Repository │
-                                  │  └───────────────────┘                     Detected worktree 'gamma-imported'
+                                  │  └───────────────────┘
+                                  │
+                                  │                                            Detected worktree 'gamma-imported'
                                   │
  a Add Repo  q Quit  w Add Worktree  e Editor  t Terminal  o Files  n Claude  y YOLO  h Archive  d Delete  s Settings  r Refresh  A Archived
 [forestui-0:forestui-dev-<hhmm>* 1:edit:alpha:wt-a  2:term:alpha:wt-a  3:files:alpha:wt-a  4:claude:alpha:wt->"<host>" <clock>

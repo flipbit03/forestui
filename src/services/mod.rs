@@ -4,5 +4,6 @@ pub mod claude_plugin;
 pub mod claude_session;
 pub mod git;
 pub mod github;
+pub mod live;
 pub mod settings;
 pub mod tmux;

@@ -61,6 +61,9 @@ fn resolve(path: &str) -> PathBuf {
 
 pub struct AppState {
     repositories: Vec<Repository>,
+    /// Pinned Claude sessions per path, in pin order — see
+    /// [`crate::models::AppStateData::pinned_sessions`].
+    pinned_sessions: std::collections::HashMap<String, Vec<String>>,
     pub selection: Selection,
     pub show_archived: bool,
     config_path: PathBuf,
@@ -85,14 +88,14 @@ impl AppState {
     /// Load state from an explicit config path. Corrupt files are ignored, the
     /// same as the Textual build, so a bad file never blocks startup.
     pub fn load_from(config_path: PathBuf) -> Self {
-        let repositories = std::fs::read_to_string(&config_path)
+        let data = std::fs::read_to_string(&config_path)
             .ok()
             .and_then(|raw| serde_json::from_str::<AppStateData>(&raw).ok())
-            .map(|data| data.repositories)
             .unwrap_or_default();
 
         Self {
-            repositories,
+            repositories: data.repositories,
+            pinned_sessions: data.pinned_sessions,
             selection: Selection::default(),
             show_archived: false,
             config_path,
@@ -106,6 +109,7 @@ impl AppState {
         }
         let data = AppStateData {
             repositories: self.repositories.clone(),
+            pinned_sessions: self.pinned_sessions.clone(),
         };
         self.save_error = match serde_json::to_string_pretty(&data) {
             Ok(json) => crate::util::write_atomically(&self.config_path, &json)
@@ -369,6 +373,72 @@ impl AppState {
         self.selection
             .worktree_id
             .and_then(|id| self.find_worktree(id))
+    }
+
+    // -------------------------------------------------------- session pins
+
+    /// Pinned session ids for a path, in pin order.
+    pub fn pinned_for(&self, path: &str) -> Vec<String> {
+        self.pinned_sessions.get(path).cloned().unwrap_or_default()
+    }
+
+    pub fn is_pinned(&self, path: &str, session_id: &str) -> bool {
+        self.pinned_sessions
+            .get(path)
+            .is_some_and(|ids| ids.iter().any(|id| id == session_id))
+    }
+
+    /// Pin or unpin a session. Returns whether it is pinned afterwards.
+    /// A new pin appends, so pin order is the order the user pinned in.
+    pub fn toggle_pin(&mut self, path: &str, session_id: &str) -> bool {
+        let ids = self.pinned_sessions.entry(path.to_string()).or_default();
+        let pinned = if let Some(index) = ids.iter().position(|id| id == session_id) {
+            ids.remove(index);
+            false
+        } else {
+            ids.push(session_id.to_string());
+            true
+        };
+        if self.pinned_sessions.get(path).is_some_and(Vec::is_empty) {
+            // An empty list would sit in the config file forever.
+            self.pinned_sessions.remove(path);
+        }
+        self.save();
+        pinned
+    }
+
+    /// Drop a pin without toggling — for a session that was deleted.
+    pub fn remove_pin(&mut self, path: &str, session_id: &str) {
+        if let Some(ids) = self.pinned_sessions.get_mut(path) {
+            let before = ids.len();
+            ids.retain(|id| id != session_id);
+            let now_empty = ids.is_empty();
+            let changed = ids.len() != before;
+            if now_empty {
+                self.pinned_sessions.remove(path);
+            }
+            if changed {
+                self.save();
+            }
+        }
+    }
+
+    /// Move a pinned session within the pinned order. Returns whether anything
+    /// moved — unpinned sessions are ordered by recency and cannot be moved.
+    pub fn move_pin(&mut self, path: &str, session_id: &str, delta: isize) -> bool {
+        let Some(ids) = self.pinned_sessions.get_mut(path) else {
+            return false;
+        };
+        let Some(index) = ids.iter().position(|id| id == session_id) else {
+            return false;
+        };
+        let target = index as isize + delta;
+        if target < 0 || target as usize >= ids.len() {
+            return false;
+        }
+        ids.swap(index, target as usize);
+        self.save();
+        true
     }
 
     pub fn has_archived_worktrees(&self) -> bool {
@@ -749,6 +819,55 @@ mod tests {
         let worktrees = &state.repositories()[0].worktrees;
         assert_eq!(worktrees.len(), 1);
         assert_eq!(worktrees[0].name, "chosen-name");
+    }
+
+    /// Pins survive a relaunch and keep their order — that order *is* the
+    /// feature: it is what the user arranged with K/J.
+    #[test]
+    fn session_pins_toggle_reorder_and_persist() {
+        let (dir, mut state) = temp_state();
+        let path = "/tmp/forest/demo/wt";
+
+        assert!(state.toggle_pin(path, "a"));
+        assert!(state.toggle_pin(path, "b"));
+        assert!(state.toggle_pin(path, "c"));
+        assert_eq!(state.pinned_for(path), vec!["a", "b", "c"]);
+        assert!(state.is_pinned(path, "b"));
+
+        // Move "c" up past "b"; the edges refuse silently.
+        assert!(state.move_pin(path, "c", -1));
+        assert_eq!(state.pinned_for(path), vec!["a", "c", "b"]);
+        assert!(!state.move_pin(path, "a", -1));
+        assert!(!state.move_pin(path, "b", 1));
+        assert!(!state.move_pin(path, "unpinned", 1));
+
+        // Unpinning removes; deleting a session drops its pin the same way.
+        assert!(!state.toggle_pin(path, "c"));
+        state.remove_pin(path, "b");
+        assert_eq!(state.pinned_for(path), vec!["a"]);
+
+        let reloaded = AppState::load_from(dir.path().join(".forestui-config.json"));
+        assert_eq!(reloaded.pinned_for(path), vec!["a"]);
+        assert!(reloaded.pinned_for("/other/path").is_empty());
+
+        // Emptying a path's pins removes the key from the file entirely.
+        let mut reloaded = reloaded;
+        assert!(!reloaded.toggle_pin(path, "a"));
+        let raw =
+            std::fs::read_to_string(dir.path().join(".forestui-config.json")).unwrap_or_default();
+        assert!(
+            !raw.contains("/tmp/forest/demo/wt"),
+            "an empty pin list lingers in the config: {raw}"
+        );
+    }
+
+    /// The new field is additive: a config written before pins existed loads,
+    /// and one written with pins still carries its repositories.
+    #[test]
+    fn configs_without_pins_load_cleanly() {
+        let json = r#"{"repositories": []}"#;
+        let data: crate::models::AppStateData = serde_json::from_str(json).unwrap();
+        assert!(data.pinned_sessions.is_empty());
     }
 
     #[test]

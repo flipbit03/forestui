@@ -228,16 +228,28 @@ text = text.replace(root, "<ROOT>")
 # committed frame, making the baseline depend on who ran the sweep and from
 # where.
 text = text.replace(os.environ["FUI_BIN"], "<forestui>")
+# Fresh Claude sessions run under a pre-minted `--session-id <uuid>`, freshly
+# random per launch — before the 7-hex rule below eats fragments of it.
+text = re.sub(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+    "<uuid>",
+    text,
+)
+# A dev instance names its window "forestui-dev-HHMM" — masked before the pid
+# rule below, whose pattern would otherwise swallow the timestamp as a pid.
+# (This whole program lives in a single-quoted shell string: no apostrophes.)
+text = re.sub(r"dev-\d{4}", "dev-<hhmm>", text)
+# Grouped sessions are named "forestui-<forest>-<pid>". Before the sha rule:
+# a 7-digit pid is also seven hex characters, and whichever rule ran first
+# used to decide whether the frame said <pid> or <sha> — a coin flip per run
+# that kept dirtying UC-82.
+text = re.sub(r"(forestui-[a-z0-9-]+?)-\d+\b", r"\1-<pid>", text)
 text = re.sub(r"\b[0-9a-f]{7}\b", "<sha>", text)
 # Bare or parenthesised: session cards and issue rows print "N days ago"
 # with no parentheses, and an unmasked one rots the committed frames daily.
 text = re.sub(r"\b(\d+|an?) (seconds?|minutes?|hours?|days?|months?|years?) ago\b", "<rel>", text)
 text = re.sub(r"\ba moment ago\b", "<rel>", text)
 text = re.sub(r"\(now\)", "(<rel>)", text)
-text = re.sub(r"dev-\d{4}", "dev-<hhmm>", text)
-# Grouped sessions are named "forestui-<forest>-<pid>", so the pid would
-# otherwise make every run dirty the committed baseline.
-text = re.sub(r"(forestui-[a-z0-9-]+?)-\d+\b", r"\1-<pid>", text)
 text = re.sub(r"\d{2}:\d{2} \d{2}-\w{3}-\d{2}", "<clock>", text)
 # tmux prints the machine name in its status bar and the shell prompt inside a
 # terminal window prints `user@host`. These frames are committed and travel to a

@@ -231,7 +231,7 @@ fast switching between editor, app, and Claude windows.
 The re-exec uses `std::env::current_exe()`, so a `cargo run` build re-launches
 itself rather than whatever `forestui` happens to be on `PATH`.
 
-### Session names follow tmux window names
+### The Claude integration: names follow tabs, liveness follows sessions
 
 A tmux window forestui opened and the Claude session running in it carry the
 same name, in both directions: renaming the tab renames the session, and
@@ -264,6 +264,26 @@ a window still open for the same conversation — passing it would overwrite the
 real name with the suffixed one. The hook adopts the stored name onto the
 window instead.
 
+- **`@claude_session_id`**, a second window option stamped the same way (from
+  inside the window, ahead of the command), records which Claude session the
+  window holds — the pre-minted `--session-id` for a fresh session, the
+  resumed id otherwise. It is what makes window ↔ session a recorded fact:
+  the live badge, the duplicate-open guard and the delete refusal all
+  resolve against one `list-windows` sweep over these stamps, never against
+  transcript mtimes. Corollary: the shell history line for a
+  fresh session remembers the *resume* form (`claude -r '<id>'`), because
+  `--session-id` refuses to run once the session exists and the up arrow
+  exists precisely for the second run.
+- **Heartbeats** complete the picture for sessions forestui did not start.
+  The plugin's `heartbeat.sh` runs inside *every* Claude session on the
+  machine and keeps one file per session under `~/.config/forestui/live/`,
+  carrying the claude process id — validated against `ps` before it is
+  believed, swept when stale. `services/live.rs` merges heartbeats with the
+  window stamps: a heartbeat whose recorded pane sits on forestui's own tmux
+  session is switchable like a stamped window, anything else shows as
+  "live elsewhere" and resuming it is an eyes-open confirm. The hook also
+  re-stamps `@claude_session_id` on its window, healing a stale stamp left by
+  an earlier launch.
 - **`@claude_birth_name`**, a tmux window option stamped when the window is
   created, answers one question: did forestui open this window? A window the
   user made by hand carries none and is left alone, as is a bare `claude` in a

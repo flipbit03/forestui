@@ -173,6 +173,7 @@ fn render_node(pane: &mut Pane, app: &App, node: DetailNode) {
                 .unwrap_or_default();
             pane.controls(lead, &controls);
         }
+        DetailNode::CardBody { left, rows } => card_body(pane, left, rows),
         DetailNode::Field { field, label } => {
             let input = match field {
                 Field::WorktreeName => &app.name_input,
@@ -486,6 +487,114 @@ impl Pane {
     }
 }
 
+/// A session card's body: text lines on the left, stacked button rows
+/// floating flush right, sharing the same screen rows. Each visual row is
+/// composed as left text (clipped so it can never run under a button), a
+/// stretch of card fill, then that row's slice of the button boxes.
+///
+/// Claims happen exactly as [`Pane::controls`] makes them — top sub-row, three
+/// rows tall, left to right, row after row — so the flattened order matches
+/// what `detail::drawn` reports for the node.
+fn card_body(pane: &mut Pane, left: Vec<Vec<(String, Style)>>, rows: Vec<Vec<ControlSpec>>) {
+    let Some(card) = pane.card else {
+        return;
+    };
+    // What `push_line` can hold between the card's left border+pad and its
+    // right border.
+    let content = card.width.saturating_sub(CARD_INSET + 1);
+    // Right-aligned x (in content coordinates) and width of each button row.
+    let geometry: Vec<(u16, u16)> = rows
+        .iter()
+        .map(|row| {
+            let width = row
+                .iter()
+                .map(|control| control_width(&control.label))
+                .sum::<u16>()
+                .saturating_add(as_u16(row.len().saturating_sub(1)));
+            (content.saturating_sub(width), width)
+        })
+        .collect();
+    let button_rows = as_u16(rows.len()) * CONTROL_HEIGHT;
+    let total = as_u16(left.len()).max(button_rows);
+
+    // The three composed sub-rows of the button row currently being emitted.
+    let mut pending: Vec<[Vec<Span<'static>>; 3]> = Vec::new();
+    for i in 0..total {
+        let sub = (i % CONTROL_HEIGHT) as usize;
+        let row_index = (i / CONTROL_HEIGHT) as usize;
+        let has_buttons = i < button_rows;
+
+        if has_buttons && sub == 0 {
+            pending.clear();
+            let mut x = geometry[row_index].0;
+            for (j, control) in rows[row_index].iter().enumerate() {
+                if j > 0 {
+                    x = x.saturating_add(1);
+                }
+                let width = control_width(&control.label);
+                // +CARD_INSET: item x is measured from the pane edge, and the
+                // card's border and padding sit before the content.
+                let (focused, hovered) = pane.claim(x + CARD_INSET, width, CONTROL_HEIGHT);
+                pending.push(control_box(control, focused, hovered));
+                x = x.saturating_add(width);
+            }
+        }
+
+        // The left text, clipped so it always stops short of the buttons.
+        let avail = if has_buttons {
+            geometry[row_index].0.saturating_sub(2)
+        } else {
+            content
+        };
+        let mut spans = clip_spans(left.get(i as usize), avail as usize);
+        if has_buttons {
+            let used = as_u16(spans.iter().map(Span::width).sum::<usize>());
+            spans.push(Span::raw(
+                " ".repeat(geometry[row_index].0.saturating_sub(used) as usize),
+            ));
+            for (j, tri) in pending.iter().enumerate() {
+                if j > 0 {
+                    spans.push(Span::raw(" "));
+                }
+                spans.extend(tri[sub].iter().cloned());
+            }
+        }
+        pane.push_line(spans);
+    }
+}
+
+/// A left-column line cut to `avail` *columns*, span boundaries respected.
+///
+/// Display width, not chars: turns routinely carry emoji, which occupy two
+/// columns each — clipped by character count, a line of them ran under the
+/// gap and pushed the card's right border out of alignment. Measured with
+/// the same `unicode-width` the padding math (`Span::width`) resolves to, so
+/// the two can never disagree about where the text ends.
+fn clip_spans(line: Option<&Vec<(String, Style)>>, avail: usize) -> Vec<Span<'static>> {
+    use unicode_width::UnicodeWidthChar;
+    let mut spans = Vec::new();
+    let mut used = 0usize;
+    for (text, style) in line.into_iter().flatten() {
+        if used >= avail {
+            break;
+        }
+        let mut piece = String::new();
+        for ch in text.chars() {
+            let width = ch.width().unwrap_or(0);
+            if used + width > avail {
+                break;
+            }
+            used += width;
+            piece.push(ch);
+        }
+        spans.push(Span::styled(piece, *style));
+        if used >= avail {
+            break;
+        }
+    }
+    spans
+}
+
 /// The scrollbar on the right edge, drawn only when the content is taller than
 /// the pane. Without one nothing on screen says the pane continues below the
 /// fold.
@@ -657,6 +766,9 @@ mod tests {
             recent_turns: Vec::new(),
             last_timestamp: Utc::now(),
             message_count: 12,
+            git_branch: None,
+            tokens: Default::default(),
+            model: None,
         }
     }
 
@@ -693,14 +805,27 @@ mod tests {
     /// Cell of the first occurrence of `needle`. Byte offsets would not do: the
     /// pill caps around every control are multi-byte.
     fn find_cell(buffer: &Buffer, needle: &str) -> (u16, u16) {
+        find_cell_nth(buffer, needle, 0)
+    }
+
+    /// Cell of the `nth` occurrence, top-to-bottom then left-to-right — for
+    /// labels the standardized launch rows deliberately repeat.
+    fn find_cell_nth(buffer: &Buffer, needle: &str, nth: usize) -> (u16, u16) {
         let width = buffer.area.width as usize;
+        let mut seen = 0usize;
         for (y, row) in buffer.content.chunks(width).enumerate() {
             let line: String = row.iter().map(|cell| cell.symbol()).collect();
-            if let Some(byte) = line.find(needle) {
-                return (as_u16(line[..byte].chars().count()), as_u16(y));
+            let mut from = 0usize;
+            while let Some(byte) = line[from..].find(needle) {
+                let byte = from + byte;
+                if seen == nth {
+                    return (as_u16(line[..byte].chars().count()), as_u16(y));
+                }
+                seen += 1;
+                from = byte + needle.len();
             }
         }
-        panic!("{needle:?} is not on screen");
+        panic!("occurrence {nth} of {needle:?} is not on screen");
     }
 
     fn detail_hits(app: &App) -> usize {
@@ -827,14 +952,168 @@ mod tests {
                 "{label}: border colour"
             );
             // The background has to reach past the text, or the card is a frame
-            // around the page colour rather than a filled box.
-            for probe in [x, right - 1] {
+            // around the page colour rather than a filled box. Probed just
+            // after the label rather than at the far edge: on a session card
+            // the right side of the title row is a floating button, whose box
+            // carries its own fill.
+            let past_label = x + as_u16(label.chars().count()) + 2;
+            for probe in [x, past_label] {
                 assert_eq!(
                     cell(probe, y).bg,
                     theme::active().bg_elevated,
                     "{label}: background at {probe}",
                 );
             }
+        }
+    }
+
+    /// The session card's new furniture: the live badge for an open session,
+    /// the branch line, the spend on the meta line, the pin marker, and a Del
+    /// that cannot fire while a window holds the transcript.
+    #[tokio::test]
+    async fn session_cards_show_liveness_pins_and_spend() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = test_app(&dir);
+        with_worktree(&mut app);
+        let path = app.state.selected_path().expect("a selection");
+
+        let mut session = a_session();
+        session.git_branch = Some("feat/x".into());
+        session.model = Some("claude-opus-5".into());
+        session.tokens = crate::models::TokenUsage {
+            input: 1_000,
+            cache_write: 1_199_000,
+            cache_read: 0,
+            output: 50_000,
+        };
+        app.sessions = Some(vec![session]);
+        app.state.toggle_pin(&path, "abc");
+        app.live_sessions.insert(
+            "abc".into(),
+            crate::services::live::LiveSession {
+                session_id: "abc".into(),
+                place: crate::services::live::LivePlace::Window {
+                    window_id: "@9".into(),
+                    window_name: "claude:demo:wt".into(),
+                },
+            },
+        );
+        let screen = render(&mut app);
+        // The badge rides the title line, naming the window only because it
+        // differs from the session name.
+        assert!(
+            screen.contains("Refactor the detail pane · ● live in claude:demo:wt"),
+            "{screen}"
+        );
+        assert!(screen.contains("on branch feat/x"), "{screen}");
+        // The buttons float on the right of the card's own rows rather than
+        // taking a full-width band: the launch row starts level with the
+        // title, the manage row below it, and the left column keeps its own
+        // order — branch above meta at the bottom.
+        let rows: Vec<&str> = screen.lines().collect();
+        let row_of = |needle: &str| {
+            rows.iter()
+                .position(|row| row.contains(needle))
+                .unwrap_or_else(|| panic!("{needle:?} is not on screen:\n{screen}"))
+        };
+        assert!(row_of("Rename") > row_of("Claude │"), "{screen}");
+        assert!(row_of("12 msgs") > row_of("on branch feat/x"), "{screen}");
+        // The spend rides the meta line, beside the count it explains.
+        assert!(
+            screen.contains("12 msgs • 1.2M in / 50k out • ~$"),
+            "{screen}"
+        );
+        assert!(screen.contains("◆ Refactor the detail pane"), "{screen}");
+        assert!(screen.contains("Unpin"), "{screen}");
+
+        // Del keeps its slot but is disabled while the window is open.
+        let del = app
+            .detail_items()
+            .iter()
+            .position(|item| *item == DetailItem::Action(Action::DeleteSession(0)))
+            .expect("Del renders");
+        render_buffer(&mut app, 100, TALL);
+        assert_eq!(
+            app.drawn_items.get(del).map(|(_, enabled)| *enabled),
+            Some(false),
+            "Del must not fire on a live session"
+        );
+
+        // A window named exactly after the session — the designed steady
+        // state — is not worth repeating: the badge alone says live.
+        if let crate::services::live::LivePlace::Window { window_name, .. } =
+            &mut app.live_sessions.get_mut("abc").unwrap().place
+        {
+            *window_name = "Refactor the detail pane".to_string();
+        }
+        let screen = render(&mut app);
+        assert!(
+            screen.contains("Refactor the detail pane · ● live"),
+            "{screen}"
+        );
+        assert!(!screen.contains("● live in"), "{screen}");
+
+        // No window at all: no badge, Del enabled again.
+        app.live_sessions.clear();
+        let screen = render(&mut app);
+        assert!(!screen.contains("● live"), "{screen}");
+        render_buffer(&mut app, 100, TALL);
+        assert_eq!(
+            app.drawn_items.get(del).map(|(_, enabled)| *enabled),
+            Some(true)
+        );
+    }
+
+    /// Turns routinely carry emoji, which occupy two columns each. Clipped by
+    /// character count instead of display width, a wide-charactered line ran
+    /// under the gap beside the floating buttons and pushed the card's right
+    /// border out of line. Every row of the card must keep its border in the
+    /// same column, whatever the text is made of.
+    #[tokio::test]
+    async fn wide_characters_never_break_the_card_border() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = test_app(&dir);
+        with_worktree(&mut app);
+        let mut session = a_session();
+        session.recent_turns = vec![
+            crate::models::SessionTurn {
+                speaker: crate::models::Speaker::User,
+                // Sixty bananas: at two columns each, far past where the
+                // buttons start, so a char-counted clip visibly overflows.
+                text: "🍌".repeat(60),
+            },
+            crate::models::SessionTurn {
+                speaker: crate::models::Speaker::Claude,
+                text: "Anytime, painho. 🍌 Two threads landed today, for the record and then some more words".into(),
+            },
+        ];
+        app.sessions = Some(vec![session]);
+        let buffer = render_buffer(&mut app, 100, TALL);
+
+        let (x, y) = find_cell(&buffer, "Refactor the detail pane");
+        let left = x - CARD_INSET;
+        // Walk from the card's top border to its bottom border and demand the
+        // right border column agrees with the top-right corner on every row.
+        let top = y - 1;
+        let width = buffer.area.width;
+        let right = (left..width)
+            .rev()
+            .find(|&col| buffer.cell((col, top)).is_some_and(|c| c.symbol() == "┐"))
+            .expect("a top-right corner");
+        let mut row = top + 1;
+        loop {
+            let cell = buffer.cell((right, row)).expect("inside the buffer");
+            if cell.symbol() == "┘" {
+                break;
+            }
+            assert_eq!(
+                cell.symbol(),
+                "│",
+                "row {row}: the right border broke:\n{}",
+                buffer_text(&buffer)
+            );
+            row += 1;
+            assert!(row < buffer.area.height, "no bottom corner found");
         }
     }
 
@@ -869,7 +1148,7 @@ mod tests {
         assert!(screen.contains("LOCATION"), "{screen}");
         assert!(screen.contains("/tmp/demo"), "{screen}");
         assert!(screen.contains("CLAUDE"), "{screen}");
-        assert!(screen.contains("New Session"), "{screen}");
+        assert!(screen.contains("│ Claude │"), "{screen}");
     }
 
     #[tokio::test]
@@ -1066,20 +1345,24 @@ mod tests {
         };
 
         // Editor, Terminal and Files share a line, so getting these three right
-        // is what proves the x extents are, and not just the rows.
-        for (label, item) in [
-            ("Editor", DetailItem::Action(Action::Editor)),
-            ("Terminal", DetailItem::Action(Action::Terminal)),
-            ("Files", DetailItem::Action(Action::Files)),
-            ("Resume", DetailItem::Action(Action::ResumeSession(0))),
-            ("Delete", DetailItem::Action(Action::Delete)),
-            ("Worktree name", DetailItem::Field(Field::WorktreeName)),
+        // is what proves the x extents are, and not just the rows. "Claude"
+        // appears twice by design — the CLAUDE section's launch button and the
+        // card's resume button share the standardized label — so both
+        // occurrences are asserted onto their own actions.
+        for (label, nth, item) in [
+            ("Editor", 0, DetailItem::Action(Action::Editor)),
+            ("Terminal", 0, DetailItem::Action(Action::Terminal)),
+            ("Files", 0, DetailItem::Action(Action::Files)),
+            ("Claude", 0, DetailItem::Action(Action::ClaudeNew)),
+            ("Claude", 1, DetailItem::Action(Action::ResumeSession(0))),
+            ("Delete", 0, DetailItem::Action(Action::Delete)),
+            ("Worktree name", 0, DetailItem::Field(Field::WorktreeName)),
         ] {
-            let (x, y) = find_cell(&buffer, label);
+            let (x, y) = find_cell_nth(&buffer, label, nth);
             assert_eq!(
                 app.hit_at(x, y),
                 Some(HitTarget::DetailItem(index_of(&item))),
-                "{label} at {x},{y}"
+                "{label}#{nth} at {x},{y}"
             );
         }
     }

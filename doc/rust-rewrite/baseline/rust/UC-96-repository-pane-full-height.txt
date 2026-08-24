@@ -27,42 +27,42 @@
                                   │
                                   │  ──────────────────────────────────────────────────────────────────────────────────────────────────
                                   │
-                                  │  CLAUDE
+                                  │  CLAUDE: NEW SESSION
                                   │
-                                  │  ┌─────────────┐ ┌───────────────────┐ ┌──────┐
-                                  │  │ New Session │ │ New Session: YOLO │ │ Opus │
-                                  │  └─────────────┘ └───────────────────┘ └──────┘
+                                  │  ┌────────┐ ┌──────┐ ┌──────┐
+                                  │  │ Claude │ │ YOLO │ │ Opus │
+                                  │  └────────┘ └──────┘ └──────┘
                                   │
-                                  │  RECENT SESSIONS
+                                  │  CLAUDE: RECENT SESSIONS
                                   │
                                   │  ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
-                                  │  │ session 3: refactor the detail pane so the cards line up                                       │
-                                  │  │                                                                                                │
-                                  │  │ claude: looking at the card layout now                                                         │
-                                  │  │ user: and then check it against the python build                                               │
-                                  │  │                                                                   ┌────────┐ ┌──────┐ ┌──────┐ │
-                                  │  │                                                                   │ Resume │ │ YOLO │ │ Opus │ │
-                                  │  │ <rel> • 2 msgs                                              └────────┘ └──────┘ └──────┘ │
+                                  │  │ session 3: refactor the detail pane so the cards line up           ┌────────┐ ┌──────┐ ┌──────┐│
+                                  │  │                                                                    │ Claude │ │ YOLO │ │ Opus ││
+                                  │  │ claude: looking at the card layout now                             └────────┘ └──────┘ └──────┘│
+                                  │  │ user: and then check it against the python build                     ┌────────┐ ┌─────┐ ┌─────┐│
+                                  │  │                                                                      │ Rename │ │ Pin │ │ Del ││
+                                  │  │                                                                      └────────┘ └─────┘ └─────┘│
+                                  │  │ <rel> • 2 msgs                                                                           │
                                   │  └────────────────────────────────────────────────────────────────────────────────────────────────┘
                                   │
                                   │  ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
-                                  │  │ session 2: refactor the detail pane so the cards line up                                       │
-                                  │  │                                                                                                │
-                                  │  │ claude: looking at the card layout now                                                         │
-                                  │  │ user: and then check it against the python build                                               │
-                                  │  │                                                                   ┌────────┐ ┌──────┐ ┌──────┐ │
-                                  │  │                                                                   │ Resume │ │ YOLO │ │ Opus │ │
-                                  │  │ <rel> • 2 msgs                                              └────────┘ └──────┘ └──────┘ │
+                                  │  │ session 2: refactor the detail pane so the cards line up           ┌────────┐ ┌──────┐ ┌──────┐│
+                                  │  │                                                                    │ Claude │ │ YOLO │ │ Opus ││
+                                  │  │ claude: looking at the card layout now                             └────────┘ └──────┘ └──────┘│
+                                  │  │ user: and then check it against the python build                     ┌────────┐ ┌─────┐ ┌─────┐│
+                                  │  │                                                                      │ Rename │ │ Pin │ │ Del ││
+                                  │  │                                                                      └────────┘ └─────┘ └─────┘│
+                                  │  │ <rel> • 2 msgs                                                                           │
                                   │  └────────────────────────────────────────────────────────────────────────────────────────────────┘
                                   │
                                   │  ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
-                                  │  │ session 1: refactor the detail pane so the cards line up                                       │
-                                  │  │                                                                                                │
-                                  │  │ claude: looking at the card layout now                                                         │
-                                  │  │ user: and then check it against the python build                                               │
-                                  │  │                                                                   ┌────────┐ ┌──────┐ ┌──────┐ │
-                                  │  │                                                                   │ Resume │ │ YOLO │ │ Opus │ │
-                                  │  │ <rel> • 2 msgs                                              └────────┘ └──────┘ └──────┘ │
+                                  │  │ session 1: refactor the detail pane so the cards line up           ┌────────┐ ┌──────┐ ┌──────┐│
+                                  │  │                                                                    │ Claude │ │ YOLO │ │ Opus ││
+                                  │  │ claude: looking at the card layout now                             └────────┘ └──────┘ └──────┘│
+                                  │  │ user: and then check it against the python build                     ┌────────┐ ┌─────┐ ┌─────┐│
+                                  │  │                                                                      │ Rename │ │ Pin │ │ Del ││
+                                  │  │                                                                      └────────┘ └─────┘ └─────┘│
+                                  │  │ <rel> • 2 msgs                                                                           │
                                   │  └────────────────────────────────────────────────────────────────────────────────────────────────┘
                                   │
                                   │  ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -71,19 +71,17 @@
                                   │
                                   │  ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
                                   │  │                                                                                                │
-                                  │  │ #326 Fansly conversation discovery has no backoff                                              │
-                                  │  │                                                                                  ┌───────────┐ │
-                                  │  │                                                                                  │ Create WT │ │
-                                  │  │ <rel> • bug                                                                └───────────┘ │
+                                  │  │ #326 Fansly conversation discovery has no backoff                                 ┌───────────┐│
+                                  │  │                                                                                   │ Create WT ││
+                                  │  │ <rel> • bug                                                                 └───────────┘│
                                   │  │                                                                                                │
                                   │  └────────────────────────────────────────────────────────────────────────────────────────────────┘
                                   │
                                   │  ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
                                   │  │                                                                                                │
-                                  │  │ #298 Proactive metrics: coalesced FIRE rows overco...                                          │
-                                  │  │                                                                                  ┌───────────┐ │
-                                  │  │                                                                                  │ Create WT │ │
-                                  │  │ <rel> • metrics, p2                                                        └───────────┘ │
+                                  │  │ #298 Proactive metrics: coalesced FIRE rows overco...                             ┌───────────┐│
+                                  │  │                                                                                   │ Create WT ││
+                                  │  │ <rel> • metrics, p2                                                         └───────────┘│
                                   │  │                                                                                                │
                                   │  └────────────────────────────────────────────────────────────────────────────────────────────────┘
                                   │
@@ -94,6 +92,8 @@
                                   │  ┌───────────────────┐
                                   │  │ Remove Repository │
                                   │  └───────────────────┘
+                                  │
+                                  │
                                   │
                                   │
                                   │

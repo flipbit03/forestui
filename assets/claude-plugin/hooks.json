@@ -1,13 +1,22 @@
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/tmux-title.sh SessionStart" } ] }
+      { "hooks": [
+        { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/tmux-title.sh SessionStart" },
+        { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/heartbeat.sh SessionStart" }
+      ] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/tmux-title.sh UserPromptSubmit" } ] }
+      { "hooks": [
+        { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/tmux-title.sh UserPromptSubmit" },
+        { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/heartbeat.sh UserPromptSubmit" }
+      ] }
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/tmux-title.sh Stop" } ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/heartbeat.sh SessionEnd" } ] }
     ]
   }
 }

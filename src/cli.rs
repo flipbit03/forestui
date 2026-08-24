@@ -56,9 +56,10 @@ pub struct Args {
     #[arg(long = "no-focus-events")]
     pub no_focus_events: bool,
 
-    /// Manage the Claude Code plugin that names a session after its tmux
-    /// window. Reports what it would touch and exits without starting the UI,
-    /// so the install can be inspected before it happens.
+    /// Manage the Claude Code integration plugin: it names each session after
+    /// its tmux window and reports where every session is running. Reports
+    /// what it would touch and exits without starting the UI, so the install
+    /// can be inspected before it happens.
     #[arg(long = "claude-plugin", value_name = "ACTION")]
     pub claude_plugin: Option<ClaudePluginAction>,
 }

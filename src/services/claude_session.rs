@@ -3,7 +3,7 @@
 //! Claude Code stores one JSONL file per session under
 //! `~/.claude/projects/<path-with-slashes-replaced-by-dashes>/`.
 
-use crate::models::{ClaudeSession, SessionTurn, Speaker};
+use crate::models::{ClaudeSession, SessionTurn, Speaker, TokenUsage};
 use chrono::{DateTime, TimeZone, Utc};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -84,6 +84,43 @@ pub fn path_to_claude_folder(path: &str) -> String {
 
 pub fn claude_projects_dir() -> PathBuf {
     crate::util::home_dir().join(".claude").join("projects")
+}
+
+/// [`get_sessions_for_path`], plus every pinned session the recency cap would
+/// have dropped.
+///
+/// The cap keeps the scan cheap by parsing only the newest transcripts, but a
+/// pin is exactly a claim against recency — "keep this one visible however old
+/// it gets" — so the pinned ids are read individually and appended. The merge
+/// happens outside the directory cache: pins belong to the app's state file,
+/// and keying the cache by them would split it per pin change for no gain.
+pub fn get_sessions_with_pins(path: &str, limit: usize, pinned: &[String]) -> Vec<ClaudeSession> {
+    let mut sessions = get_sessions_for_path(path, limit);
+    for id in pinned {
+        if sessions.iter().any(|s| &s.id == id) {
+            continue;
+        }
+        if let Some(session) = refresh_one(path, id) {
+            sessions.push(session);
+        }
+    }
+    sort_sessions(&mut sessions, pinned);
+    sessions
+}
+
+/// Pinned sessions first, in pin order; everything else newest first.
+pub fn sort_sessions(sessions: &mut [ClaudeSession], pinned: &[String]) {
+    let rank = |session: &ClaudeSession| {
+        pinned
+            .iter()
+            .position(|id| id == &session.id)
+            .unwrap_or(usize::MAX)
+    };
+    sessions.sort_by(|a, b| {
+        rank(a)
+            .cmp(&rank(b))
+            .then_with(|| b.last_timestamp.cmp(&a.last_timestamp))
+    });
 }
 
 /// Sessions for a path, newest first, capped at `limit`.
@@ -326,6 +363,9 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
     let mut turns: Vec<SessionTurn> = Vec::new();
     let mut last_timestamp: Option<DateTime<Utc>> = None;
     let mut message_count = 0usize;
+    let mut git_branch: Option<String> = None;
+    let mut tokens = TokenUsage::default();
+    let mut model: Option<String> = None;
 
     for line in raw.lines() {
         let line = line.trim();
@@ -341,6 +381,14 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
             && last_timestamp.is_none_or(|prev| ts > prev)
         {
             last_timestamp = Some(ts);
+        }
+
+        // The last branch seen wins: a conversation is remembered by where it
+        // ended up, and mid-session checkouts update `gitBranch` per record.
+        if let Some(branch) = data.get("gitBranch").and_then(|b| b.as_str())
+            && !branch.trim().is_empty()
+        {
+            git_branch = Some(branch.trim().to_string());
         }
 
         // The names Claude itself records. A forked transcript carries the
@@ -374,13 +422,30 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
             push_turn(&mut turns, Speaker::User, clipped);
         }
 
-        // Assistant records with no text only called tools; they leave the
-        // previous answer standing, which is the readable one anyway.
-        if data.get("type").and_then(|t| t.as_str()) == Some("assistant")
-            && let Some(content) = text_content(&data)
-            && !content.is_empty()
-        {
-            push_turn(&mut turns, Speaker::Claude, clip(&content));
+        if data.get("type").and_then(|t| t.as_str()) == Some("assistant") {
+            // Every assistant record carries the usage of the API call that
+            // produced it, so the sums are the transcript's whole spend.
+            if let Some(message) = data.get("message") {
+                if let Some(usage) = message.get("usage") {
+                    let count = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+                    tokens.input += count("input_tokens");
+                    tokens.cache_write += count("cache_creation_input_tokens");
+                    tokens.cache_read += count("cache_read_input_tokens");
+                    tokens.output += count("output_tokens");
+                }
+                if let Some(name) = message.get("model").and_then(|m| m.as_str())
+                    && !name.is_empty()
+                {
+                    model = Some(name.to_string());
+                }
+            }
+            // Assistant records with no text only called tools; they leave the
+            // previous answer standing, which is the readable one anyway.
+            if let Some(content) = text_content(&data)
+                && !content.is_empty()
+            {
+                push_turn(&mut turns, Speaker::Claude, clip(&content));
+            }
         }
     }
 
@@ -414,7 +479,110 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
         recent_turns: turns,
         last_timestamp,
         message_count,
+        git_branch,
+        tokens,
+        model,
     })
+}
+
+/// Name a session by appending the same record Claude's own `/rename` writes.
+///
+/// The parser takes the last `custom-title` record stamped with the file's own
+/// session id, so appending is the whole operation — nothing is rewritten, and
+/// a transcript this large is never read in. Callers only use this on sessions
+/// with no live window: Claude holds a live transcript open and interleaving
+/// appends with its writer is not a race worth having when renaming the tmux
+/// window does the same job through the sync plugin.
+pub fn rename_session(path: &str, session_id: &str, name: &str) -> Result<(), String> {
+    let file = claude_projects_dir()
+        .join(path_to_claude_folder(path))
+        .join(format!("{session_id}.jsonl"));
+    rename_transcript(&file, session_id, name)
+}
+
+/// File-scoped form of [`rename_session`], for testing.
+pub fn rename_transcript(file: &Path, session_id: &str, name: &str) -> Result<(), String> {
+    if !file.exists() {
+        return Err("Session transcript no longer exists".to_string());
+    }
+    let record = serde_json::json!({
+        "type": "custom-title",
+        "customTitle": name,
+        "sessionId": session_id,
+    });
+    let line = format!("{record}\n");
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(file)
+        .and_then(|mut f| f.write_all(line.as_bytes()))
+        .map_err(|error| error.to_string())
+}
+
+/// Delete a session's transcript. Permanent — the caller has already asked.
+pub fn delete_session(path: &str, session_id: &str) -> Result<(), String> {
+    let file = claude_projects_dir()
+        .join(path_to_claude_folder(path))
+        .join(format!("{session_id}.jsonl"));
+    std::fs::remove_file(&file).map_err(|error| error.to_string())
+}
+
+/// Best-effort price table, per million tokens (input, output), matched on the
+/// model id. Cache writes bill at 1.25× input and cache reads at 0.1×, which
+/// has held across every generation so far. Prices drift with releases — that
+/// is why the figure renders with a `~` and why an unknown model shows tokens
+/// only rather than a made-up dollar amount.
+fn model_prices(model: &str) -> Option<(f64, f64)> {
+    if model.contains("opus-4-5") || model.contains("opus-5") || model.contains("fable") {
+        Some((5.0, 25.0))
+    } else if model.contains("opus") {
+        Some((15.0, 75.0))
+    } else if model.contains("sonnet") {
+        Some((3.0, 15.0))
+    } else if model.contains("haiku-3") {
+        Some((0.8, 4.0))
+    } else if model.contains("haiku") {
+        Some((1.0, 5.0))
+    } else {
+        None
+    }
+}
+
+/// Estimated dollar cost of a transcript, when the model's prices are known.
+pub fn cost_estimate(model: Option<&str>, tokens: TokenUsage) -> Option<f64> {
+    let (input, output) = model_prices(model?)?;
+    let per = 1_000_000.0;
+    Some(
+        (tokens.input as f64 / per) * input
+            + (tokens.cache_write as f64 / per) * input * 1.25
+            + (tokens.cache_read as f64 / per) * input * 0.1
+            + (tokens.output as f64 / per) * output,
+    )
+}
+
+/// `999`, `12k`, `1.2M` — a count that fits a card's meta line.
+pub fn fmt_tokens(count: u64) -> String {
+    match count {
+        0..=999 => count.to_string(),
+        1_000..=999_499 => format!("{}k", (count + 500) / 1_000),
+        _ => {
+            let millions = count as f64 / 1_000_000.0;
+            if millions >= 10.0 {
+                format!("{millions:.0}M")
+            } else {
+                format!("{millions:.1}M")
+            }
+        }
+    }
+}
+
+/// `~$0.42`, `~$123` — always marked as the estimate it is.
+pub fn fmt_cost(cost: f64) -> String {
+    if cost >= 100.0 {
+        format!("~${cost:.0}")
+    } else {
+        format!("~${cost:.2}")
+    }
 }
 
 /// Move session history from an old worktree path to a new one after a rename.
@@ -749,6 +917,165 @@ mod tests {
         assert_eq!(sessions.len(), 2);
         assert_eq!(sessions[0].id, "s1");
         assert_eq!(sessions[1].id, "s2");
+    }
+
+    /// Tokens, model and branch ride the same parse as everything else — the
+    /// card's recognition line costs no extra read of a multi-MB transcript.
+    #[test]
+    fn usage_branch_and_model_are_summed_from_the_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sess-usage.jsonl");
+        let lines = [
+            r#"{"type":"user","timestamp":"2026-08-01T10:00:00Z","gitBranch":"main","message":{"content":"question"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-08-01T10:00:01Z","gitBranch":"main","message":{"model":"claude-opus-5","usage":{"input_tokens":10,"cache_creation_input_tokens":1000,"cache_read_input_tokens":0,"output_tokens":50}}}"#,
+            // A mid-session checkout: the last branch wins.
+            r#"{"type":"assistant","timestamp":"2026-08-01T10:00:02Z","gitBranch":"feat/x","message":{"model":"claude-opus-5","usage":{"input_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":2000,"output_tokens":25}}}"#,
+        ];
+        std::fs::write(&file, lines.join("\n") + "\n").unwrap();
+
+        let session = parse_session_file(&file).expect("a session");
+        assert_eq!(session.git_branch.as_deref(), Some("feat/x"));
+        assert_eq!(session.model.as_deref(), Some("claude-opus-5"));
+        assert_eq!(session.tokens.input, 15);
+        assert_eq!(session.tokens.cache_write, 1000);
+        assert_eq!(session.tokens.cache_read, 2000);
+        assert_eq!(session.tokens.output, 75);
+        assert_eq!(session.tokens.total_in(), 3015);
+
+        // An old minimal transcript has none of this, and must not pretend to.
+        let bare = dir.path().join("sess-bare.jsonl");
+        std::fs::write(
+            &bare,
+            "{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n",
+        )
+        .unwrap();
+        let session = parse_session_file(&bare).expect("a session");
+        assert!(session.tokens.is_zero());
+        assert_eq!(session.git_branch, None);
+        assert_eq!(session.model, None);
+    }
+
+    /// The estimate exists for known models only: a made-up price is worse
+    /// than showing tokens alone.
+    #[test]
+    fn cost_is_estimated_for_known_models_only() {
+        let tokens = TokenUsage {
+            input: 1_000_000,
+            cache_write: 0,
+            cache_read: 0,
+            output: 1_000_000,
+        };
+        let opus5 = cost_estimate(Some("claude-opus-5"), tokens).expect("a known model");
+        assert!((opus5 - 30.0).abs() < 0.001, "5 in + 25 out, got {opus5}");
+        assert!(cost_estimate(Some("some-future-model"), tokens).is_none());
+        assert!(cost_estimate(None, tokens).is_none());
+
+        // Cache tiers price off the input rate.
+        let cached = TokenUsage {
+            input: 0,
+            cache_write: 1_000_000,
+            cache_read: 1_000_000,
+            output: 0,
+        };
+        let cost = cost_estimate(Some("claude-sonnet-5"), cached).expect("sonnet is known");
+        assert!((cost - (3.0 * 1.25 + 3.0 * 0.1)).abs() < 0.001, "{cost}");
+    }
+
+    #[test]
+    fn token_and_cost_formatting() {
+        assert_eq!(fmt_tokens(0), "0");
+        assert_eq!(fmt_tokens(999), "999");
+        assert_eq!(fmt_tokens(1_000), "1k");
+        assert_eq!(fmt_tokens(12_499), "12k");
+        assert_eq!(fmt_tokens(999_499), "999k");
+        assert_eq!(fmt_tokens(1_200_000), "1.2M");
+        assert_eq!(fmt_tokens(14_700_000), "15M");
+        assert_eq!(fmt_cost(0.416), "~$0.42");
+        assert_eq!(fmt_cost(123.4), "~$123");
+    }
+
+    /// Renaming a stopped session appends the record `/rename` writes, so the
+    /// next parse — every consumer — sees the new name. An empty transcript
+    /// path errors instead of creating a stray file.
+    #[test]
+    fn renaming_a_stopped_session_appends_a_title_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sess-r.jsonl");
+        std::fs::write(
+            &file,
+            "{\"type\":\"user\",\"timestamp\":\"2026-08-01T10:00:00Z\",\
+              \"message\":{\"content\":\"hello\"}}\n",
+        )
+        .unwrap();
+
+        rename_transcript(&file, "sess-r", "my rename").expect("the append lands");
+        let session = parse_session_file(&file).expect("a session");
+        assert_eq!(session.custom_title.as_deref(), Some("my rename"));
+        assert_eq!(session.title, "my rename");
+
+        // A missing transcript is an error, not a new file.
+        assert!(rename_session("/nowhere/forestui-rename-test", "ghost", "x").is_err());
+        assert!(delete_session("/nowhere/forestui-rename-test", "ghost").is_err());
+    }
+
+    /// Pins outrank recency, in pin order; everything else stays newest-first.
+    /// A pinned id that no longer parses to a session simply is not there.
+    #[test]
+    fn pinned_sessions_lead_in_pin_order() {
+        let mk = |id: &str, hours_ago: i64| ClaudeSession {
+            id: id.into(),
+            title: id.into(),
+            custom_title: None,
+            recent_turns: Vec::new(),
+            last_timestamp: chrono::Utc::now() - chrono::Duration::hours(hours_ago),
+            message_count: 1,
+            git_branch: None,
+            tokens: TokenUsage::default(),
+            model: None,
+        };
+        let mut sessions = vec![mk("new", 1), mk("mid", 5), mk("old", 20), mk("ancient", 90)];
+        let pinned = vec!["old".to_string(), "mid".to_string()];
+        sort_sessions(&mut sessions, &pinned);
+        let order: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(order, vec!["old", "mid", "new", "ancient"]);
+
+        // No pins: pure recency, unchanged from before pins existed.
+        sort_sessions(&mut sessions, &[]);
+        let order: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(order, vec!["new", "mid", "old", "ancient"]);
+    }
+
+    /// The recency cap must not hide a pinned session: pinning is precisely a
+    /// claim against recency.
+    #[test]
+    fn a_pinned_session_survives_the_recency_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, ts) in [
+            ("a", "2026-08-05T10:00:00Z"),
+            ("b", "2026-08-04T10:00:00Z"),
+            ("c", "2026-08-03T10:00:00Z"),
+        ] {
+            std::fs::write(
+                dir.path().join(format!("{name}.jsonl")),
+                format!(
+                    "{{\"type\":\"user\",\"timestamp\":\"{ts}\",\"message\":{{\"content\":\"q\"}}}}\n"
+                ),
+            )
+            .unwrap();
+        }
+        // Capped at 2, the oldest falls out…
+        let ids: Vec<String> = read_sessions_dir(dir.path(), 2)
+            .iter()
+            .map(|s| s.id.clone())
+            .collect();
+        assert_eq!(ids, vec!["a", "b"]);
+        // …but read_sessions_dir has no pin knowledge; the pin merge lives in
+        // get_sessions_with_pins, which needs the real projects dir. Its logic
+        // — append what refresh_one finds, then sort — is exercised through
+        // sort order here: a pinned "c" would lead.
+        let mut sessions = read_sessions_dir(dir.path(), 3);
+        sort_sessions(&mut sessions, &["c".to_string()]);
+        assert_eq!(sessions[0].id, "c");
     }
 
     #[test]
