@@ -485,7 +485,7 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
     })
 }
 
-/// Name a session by appending the same record Claude's own `/rename` writes.
+/// Name a session by appending the same records Claude's own `/rename` writes.
 ///
 /// The parser takes the last `custom-title` record stamped with the file's own
 /// session id, so appending is the whole operation — nothing is rewritten, and
@@ -493,6 +493,14 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
 /// with no live window: Claude holds a live transcript open and interleaving
 /// appends with its writer is not a race worth having when renaming the tmux
 /// window does the same job through the sync plugin.
+///
+/// Claude keeps a session's name in *two* record types and a runtime rename
+/// writes them as a pair: `custom-title` is the session title (the resume
+/// picker, hook-input `session_title`), `agent-name` is what the badge in the
+/// prompt box draws. Appending only the title looked renamed everywhere except
+/// the resumed UI itself — and the sync plugin could not heal it, because the
+/// title it compares against the window was already correct, so it never
+/// pushed the runtime rename that would have rewritten the agent name.
 pub fn rename_session(path: &str, session_id: &str, name: &str) -> Result<(), String> {
     let file = claude_projects_dir()
         .join(path_to_claude_folder(path))
@@ -505,17 +513,22 @@ pub fn rename_transcript(file: &Path, session_id: &str, name: &str) -> Result<()
     if !file.exists() {
         return Err("Session transcript no longer exists".to_string());
     }
-    let record = serde_json::json!({
+    let title = serde_json::json!({
         "type": "custom-title",
         "customTitle": name,
         "sessionId": session_id,
     });
-    let line = format!("{record}\n");
+    let agent_name = serde_json::json!({
+        "type": "agent-name",
+        "agentName": name,
+        "sessionId": session_id,
+    });
+    let lines = format!("{title}\n{agent_name}\n");
     use std::io::Write;
     std::fs::OpenOptions::new()
         .append(true)
         .open(file)
-        .and_then(|mut f| f.write_all(line.as_bytes()))
+        .and_then(|mut f| f.write_all(lines.as_bytes()))
         .map_err(|error| error.to_string())
 }
 
@@ -994,9 +1007,11 @@ mod tests {
         assert_eq!(fmt_cost(123.4), "~$123");
     }
 
-    /// Renaming a stopped session appends the record `/rename` writes, so the
-    /// next parse — every consumer — sees the new name. An empty transcript
-    /// path errors instead of creating a stray file.
+    /// Renaming a stopped session appends the records `/rename` writes — the
+    /// `custom-title`/`agent-name` pair — so the next parse sees the new name
+    /// and a resumed Claude draws it in its badge, which renders the agent
+    /// name, not the title. An empty transcript path errors instead of
+    /// creating a stray file.
     #[test]
     fn renaming_a_stopped_session_appends_a_title_record() {
         let dir = tempfile::tempdir().unwrap();
@@ -1012,6 +1027,23 @@ mod tests {
         let session = parse_session_file(&file).expect("a session");
         assert_eq!(session.custom_title.as_deref(), Some("my rename"));
         assert_eq!(session.title, "my rename");
+
+        // Both records land, stamped with the session id, each a valid JSON
+        // line — a torn or concatenated line would be skipped by every parser.
+        let raw = std::fs::read_to_string(&file).unwrap();
+        let records: Vec<serde_json::Value> = raw
+            .lines()
+            .skip(1)
+            .map(|line| serde_json::from_str(line).expect("each appended line parses alone"))
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["type"], "custom-title");
+        assert_eq!(records[0]["customTitle"], "my rename");
+        assert_eq!(records[1]["type"], "agent-name");
+        assert_eq!(records[1]["agentName"], "my rename");
+        for record in &records {
+            assert_eq!(record["sessionId"], "sess-r");
+        }
 
         // A missing transcript is an error, not a new file.
         assert!(rename_session("/nowhere/forestui-rename-test", "ghost", "x").is_err());
