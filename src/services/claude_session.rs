@@ -523,12 +523,27 @@ pub fn rename_transcript(file: &Path, session_id: &str, name: &str) -> Result<()
         "agentName": name,
         "sessionId": session_id,
     });
-    let lines = format!("{title}\n{agent_name}\n");
-    use std::io::Write;
+    use std::io::{Read, Seek, SeekFrom, Write};
     std::fs::OpenOptions::new()
+        .read(true)
         .append(true)
         .open(file)
-        .and_then(|mut f| f.write_all(lines.as_bytes()))
+        .and_then(|mut f| {
+            // A transcript normally ends in a newline, but a torn tail (a
+            // crashed writer) must not swallow the rename: appended straight
+            // onto an unterminated line, the first record and that line both
+            // stop parsing while the second still lands — the exact
+            // title/badge disagreement this function exists to prevent.
+            let mut needs_newline = false;
+            if f.metadata()?.len() > 0 {
+                let mut last = [0u8; 1];
+                f.seek(SeekFrom::End(-1))?;
+                f.read_exact(&mut last)?;
+                needs_newline = last[0] != b'\n';
+            }
+            let prefix = if needs_newline { "\n" } else { "" };
+            f.write_all(format!("{prefix}{title}\n{agent_name}\n").as_bytes())
+        })
         .map_err(|error| error.to_string())
 }
 
@@ -1048,6 +1063,37 @@ mod tests {
         // A missing transcript is an error, not a new file.
         assert!(rename_session("/nowhere/forestui-rename-test", "ghost", "x").is_err());
         assert!(delete_session("/nowhere/forestui-rename-test", "ghost").is_err());
+    }
+
+    /// A transcript whose last line was torn mid-write (no trailing newline)
+    /// still takes the rename: appending blindly would fuse the first record
+    /// onto the torn line and lose it, leaving the pair half-applied.
+    #[test]
+    fn renaming_survives_a_transcript_with_a_torn_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sess-t.jsonl");
+        std::fs::write(
+            &file,
+            "{\"type\":\"user\",\"timestamp\":\"2026-08-01T10:00:00Z\",\
+              \"message\":{\"content\":\"hello\"}}\n\
+             {\"type\":\"assistant\",\"truncated",
+        )
+        .unwrap();
+
+        rename_transcript(&file, "sess-t", "after the tear").expect("the append lands");
+        let session = parse_session_file(&file).expect("a session");
+        assert_eq!(session.custom_title.as_deref(), Some("after the tear"));
+
+        let raw = std::fs::read_to_string(&file).unwrap();
+        let tail: Vec<&str> = raw.lines().rev().take(2).collect();
+        assert!(
+            tail[1].starts_with("{\"customTitle\""),
+            "title on its own line"
+        );
+        assert!(
+            tail[0].starts_with("{\"agentName\""),
+            "agent name on its own line"
+        );
     }
 
     /// Pins outrank recency, in pin order; everything else stays newest-first.
