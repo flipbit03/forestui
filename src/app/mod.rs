@@ -2872,7 +2872,9 @@ mod tests {
 
     /// A control the frame drew as disabled must not fire — from the mouse or
     /// from Enter. The greyed-out `↓ Git Pull (No remote)` used to run `git
-    /// pull` anyway and answer with an error toast.
+    /// pull` anyway and answer with an error toast. A click must not take
+    /// focus either: a focused control renders with the full accent style, so
+    /// moving the cursor there made a disabled `[Del]` light up as if it ran.
     #[tokio::test]
     async fn a_disabled_control_does_not_activate() {
         let (_dir, mut app) = app_with_fixture();
@@ -2892,6 +2894,7 @@ mod tests {
         app.push_hit(rect(40, 5, 12, 1), HitTarget::DetailItem(index));
         app.handle_mouse(click(45, 5));
         assert!(app.notifications.is_empty(), "the click ran the action");
+        assert_eq!(app.focus, Focus::Sidebar, "the click focused the control");
 
         app.focus = Focus::Detail;
         app.detail_index = index;
@@ -2955,6 +2958,7 @@ mod tests {
         let (_dir, mut app) = app_with_fixture();
         app.handle_key(key(KeyCode::Down));
         app.sessions = Some(Vec::new());
+        snapshot_drawn(&mut app);
 
         let index = app
             .detail_items()
