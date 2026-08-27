@@ -273,18 +273,23 @@ impl App {
             // point of recording it is that the control beneath does not run.
             HitTarget::Notification => {}
             HitTarget::DetailItem(index) => {
-                self.focus = Focus::Detail;
-                self.detail_index = index;
-                self.detail_follow_focus = true;
                 // Resolve against the drawn snapshot, not a re-derived list: a
                 // background event drained in this same batch can have grown
                 // the live list, remapping this index onto a different control
                 // than the one the click landed on. A disabled control keeps
-                // its slot but must not fire.
-                if let Some((DetailItem::Action(action), enabled)) =
-                    self.drawn_items.get(index).cloned()
-                    && enabled
-                {
+                // its slot but a click on it is inert entirely — taking focus
+                // would paint it with the full accent style, indistinguishable
+                // from an enabled control that just ran.
+                let Some((item, enabled)) = self.drawn_items.get(index).cloned() else {
+                    return;
+                };
+                if !enabled {
+                    return;
+                }
+                self.focus = Focus::Detail;
+                self.detail_index = index;
+                self.detail_follow_focus = true;
+                if let DetailItem::Action(action) = item {
                     self.run_action(action);
                 }
             }
