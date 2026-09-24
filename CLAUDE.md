@@ -306,7 +306,9 @@ There is deliberately no off switch, per window or global. Installed means the
 two names agree; not wanting that is an uninstall.
 
 **Remote Control rides on the same name, so it is passed bare.** The Settings
-checkbox (`remote_control`) adds `--remote-control` to every launch
+checkbox (`remote_control`, on by default — a settings file without the key
+loads it *on*, so updates pick it up; only an explicit `false` is off) adds
+`--remote-control` to every launch
 `claude_command_line` builds — both built-in buttons, custom buttons, resumes,
 and the history line — and never gives it a value. With no value, Claude names
 the remote session after the session itself: the `-n` name on a fresh launch,

@@ -397,18 +397,8 @@ fn open_in(nodes: &mut Vec<DetailNode>) {
 /// card offer the same buttons under the same names in the same accent —
 /// `Claude`, `YOLO`, then the user's own. The section header already says
 /// these start something; "New Session" restated it on every button.
-///
-/// With Remote Control on, the header says so. Every launch in the pane
-/// carries the flag — here and on the session cards alike — and a setting you
-/// cannot see is exactly how a session ends up unreachable from the phone. It
-/// is the header rather than the buttons so that the buttons keep their
-/// labels, widths and hit regions whichever way the setting is.
 fn claude(nodes: &mut Vec<DetailNode>, app: &App) {
-    nodes.push(DetailNode::Section(if app.settings.remote_control {
-        "CLAUDE: NEW SESSION · REMOTE CONTROL ON"
-    } else {
-        "CLAUDE: NEW SESSION"
-    }));
+    nodes.push(DetailNode::Section("CLAUDE: NEW SESSION"));
     let mut row = vec![
         ControlSpec::new(Action::ClaudeNew, "Claude", theme::Variant::Accent),
         ControlSpec::new(Action::ClaudeYolo, "YOLO", theme::Variant::Accent),

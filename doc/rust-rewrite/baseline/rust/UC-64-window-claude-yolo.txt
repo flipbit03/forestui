@@ -1,4 +1,4 @@
-claude stub --dangerously-skip-permissions -n yolo:alpha:wt-a --session-id <uuid>
+claude stub --dangerously-skip-permissions --remote-control -n yolo:alpha:wt-a --session-id <uuid>
 
 
 

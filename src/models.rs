@@ -311,9 +311,12 @@ pub struct Settings {
     pub custom_buttons: Vec<CustomClaudeButton>,
     /// Start every Claude session forestui opens with `--remote-control`, so
     /// it can be picked up from the phone without remembering to `/rc` first.
-    /// Additive and defaulted like `theme_name`: files from either build load
-    /// in both, and a file that predates it loads with it off.
-    #[serde(default)]
+    ///
+    /// On by default, and a file without the key loads with it *on*: an
+    /// existing install picks it up on update without anyone opening
+    /// Settings. Only an explicit `false` — the user unticking it — turns it
+    /// off. Additive like `theme_name`, so files from either build load in both.
+    #[serde(default = "default_true")]
     pub remote_control: bool,
 }
 
@@ -326,7 +329,7 @@ impl Default for Settings {
             legacy_theme: default_theme(),
             theme_name: default_theme_name(),
             custom_buttons: Vec::new(),
-            remote_control: false,
+            remote_control: true,
         }
     }
 }
@@ -411,10 +414,6 @@ pub struct AppStateData {
     #[serde(default)]
     pub pinned_sessions: std::collections::HashMap<String, Vec<String>>,
 }
-
-/// Marker so `serde` keeps `default_true` referenced even if unused by fields.
-#[allow(dead_code)]
-const _: fn() -> bool = default_true;
 
 #[cfg(test)]
 mod tests {

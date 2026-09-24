@@ -88,22 +88,27 @@ mod tests {
         assert_eq!(s.legacy_theme, "system");
         assert_eq!(s.theme_name, "forest-dark");
         assert!(s.custom_buttons.is_empty());
-        // A file from before the checkbox existed leaves Remote Control off.
-        assert!(!s.remote_control);
+        // A file from before the checkbox existed turns Remote Control on:
+        // an update picks it up without anyone opening Settings.
+        assert!(s.remote_control);
     }
 
     #[test]
     fn remote_control_roundtrips() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("settings.json");
+        assert!(Settings::default().remote_control, "on for a new install");
+
+        // Unticking is the one way to turn it off, and it has to stick: the
+        // `false` is written out and read back rather than defaulted over.
         let s = Settings {
-            remote_control: true,
+            remote_control: false,
             ..Settings::default()
         };
         save_settings_to(&p, &s).unwrap();
         let raw = std::fs::read_to_string(&p).unwrap();
-        assert!(raw.contains("\"remote_control\": true"), "{raw}");
-        assert!(load_settings_from(&p).remote_control);
+        assert!(raw.contains("\"remote_control\": false"), "{raw}");
+        assert!(!load_settings_from(&p).remote_control);
     }
 
     #[test]

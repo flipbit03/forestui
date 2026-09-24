@@ -1545,7 +1545,7 @@ mod tests {
             ("│ Forest Dark… │", SettingsModal::FOCUS_THEME),
             ("│ Manage Custom Buttons... │", SettingsModal::FOCUS_MANAGE),
             (
-                "│ [ ] Start Claude sessions with Remote Control │",
+                "│ [x] Start Claude sessions with Remote Control │",
                 SettingsModal::FOCUS_REMOTE_CONTROL,
             ),
             (

@@ -1858,19 +1858,19 @@ mod tests {
     #[test]
     fn settings_toggles_and_saves_remote_control() {
         let mut modal = SettingsModal::new(&Settings::default());
-        assert!(!modal.remote_control, "off unless the user turns it on");
+        assert!(modal.remote_control, "on unless the user turns it off");
 
         modal.focus = SettingsModal::FOCUS_REMOTE_CONTROL;
         assert!(matches!(
             modal.handle_key(key(KeyCode::Char(' '))),
             ModalOutcome::None
         ));
-        assert!(modal.remote_control);
+        assert!(!modal.remote_control);
         assert!(matches!(
             modal.handle_key(key(KeyCode::Enter)),
             ModalOutcome::None
         ));
-        assert!(!modal.remote_control, "Enter toggles, it does not submit");
+        assert!(modal.remote_control, "Enter toggles, it does not submit");
         modal.handle_key(key(KeyCode::Enter));
 
         modal.focus = SettingsModal::FOCUS_SAVE;
@@ -1879,10 +1879,10 @@ mod tests {
         else {
             panic!("Save must submit the settings");
         };
-        assert!(saved.remote_control);
+        assert!(!saved.remote_control);
 
         let reopened = SettingsModal::new(&saved);
-        assert!(reopened.remote_control, "the dialog shows what was stored");
+        assert!(!reopened.remote_control, "the dialog shows what was stored");
     }
 
     /// The rename dialog refuses what cannot become a name — empty, or text

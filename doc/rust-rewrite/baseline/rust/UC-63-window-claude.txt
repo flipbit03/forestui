@@ -1,4 +1,4 @@
-claude stub -n claude:alpha:wt-a --session-id <uuid>
+claude stub --remote-control -n claude:alpha:wt-a --session-id <uuid>
 
 
 

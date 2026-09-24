@@ -25,7 +25,7 @@
    │                                                                                                                                   │
    │  REMOTE CONTROL                                                                                                                   │
    │  ┌───────────────────────────────────────────────┐                                                                                │
-   │  │ [ ] Start Claude sessions with Remote Control │                                                                                │
+   │  │ [x] Start Claude sessions with Remote Control │                                                                                │
    │  └───────────────────────────────────────────────┘                                                                                │
    │                                                                                                                                   │
    │  CLAUDE CODE INTEGRATION                                                                                                          │

@@ -121,14 +121,13 @@ yourself, in or out of tmux, is left alone.
 
 ### Remote Control
 
-Settings → *Start Claude sessions with Remote Control* makes every session
-forestui opens — `Claude`, `YOLO`, custom buttons, and resumes from a session
-card — start with `--remote-control`, so it can be picked up from claude.ai or
-the Claude app without remembering to `/rc` first. The remote session carries
-the same name as the session and its tmux tab, and follows `/rename`. While
-it is on, the detail pane's launch section reads
-`CLAUDE: NEW SESSION · REMOTE CONTROL ON`. Windows already open keep whatever
-they started with.
+Every session forestui opens — `Claude`, `YOLO`, custom buttons, and resumes
+from a session card — starts with `--remote-control`, so it can be picked up
+from claude.ai or the Claude app without remembering to `/rc` first. The
+remote session carries the same name as the session and its tmux tab, and
+follows `/rename`. It is on by default, including for an existing install
+after an update; untick Settings → *Start Claude sessions with Remote Control*
+to turn it off. Windows already open keep whatever they started with.
 
 Claude Code has its own *Enable Remote Control for all sessions* in
 `/config`; that one reaches every `claude` on the machine, this one only the
@@ -265,7 +264,7 @@ Settings are stored in `~/.config/forestui/settings.json`:
       "command": "claude --model opus"
     }
   ],
-  "remote_control": false
+  "remote_control": true
 }
 ```
 
