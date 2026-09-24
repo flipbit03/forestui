@@ -177,6 +177,9 @@ SESSION
 # a 70-row screen, and the rename flow then clicks on nothing.
 seed_sessions "$ROOT/src/alpha" 3
 
+# Written the way an older build left it, retired `default_terminal` and
+# `theme` keys included: they must not stop the file loading — the custom
+# button below would vanish from every frame if they did.
 cat > "$ROOT/home/.config/forestui/settings.json" <<'EOF'
 {"default_editor":"vim","default_terminal":"","branch_prefix":"feat/","theme":"system",
  "custom_buttons":[{"label":"Opus","prefix":"opus","command":"claude --model opus"}]}

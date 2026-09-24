@@ -861,22 +861,19 @@ dialog abandons an applied-but-unsaved theme. The Textual build offered
 ```json
 {
   "default_editor": "vim",
-  "default_terminal": "",
   "branch_prefix": "feat/",
-  "theme": "system",
   "theme_name": "forest-dark",
   "custom_buttons": [],
   "remote_control": true
 }
 ```
-(`theme_name` and `remote_control` are Rust-only additions; the Python build's
-five keys are all still there, unchanged. Remote Control is ticked on a fresh
-install, and a file without the key — every file written before it existed —
-loads it ticked too.)
-**Fails if:** a key is dropped or renamed, `custom_buttons` is omitted, or the file
-is written somewhere other than `$HOME/.config/forestui/settings.json`.
-`default_terminal` is vestigial (never read) but **must still be serialised** or the
-Python build's config round-trip breaks.
+(Rust drift: the Python build's `default_terminal` and inert `theme` keys are
+retired — ignored when an older file has them, dropped on the next save.
+Remote Control is ticked on a fresh install, and a file without the key loads
+it ticked too.)
+
+**Fails if:** a key above is dropped or renamed, `custom_buttons` is omitted, or
+the file is written somewhere other than `$HOME/.config/forestui/settings.json`.
 
 ---
 

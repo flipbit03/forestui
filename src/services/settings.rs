@@ -85,7 +85,6 @@ mod tests {
         std::fs::write(&p, r#"{"default_editor": "nvim"}"#).unwrap();
         let s = load_settings_from(&p);
         assert_eq!(s.default_editor, "nvim");
-        assert_eq!(s.legacy_theme, "system");
         assert_eq!(s.theme_name, "forest-dark");
         assert!(s.custom_buttons.is_empty());
         // A file from before the checkbox existed turns Remote Control on:
@@ -111,8 +110,31 @@ mod tests {
         assert!(!load_settings_from(&p).remote_control);
     }
 
+    /// Keys this build no longer has — the old `theme` and `default_terminal`
+    /// — must not stop a file from loading, or an update would throw away the
+    /// user's settings; they are dropped on the next save.
     #[test]
-    fn roundtrip_keeps_python_field_names() {
+    fn retired_keys_load_and_are_dropped_on_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        std::fs::write(
+            &p,
+            r#"{"default_editor": "nvim", "default_terminal": "", "theme": "dark",
+                "theme_name": "nord", "custom_buttons": []}"#,
+        )
+        .unwrap();
+        let s = load_settings_from(&p);
+        assert_eq!(s.default_editor, "nvim");
+        assert_eq!(s.theme_name, "nord", "the file loaded, not the defaults");
+
+        save_settings_to(&p, &s).unwrap();
+        let raw = std::fs::read_to_string(&p).unwrap();
+        assert!(!raw.contains("default_terminal"), "{raw}");
+        assert!(!raw.contains("\"theme\""), "{raw}");
+    }
+
+    #[test]
+    fn roundtrip_keeps_field_names() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("settings.json");
         let s = Settings {

@@ -79,11 +79,6 @@ Pass `--no-self-update` to skip the check entirely. The result is cached for a
 day, so this is not a network call on every launch, and a build from source
 (version `0.0.0`) never updates itself at all.
 
-> **Migrating from the Python build.** forestui was a Python/Textual
-> application through v0.9.x. The Rust rewrite reads the same config files, so
-> your repositories, worktrees, and settings carry over untouched. Remove the
-> old install so the new binary wins: `uv tool uninstall forestui`.
-
 ## The Claude integration
 
 One installable plugin gives forestui two abilities: shared names and
@@ -242,9 +237,7 @@ Gruvbox, Solarized, the Catppuccin and Rosé Pine and Tokyo Night families,
 GitHub, SynthWave '84, and more — with the app behind the dialog live-previewing the
 highlighted theme. Enter applies, Esc reverts, Save persists. The default,
 Forest Dark, is the palette forestui has always had. The chosen theme is
-stored in `theme_name`; the legacy `theme` field (the old inert
-System/Dark/Light choice) is preserved untouched so the settings file keeps
-working in the Python build too.
+stored in `theme_name`.
 
 ## Configuration
 
@@ -253,9 +246,7 @@ Settings are stored in `~/.config/forestui/settings.json`:
 ```json
 {
   "default_editor": "nvim",
-  "default_terminal": "",
   "branch_prefix": "feat/",
-  "theme": "system",
   "theme_name": "forest-dark",
   "custom_buttons": [
     {

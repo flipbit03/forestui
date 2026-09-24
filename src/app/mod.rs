@@ -241,9 +241,9 @@ impl App {
     pub fn with_state(tx: EventTx, state: AppState, settings: Settings) -> Self {
         // The renderers read the active theme from the global; activate the
         // saved one before the first frame so launch never flashes the default.
-        // `theme_name` carries the chosen slug — `theme` is the legacy
-        // System/Dark/Light field preserved for the Python build, and reading
-        // it here silently reset every launch to the default palette.
+        // `theme_name` carries the chosen slug — not `theme`, the inert
+        // System/Dark/Light key older files still carry, which once silently
+        // reset every launch to the default palette.
         crate::theme::set_active(&settings.theme_name);
         let version = crate::cli::VERSION.to_string();
         let mut app = Self {

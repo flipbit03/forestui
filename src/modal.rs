@@ -851,9 +851,6 @@ pub struct SettingsModal {
     pub theme_slug: &'static str,
     /// What was active when the dialog opened, for the Cancel path.
     opened_with_theme: &'static str,
-    /// The Python build's inert theme value, written back untouched — its
-    /// Settings dialog crashes on anything outside its own option list.
-    legacy_theme: String,
     pub branch_prefix: TextInput,
     pub custom_buttons: Vec<CustomClaudeButton>,
     /// Start Claude sessions with `--remote-control`.
@@ -893,7 +890,6 @@ impl SettingsModal {
                 .unwrap_or(0),
             opened_with_theme: theme_slug,
             theme_slug,
-            legacy_theme: settings.legacy_theme.clone(),
             branch_prefix: TextInput::new(settings.branch_prefix.clone()).with_placeholder("feat/"),
             custom_buttons: settings.custom_buttons.clone(),
             remote_control: settings.remote_control,
@@ -913,9 +909,7 @@ impl SettingsModal {
     fn to_settings(&self) -> Settings {
         Settings {
             default_editor: EDITORS[self.editor_index].1.to_string(),
-            default_terminal: String::new(),
             branch_prefix: self.branch_prefix.value().to_string(),
-            legacy_theme: self.legacy_theme.clone(),
             theme_name: self.theme_slug.to_string(),
             custom_buttons: self.custom_buttons.clone(),
             remote_control: self.remote_control,
@@ -2046,9 +2040,6 @@ mod tests {
             panic!("Save must submit the settings");
         };
         assert_eq!(saved.theme_name, "nord");
-        // The legacy field is written back untouched — the Python build's
-        // Settings dialog crashes on values outside System/Dark/Light.
-        assert_eq!(saved.legacy_theme, "system");
     }
 
     /// An unknown stored slug resolves to the default when the dialog opens,

@@ -1,8 +1,9 @@
 //! Data models for forestui.
 //!
-//! The on-disk JSON produced here is byte-compatible with the Pydantic models
-//! the Python implementation used, so `.forestui-config.json` and
-//! `~/.config/forestui/settings.json` can be shared between builds.
+//! The on-disk JSON has to load in the release before this one and the release
+//! after it — forestui updates itself, so users run the newest release or the
+//! one before, and both may touch the same files. New fields are additive and
+//! defaulted; an older build ignores keys it does not know.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -277,10 +278,6 @@ fn default_branch_prefix() -> String {
     "feat/".into()
 }
 
-fn default_theme() -> String {
-    "system".into()
-}
-
 fn default_theme_name() -> String {
     "forest-dark".into()
 }
@@ -290,21 +287,15 @@ fn default_theme_name() -> String {
 pub struct Settings {
     #[serde(default = "default_editor")]
     pub default_editor: String,
-    #[serde(default)]
-    pub default_terminal: String,
     #[serde(default = "default_branch_prefix")]
     pub branch_prefix: String,
-    /// The Python build's inert System/Dark/Light choice, preserved verbatim:
-    /// its Settings dialog crashes on any other value, and the settings file
-    /// is shared across builds. The Rust build never applies it — the Rust
-    /// name says so, while the on-disk key stays `"theme"` (the compat rule
-    /// governs the file format, not the identifier); reading the wrong field
-    /// for the palette is what made themes reset on every launch once.
-    #[serde(rename = "theme", default = "default_theme")]
-    pub legacy_theme: String,
-    /// Slug of the named theme the Rust build applies (`theme::THEMES`).
-    /// Additive and defaulted, so files from either build load in both;
-    /// unknown slugs resolve to the default at activation.
+    /// Slug of the named theme (`theme::THEMES`). Unknown slugs resolve to
+    /// the default at activation.
+    ///
+    /// Not `theme`: files written before the theme picker carry an inert
+    /// `"theme": "system"`, which is ignored on load and dropped on the next
+    /// save. Reading that key for the palette is what once reset every launch
+    /// to the default theme.
     #[serde(default = "default_theme_name")]
     pub theme_name: String,
     #[serde(default)]
@@ -315,7 +306,7 @@ pub struct Settings {
     /// On by default, and a file without the key loads with it *on*: an
     /// existing install picks it up on update without anyone opening
     /// Settings. Only an explicit `false` — the user unticking it — turns it
-    /// off. Additive like `theme_name`, so files from either build load in both.
+    /// off.
     #[serde(default = "default_true")]
     pub remote_control: bool,
 }
@@ -324,9 +315,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             default_editor: default_editor(),
-            default_terminal: String::new(),
             branch_prefix: default_branch_prefix(),
-            legacy_theme: default_theme(),
             theme_name: default_theme_name(),
             custom_buttons: Vec::new(),
             remote_control: true,
@@ -409,8 +398,7 @@ pub struct AppStateData {
     pub repositories: Vec<Repository>,
     /// Pinned Claude sessions, keyed by the path whose pane shows them (a
     /// worktree's path or a repository's source path) — session ids in pin
-    /// order, which is the order they are shown in. Additive and defaulted,
-    /// like `theme_name`: files from either build load in both.
+    /// order, which is the order they are shown in.
     #[serde(default)]
     pub pinned_sessions: std::collections::HashMap<String, Vec<String>>,
 }
@@ -484,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn state_roundtrips_python_json_shape() {
+    fn state_roundtrips_its_json_shape() {
         let json = r#"{
           "repositories": [
             {"id": "0f2f2b7e-4d9c-4a1f-9f1a-1f2a3b4c5d6e", "name": "demo",

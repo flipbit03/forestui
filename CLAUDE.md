@@ -56,8 +56,8 @@ acceptance playbook.
 - **clap** (derive) for the CLI
 
 Git and tmux are driven by shelling out to the real binaries, not through
-bindings. That keeps the argv identical to the Python build and avoids a
-libgit2 build dependency.
+bindings. That keeps the commands inspectable and avoids a libgit2 build
+dependency.
 
 ## Project Structure
 
@@ -470,10 +470,21 @@ both. Forests separate which *repositories* you look at, not worktree
 ownership — git owns that.
 
 ### Config Compatibility
-`.forestui-config.json` and `~/.config/forestui/settings.json` keep the exact
-filenames and JSON schemas the Python build used, so a user can move between
-builds without losing state. Every field is `#[serde(default)]` so partial and
-older files load cleanly. **Do not rename or restructure these fields.**
+forestui updates itself on launch, so the builds that matter are the newest
+release and the one before it (`n-1`) — the Python build is history, not a
+constraint. `.forestui-config.json` and `~/.config/forestui/settings.json` must
+load in both directions across that one-release gap:
+
+- **Add** fields with a `#[serde(default)]` (or `default = "…"`), so a file
+  written by `n-1` loads here. `n-1` ignores the key it does not know — and
+  drops it on its next save, so a new field's default must be a value that
+  is fine to fall back to.
+- **Remove** a field by deleting it: unknown keys are ignored on load
+  (never add `deny_unknown_fields`) and vanish on the next save.
+- **Rename** a field only across two releases, reading both names in the
+  first, or `n-1` and `n` silently lose the value to each other.
+
+Partial files load cleanly because every field is defaulted.
 
 Both files are written via `util::write_atomically` (sibling temp file +
 rename). A corrupt config deliberately loads as *empty* state so a bad byte
