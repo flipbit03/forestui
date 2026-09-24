@@ -119,6 +119,21 @@ This installs a Claude Code plugin as its own directory. Your
 untouched. Only windows forestui opened are affected — a `claude` you start
 yourself, in or out of tmux, is left alone.
 
+### Remote Control
+
+Settings → *Start Claude sessions with Remote Control* makes every session
+forestui opens — `Claude`, `YOLO`, custom buttons, and resumes from a session
+card — start with `--remote-control`, so it can be picked up from claude.ai or
+the Claude app without remembering to `/rc` first. The remote session carries
+the same name as the session and its tmux tab, and follows `/rename`. While
+it is on, the detail pane's launch section reads
+`CLAUDE: NEW SESSION · REMOTE CONTROL ON`. Windows already open keep whatever
+they started with.
+
+Claude Code has its own *Enable Remote Control for all sessions* in
+`/config`; that one reaches every `claude` on the machine, this one only the
+sessions forestui starts.
+
 ## Usage
 
 ```bash
@@ -249,7 +264,8 @@ Settings are stored in `~/.config/forestui/settings.json`:
       "prefix": "opus",
       "command": "claude --model opus"
     }
-  ]
+  ],
+  "remote_control": false
 }
 ```
 

@@ -88,6 +88,22 @@ mod tests {
         assert_eq!(s.legacy_theme, "system");
         assert_eq!(s.theme_name, "forest-dark");
         assert!(s.custom_buttons.is_empty());
+        // A file from before the checkbox existed leaves Remote Control off.
+        assert!(!s.remote_control);
+    }
+
+    #[test]
+    fn remote_control_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        let s = Settings {
+            remote_control: true,
+            ..Settings::default()
+        };
+        save_settings_to(&p, &s).unwrap();
+        let raw = std::fs::read_to_string(&p).unwrap();
+        assert!(raw.contains("\"remote_control\": true"), "{raw}");
+        assert!(load_settings_from(&p).remote_control);
     }
 
     #[test]

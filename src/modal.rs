@@ -856,6 +856,8 @@ pub struct SettingsModal {
     legacy_theme: String,
     pub branch_prefix: TextInput,
     pub custom_buttons: Vec<CustomClaudeButton>,
+    /// Start Claude sessions with `--remote-control`.
+    pub remote_control: bool,
     /// Snapshot, not a live read. The renderer runs on every frame, and asking
     /// on each one meant three file reads and three digests per repaint — I/O
     /// in a draw path, which stutters visibly on a slow or networked home.
@@ -872,9 +874,10 @@ impl SettingsModal {
     pub const FOCUS_PREFIX: usize = 1;
     pub const FOCUS_THEME: usize = 2;
     pub const FOCUS_MANAGE: usize = 3;
-    pub const FOCUS_INTEGRATION: usize = 4;
-    pub const FOCUS_SAVE: usize = 5;
-    pub const FOCUS_CANCEL: usize = 6;
+    pub const FOCUS_REMOTE_CONTROL: usize = 4;
+    pub const FOCUS_INTEGRATION: usize = 5;
+    pub const FOCUS_SAVE: usize = 6;
+    pub const FOCUS_CANCEL: usize = 7;
     pub const FIELDS: usize = Self::FOCUS_CANCEL + 1;
 
     pub fn new(settings: &Settings) -> Self {
@@ -893,6 +896,7 @@ impl SettingsModal {
             legacy_theme: settings.legacy_theme.clone(),
             branch_prefix: TextInput::new(settings.branch_prefix.clone()).with_placeholder("feat/"),
             custom_buttons: settings.custom_buttons.clone(),
+            remote_control: settings.remote_control,
             integration_status: crate::services::claude_plugin::status(),
             focus: Self::FOCUS_EDITOR,
         }
@@ -914,6 +918,7 @@ impl SettingsModal {
             legacy_theme: self.legacy_theme.clone(),
             theme_name: self.theme_slug.to_string(),
             custom_buttons: self.custom_buttons.clone(),
+            remote_control: self.remote_control,
         }
     }
 
@@ -949,6 +954,12 @@ impl SettingsModal {
         }
 
         match (self.focus, key.code) {
+            // Enter toggles rather than saves: it is what a click sends, and a
+            // click on a checkbox that closed the dialog would be a surprise.
+            (Self::FOCUS_REMOTE_CONTROL, KeyCode::Enter | KeyCode::Char(' ')) => {
+                self.remote_control = !self.remote_control;
+                ModalOutcome::None
+            }
             (Self::FOCUS_THEME, KeyCode::Enter) => {
                 ModalOutcome::Push(Box::new(Modal::ThemePicker(ThemePickerModal::new())))
             }
@@ -1839,6 +1850,39 @@ mod tests {
             }
             other => panic!("unexpected outcome: {other:?}"),
         }
+    }
+
+    /// The Remote Control checkbox opens showing the stored value, toggles on
+    /// Space and on Enter (a click sends Enter, and must not save and close),
+    /// and Save carries whatever it shows.
+    #[test]
+    fn settings_toggles_and_saves_remote_control() {
+        let mut modal = SettingsModal::new(&Settings::default());
+        assert!(!modal.remote_control, "off unless the user turns it on");
+
+        modal.focus = SettingsModal::FOCUS_REMOTE_CONTROL;
+        assert!(matches!(
+            modal.handle_key(key(KeyCode::Char(' '))),
+            ModalOutcome::None
+        ));
+        assert!(modal.remote_control);
+        assert!(matches!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::None
+        ));
+        assert!(!modal.remote_control, "Enter toggles, it does not submit");
+        modal.handle_key(key(KeyCode::Enter));
+
+        modal.focus = SettingsModal::FOCUS_SAVE;
+        let ModalOutcome::Submit(ModalResult::SettingsSaved(saved)) =
+            modal.handle_key(key(KeyCode::Enter))
+        else {
+            panic!("Save must submit the settings");
+        };
+        assert!(saved.remote_control);
+
+        let reopened = SettingsModal::new(&saved);
+        assert!(reopened.remote_control, "the dialog shows what was stored");
     }
 
     /// The rename dialog refuses what cannot become a name — empty, or text

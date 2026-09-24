@@ -1151,6 +1151,30 @@ mod tests {
         assert!(screen.contains("│ Claude │"), "{screen}");
     }
 
+    /// With Remote Control on, the launch section says so — and only its
+    /// header changes: the buttons keep their labels and positions, so the
+    /// hit regions do not move with the setting.
+    #[tokio::test]
+    async fn remote_control_is_announced_in_the_launch_header() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = test_app(&dir);
+        with_worktree(&mut app);
+        let off = render_buffer(&mut app, 100, TALL);
+        let off_text = buffer_text(&off);
+        assert!(off_text.contains("CLAUDE: NEW SESSION"), "{off_text}");
+        assert!(!off_text.contains("REMOTE CONTROL"), "{off_text}");
+
+        app.settings.remote_control = true;
+        let on = render_buffer(&mut app, 100, TALL);
+        let on_text = buffer_text(&on);
+        assert!(
+            on_text.contains("CLAUDE: NEW SESSION · REMOTE CONTROL ON"),
+            "{on_text}"
+        );
+        assert_eq!(find_cell(&on, "│ Claude │"), find_cell(&off, "│ Claude │"));
+        assert_eq!(find_cell(&on, "│ YOLO │"), find_cell(&off, "│ YOLO │"));
+    }
+
     #[tokio::test]
     async fn missing_worktree_directory_is_flagged() {
         let dir = tempfile::tempdir().expect("tempdir");

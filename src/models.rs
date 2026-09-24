@@ -309,6 +309,12 @@ pub struct Settings {
     pub theme_name: String,
     #[serde(default)]
     pub custom_buttons: Vec<CustomClaudeButton>,
+    /// Start every Claude session forestui opens with `--remote-control`, so
+    /// it can be picked up from the phone without remembering to `/rc` first.
+    /// Additive and defaulted like `theme_name`: files from either build load
+    /// in both, and a file that predates it loads with it off.
+    #[serde(default)]
+    pub remote_control: bool,
 }
 
 impl Default for Settings {
@@ -320,6 +326,7 @@ impl Default for Settings {
             legacy_theme: default_theme(),
             theme_name: default_theme_name(),
             custom_buttons: Vec::new(),
+            remote_control: false,
         }
     }
 }

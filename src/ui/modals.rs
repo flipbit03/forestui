@@ -698,9 +698,9 @@ fn create_from_issue(frame: &mut Frame, modal: &CreateFromIssueModal, area: Rect
 // ------------------------------------------------------------------ Settings
 
 fn settings(frame: &mut Frame, modal: &SettingsModal, area: Rect, hits: &mut Hits) {
-    // Three labelled controls, the custom-button and integration sections, then
-    // the gap and the buttons.
-    let rect = widgets::centered_rect(WIDE, CHROME + 26, area);
+    // Three labelled controls, the custom-button, remote-control and
+    // integration sections, then the gap and the buttons.
+    let rect = widgets::centered_rect(WIDE, CHROME + 31, area);
     let mut column = dialog(frame, rect, "Settings", theme::title());
 
     let editor = EDITORS
@@ -751,6 +751,19 @@ fn settings(frame: &mut Frame, modal: &SettingsModal, area: Rect, hits: &mut Hit
             modal.focus == SettingsModal::FOCUS_MANAGE,
             theme::Variant::Normal,
             SettingsModal::FOCUS_MANAGE,
+        )],
+        false,
+    );
+    column.gap();
+    column.line(frame, widgets::section("REMOTE CONTROL"));
+    column.controls(
+        frame,
+        hits,
+        vec![checkbox(
+            "Start Claude sessions with Remote Control",
+            modal.remote_control,
+            modal.focus == SettingsModal::FOCUS_REMOTE_CONTROL,
+            SettingsModal::FOCUS_REMOTE_CONTROL,
         )],
         false,
     );
@@ -1531,6 +1544,10 @@ mod tests {
             ("feat/", SettingsModal::FOCUS_PREFIX),
             ("│ Forest Dark… │", SettingsModal::FOCUS_THEME),
             ("│ Manage Custom Buttons... │", SettingsModal::FOCUS_MANAGE),
+            (
+                "│ [ ] Start Claude sessions with Remote Control │",
+                SettingsModal::FOCUS_REMOTE_CONTROL,
+            ),
             (
                 "│ Manage Integration... │",
                 SettingsModal::FOCUS_INTEGRATION,

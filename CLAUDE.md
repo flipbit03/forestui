@@ -305,6 +305,18 @@ window instead.
 There is deliberately no off switch, per window or global. Installed means the
 two names agree; not wanting that is an uninstall.
 
+**Remote Control rides on the same name, so it is passed bare.** The Settings
+checkbox (`remote_control`) adds `--remote-control` to every launch
+`claude_command_line` builds — both built-in buttons, custom buttons, resumes,
+and the history line — and never gives it a value. With no value, Claude names
+the remote session after the session itself: the `-n` name on a fresh launch,
+the stored title on a resume, and it follows `/rename`; all three were checked
+against the phone app. A value could only disagree with that, and on a resume
+it would be the window's name — the `:2`-suffixed one the missing `-n` exists
+to keep away. The value is optional (`--remote-control [name]`), so the flag is
+always followed by `-r` or `-n`, never a bare word it could take as its name;
+a test holds that line.
+
 ### Terminal input modes
 
 forestui asks the terminal for five DEC private modes (`src/terminal.rs`):
