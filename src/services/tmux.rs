@@ -494,13 +494,19 @@ fn single_line(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).collect()
 }
 
-/// Whether a custom command turns Remote Control on by itself. A whole word,
-/// not a substring: `--remote-control-session-name-prefix` only names remote
-/// sessions, and a button using it alone still needs the flag added.
+/// Whether a custom command turns Remote Control on by itself — by the long
+/// name or by Claude's `--rc` alias, bare or with `=name`. Adding ours on top
+/// is not harmless: Claude reads `--remote-control` ahead of `--rc`, so a
+/// button's `--rc 'Build box'` would lose its name to our bare flag.
+///
+/// Whole words, not substrings: `--remote-control-session-name-prefix` only
+/// names remote sessions, and a button using it alone still needs the flag.
 fn asks_for_remote_control(command: &str) -> bool {
-    command
-        .split_whitespace()
-        .any(|word| word == "--remote-control" || word.starts_with("--remote-control="))
+    command.split_whitespace().any(|word| {
+        ["--remote-control", "--rc"].iter().any(|flag| {
+            word == *flag || word.strip_prefix(flag).is_some_and(|v| v.starts_with('='))
+        })
+    })
 }
 
 /// What a Claude launch asks for, apart from the window it lands in.
@@ -1105,13 +1111,18 @@ mod tests {
     /// always be followed by another flag.
     #[test]
     fn remote_control_is_never_followed_by_a_bare_word() {
+        let custom = [None, Some(("claude --model opus", "opus"))];
         for resume_session_id in [None, Some("abc")] {
-            for yolo in [false, true] {
+            for (yolo, custom) in [false, true]
+                .into_iter()
+                .flat_map(|y| custom.map(|c| (y, c)))
+            {
                 let launch = ClaudeLaunch {
                     resume_session_id,
                     yolo,
+                    custom_command: custom.map(|(command, _)| command),
+                    custom_prefix: custom.map(|(_, prefix)| prefix),
                     remote_control: true,
-                    ..ClaudeLaunch::default()
                 };
                 let line = claude_command_line(&launch, "claude:wt", Some("id-1"));
                 let words: Vec<&str> = line.split(' ').collect();
@@ -1181,6 +1192,25 @@ mod tests {
             claude_command_line(&already, "opus:wt", None),
             "claude --remote-control --model opus -n 'opus:wt'"
         );
+
+        // Asking by another spelling counts too; `--rc` is Claude's alias, and
+        // a second flag would override the name the button gave it.
+        for asked in [
+            "claude --rc 'Build box'",
+            "claude --rc",
+            "claude --rc=box",
+            "claude --remote-control=box",
+        ] {
+            let launch = ClaudeLaunch {
+                custom_command: Some(asked),
+                ..custom
+            };
+            assert_eq!(
+                claude_command_line(&launch, "opus:wt", None),
+                format!("{asked} -n 'opus:wt'"),
+                "{asked:?} was handed a second flag"
+            );
+        }
 
         // Naming the remote sessions is not asking for Remote Control.
         let prefix_only = ClaudeLaunch {

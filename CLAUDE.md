@@ -317,7 +317,12 @@ against the phone app. A value could only disagree with that, and on a resume
 it would be the window's name — the `:2`-suffixed one the missing `-n` exists
 to keep away. The value is optional (`--remote-control [name]`), so the flag is
 always followed by `-r` or `-n`, never a bare word it could take as its name;
-a test holds that line.
+a test holds that line for built-in and custom launches alike. A custom command
+that already asks for it (`--remote-control` or Claude's `--rc` alias, bare or
+`=name`) is left alone — Claude reads `--remote-control` first, so ours would
+override the button's name. A Claude too old to know the flag would refuse
+every launch, so `services/claude_cli.rs` asks `claude --help` once at startup
+and drops the flag only on a definite no; a probe that could not run keeps it.
 
 ### Terminal input modes
 

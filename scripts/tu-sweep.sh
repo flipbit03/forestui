@@ -74,8 +74,17 @@ done
 # invisible in a screenshot — a build that stopped writing it would render an
 # identical frame. Read with show-options rather than a #{@...} format: a
 # server-scoped value of the same name shadows the window's one in formats.
+#
+# forestui also runs `claude --help` once at startup, to learn whether this
+# Claude knows `--remote-control`. The stub answers it like a current Claude
+# and exits: recording it would put the app's own window first in birth.txt,
+# and sleeping would hold the probe until its timeout.
 cat > "$ROOT/bin/claude" <<STUB
 #!/bin/sh
+if [ "\$1" = "--help" ]; then
+  echo "  --remote-control [name]  Start an interactive session with Remote Control enabled"
+  exit 0
+fi
 echo "claude stub \$*"
 printf '%s\t%s\n' \
   "\$(tmux display-message -p '#{window_name}' 2>/dev/null)" \

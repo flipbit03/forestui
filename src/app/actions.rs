@@ -829,7 +829,8 @@ impl App {
                 yolo,
                 custom_command: custom.as_ref().map(|b| b.command.as_str()),
                 custom_prefix: custom.as_ref().map(|b| b.prefix.as_str()),
-                remote_control: self.settings.remote_control,
+                remote_control: self.settings.remote_control
+                    && crate::services::claude_cli::remote_control_supported(),
             },
         );
 

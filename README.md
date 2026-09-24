@@ -126,7 +126,7 @@ from a session card — starts with `--remote-control`, so it can be picked up
 from claude.ai or the Claude app without remembering to `/rc` first. The
 remote session carries the same name as the session and its tmux tab, and
 follows `/rename`. It is on by default, including for an existing install
-after an update; untick Settings → *Start Claude sessions with Remote Control*
+after an update; untick Settings → *Start sessions with Remote Control*
 to turn it off. Windows already open keep whatever they started with.
 
 Claude Code has its own *Enable Remote Control for all sessions* in

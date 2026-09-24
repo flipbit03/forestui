@@ -362,6 +362,26 @@ impl App {
             self.check_for_update();
         }
         self.check_plugin_version();
+        self.probe_claude_cli();
+    }
+
+    /// Ask the installed Claude, once, whether it knows `--remote-control`.
+    /// Until it answers, launches keep the flag; a definite no drops it from
+    /// every later launch, and says so while the setting is on — otherwise the
+    /// checkbox would read ticked over sessions that are not reachable.
+    fn probe_claude_cli(&self) {
+        let tx = self.tx.clone();
+        let wanted = self.settings.remote_control;
+        tokio::spawn(async move {
+            let answer = crate::services::claude_cli::probe_remote_control().await;
+            if wanted && answer == Some(false) {
+                tx.notify(
+                    "This Claude Code has no --remote-control; sessions start without \
+                     Remote Control until Claude is updated",
+                    Severity::Warning,
+                );
+            }
+        });
     }
 
     /// Nag once per launch when the installed Claude integration is behind

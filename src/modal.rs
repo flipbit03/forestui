@@ -874,8 +874,8 @@ impl SettingsModal {
     pub const FOCUS_PREFIX: usize = 1;
     pub const FOCUS_THEME: usize = 2;
     pub const FOCUS_MANAGE: usize = 3;
-    pub const FOCUS_REMOTE_CONTROL: usize = 4;
-    pub const FOCUS_INTEGRATION: usize = 5;
+    pub const FOCUS_INTEGRATION: usize = 4;
+    pub const FOCUS_REMOTE_CONTROL: usize = 5;
     pub const FOCUS_SAVE: usize = 6;
     pub const FOCUS_CANCEL: usize = 7;
     pub const FIELDS: usize = Self::FOCUS_CANCEL + 1;
