@@ -1094,10 +1094,8 @@ impl CustomButtonsModal {
             KeyCode::Up => {
                 self.selected = self.selected.saturating_sub(1);
             }
-            KeyCode::Down => {
-                if len > 0 {
-                    self.selected = (self.selected + 1).min(len - 1);
-                }
+            KeyCode::Down if len > 0 => {
+                self.selected = (self.selected + 1).min(len - 1);
             }
             KeyCode::Char('a') => {
                 self.editing = None;
@@ -1105,23 +1103,19 @@ impl CustomButtonsModal {
                     EditButtonModal::new(None, &self.buttons, None),
                 ))));
             }
-            KeyCode::Enter | KeyCode::Char('e') => {
-                if self.selected < len {
-                    self.editing = Some(self.selected);
-                    return ModalOutcome::Push(Box::new(Modal::EditButton(Box::new(
-                        EditButtonModal::new(
-                            Some(self.buttons[self.selected].clone()),
-                            &self.buttons,
-                            Some(self.selected),
-                        ),
-                    ))));
-                }
+            KeyCode::Enter | KeyCode::Char('e') if self.selected < len => {
+                self.editing = Some(self.selected);
+                return ModalOutcome::Push(Box::new(Modal::EditButton(Box::new(
+                    EditButtonModal::new(
+                        Some(self.buttons[self.selected].clone()),
+                        &self.buttons,
+                        Some(self.selected),
+                    ),
+                ))));
             }
-            KeyCode::Char('d') | KeyCode::Delete => {
-                if self.selected < len {
-                    self.buttons.remove(self.selected);
-                    self.selected = self.selected.min(self.buttons.len().saturating_sub(1));
-                }
+            KeyCode::Char('d') | KeyCode::Delete if self.selected < len => {
+                self.buttons.remove(self.selected);
+                self.selected = self.selected.min(self.buttons.len().saturating_sub(1));
             }
             KeyCode::Char('K') => self.swap(self.selected, -1),
             KeyCode::Char('J') => self.swap(self.selected, 1),
@@ -1269,19 +1263,15 @@ impl EditButtonModal {
         }
 
         match self.focus {
-            Self::FOCUS_LABEL => {
-                if edit_input(&mut self.label, key) {
-                    if self.follows {
-                        self.prefix.set_value(derive_prefix(self.label.value()));
-                    }
-                    return ModalOutcome::None;
+            Self::FOCUS_LABEL if edit_input(&mut self.label, key) => {
+                if self.follows {
+                    self.prefix.set_value(derive_prefix(self.label.value()));
                 }
+                return ModalOutcome::None;
             }
-            Self::FOCUS_PREFIX => {
-                if edit_input(&mut self.prefix, key) {
-                    self.follows = self.prefix.value() == derive_prefix(self.label.value());
-                    return ModalOutcome::None;
-                }
+            Self::FOCUS_PREFIX if edit_input(&mut self.prefix, key) => {
+                self.follows = self.prefix.value() == derive_prefix(self.label.value());
+                return ModalOutcome::None;
             }
             Self::FOCUS_COMMAND if edit_input(&mut self.command, key) => return ModalOutcome::None,
             _ => {}

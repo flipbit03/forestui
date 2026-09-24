@@ -148,13 +148,15 @@ impl TextInput {
             // A modified character is either an editing combination or not
             // ours at all — inserting it would have typed the letter out of
             // `Alt+d` into the field.
+            //
+            // Not collapsible into the guard: an unclaimed combination must
+            // stop here and answer `false`, not fall through to the insert.
             KeyCode::Char(_) if !is_plain_press(key) => {
-                if text_input_claims(key) {
+                let claimed = text_input_claims(key);
+                if claimed {
                     self.kill_to_start();
-                    true
-                } else {
-                    false
                 }
+                claimed
             }
             KeyCode::Char(c) => {
                 self.insert(c);
