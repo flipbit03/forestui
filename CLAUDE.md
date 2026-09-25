@@ -425,8 +425,18 @@ right way round.
 ### Self-update
 forestui keeps itself current the way the Python build did — automatically, on
 launch — but never on the UI thread. `App::check_for_update` spawns the check
-once the terminal is up. Success shows one notification after the new version
-is already in place; network failures (offline, a download that dropped, a
+once the terminal is up and sends its verdict back as `AppEvent::UpdateChecked`.
+Success is **not a toast**: once the new version is in place,
+`App::pending_update` is set and the title bar reads
+`forestui v<current> (v<new> ready — restart to update)` for the rest of the
+run — the running process *is* the old build until it exits, so the notice
+stays true until then, and a toast would time out while the user looked
+elsewhere. A too-narrow bar gets the compact `(v<new> — restart)`, and one too
+narrow even for that drops the running version rather than clip "restart". An
+instance whose binary another instance already replaced (Linux reports
+`<exe> (deleted)`) counts as installed too. A `cargo install` build, which does
+not replace itself, marks the title `(v<new> available — cargo install
+forestui)` instead; that one returns on every launch until the user updates. Network failures (offline, a download that dropped, a
 release whose assets have not finished uploading) stay silent and retry next
 launch. Only a *persistent local* failure — an unwritable install dir — shows
 an error notification, and is remembered for an hour in
@@ -635,7 +645,18 @@ collides with a real one.
 
 ### Development
 
-1. Create a branch, make changes
+**Always work from a git worktree on its own branch — never edit files in the
+main checkout, and never commit to `main` directly.** Before writing any code:
+
+```bash
+git fetch && git worktree add -b <branch> ../forestui-<topic> origin/main
+```
+
+and do all edits, builds and commits inside that worktree. The main checkout
+stays on a clean `main`, so nothing half-done leaks into it and several tasks
+can be in flight at once. Remove the worktree once its PR is merged.
+
+1. Create a branch (in a worktree, as above), make changes
 2. **Always run `make check` before committing, pushing, or opening a PR.** Do
    not push code that fails formatting, clippy, or tests — fix issues first.
 3. Open a PR and merge to `main`

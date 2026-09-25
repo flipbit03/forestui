@@ -245,6 +245,15 @@ pub fn title() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+/// The title bar's "a newer version is waiting" suffix. Warning-coloured on
+/// purpose: it is the one thing in the header that asks the user to act, and
+/// it has to be noticed from the corner of an eye, not only read.
+pub fn title_notice() -> Style {
+    Style::default()
+        .fg(active().warning)
+        .add_modifier(Modifier::BOLD)
+}
+
 pub fn border() -> Style {
     Style::default().fg(active().border)
 }

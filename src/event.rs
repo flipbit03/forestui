@@ -106,6 +106,10 @@ pub enum AppEvent {
     FetchFailed(String),
     /// Show a transient message.
     Notify(String, Severity),
+    /// The startup update check concluded. Folded on the main loop rather
+    /// than turned into a toast by the task, because a newer version is
+    /// sticky state — the title bar carries it until the process restarts.
+    UpdateChecked(crate::version_check::UpdateStatus),
     /// A background task finished creating a worktree. The entry is folded into
     /// state on the main loop — background tasks never write the config file
     /// themselves, so there is exactly one writer and a user action mid-flight

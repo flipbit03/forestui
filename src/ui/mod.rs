@@ -13,6 +13,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 pub const SIDEBAR_WIDTH: u16 = 35;
 
@@ -87,13 +88,40 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     // that cannot be pressed is worse than no button. Deliberately dropped, so
     // this bar is one of the few places the Rust build does not match the
     // Textual frame — the committed `baseline/python` frames still show it.
-    // The title keeps its position: it is centred on the whole bar either way.
+    // The title is centred on the whole bar either way.
+    //
+    // A pending update rides along until the process exits, and the title
+    // and notice are centred together as one piece. The notice falls back to
+    // its compact wording when the full one would not fit, and past that the
+    // running version gives way to it — the new version and "restart" matter
+    // more than the rest, and a clipped notice would lose exactly the part
+    // that says what to do.
     let title = app.title();
-    let indent = (area.width as usize).saturating_sub(title.chars().count()) / 2;
-    let line = Line::from(vec![
-        Span::raw(" ".repeat(indent)),
-        Span::styled(title, theme::title()),
-    ]);
+    let width = area.width as usize;
+    let fits = |notice: &str| title.width() + 1 + notice.width() <= width;
+    let (title, notice) = match (app.title_suffix(false), app.title_suffix(true)) {
+        (Some(full), _) if fits(&full) => (Some(title), Some(full)),
+        (_, Some(compact)) if fits(&compact) => (Some(title), Some(compact)),
+        (_, Some(compact)) => (None, Some(compact)),
+        _ => (Some(title), None),
+    };
+    let text = [title.as_deref(), notice.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let indent = width.saturating_sub(text.width()) / 2;
+    let mut spans = vec![Span::raw(" ".repeat(indent))];
+    if let Some(title) = title {
+        spans.push(Span::styled(title, theme::title()));
+    }
+    if let Some(notice) = notice {
+        if spans.len() > 1 {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled(notice, theme::title_notice()));
+    }
+    let line = Line::from(spans);
     frame.render_widget(
         Paragraph::new(line).style(Style::default().bg(theme::active().bg_elevated)),
         area,
@@ -242,6 +270,123 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn header_row(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.width)
+            .map(|col| buffer[(col, 0)].symbol().to_string())
+            .collect()
+    }
+
+    /// With nothing pending the header is the bare, centred title — the same
+    /// bar every baseline frame was captured against.
+    #[tokio::test]
+    async fn the_header_is_the_bare_title_with_no_update_pending() {
+        use crate::app::test_support::app_with_fixture;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (_dir, mut app) = app_with_fixture();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("test terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let row = header_row(&terminal);
+        let title = app.title();
+        assert_eq!(row.trim(), title);
+        assert_eq!(row.find(&title), Some((120 - title.width()) / 2));
+    }
+
+    /// The acceptance case: after an update installs, the header reads
+    /// `forestui vX (vY ready — restart to update)`, centred as one piece,
+    /// with the suffix in the warning colour so it is seen, not just read.
+    #[tokio::test]
+    async fn a_pending_update_extends_the_title_bar() {
+        use crate::app::test_support::app_with_fixture;
+        use crate::version_check::UpdateStatus;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // The colours are asserted against the active theme, which other
+        // tests switch; hold it still for the draw and the comparison.
+        let _guard = crate::theme::test_lock();
+        let (_dir, mut app) = app_with_fixture();
+        app.handle_event(crate::event::AppEvent::UpdateChecked(
+            UpdateStatus::Installed("9.9.9".into()),
+        ));
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("test terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let row = header_row(&terminal);
+        let expected = format!("{} (v9.9.9 ready — restart to update)", app.title());
+        assert_eq!(row.trim(), expected);
+        assert_eq!(row.find(&expected), Some((120 - expected.width()) / 2));
+
+        let buffer = terminal.backend().buffer();
+        let suffix_col = row[..row.find("(v9.9.9").expect("suffix drawn")].width() as u16;
+        let title_col = row[..row.find("forestui").expect("title drawn")].width() as u16;
+        assert_eq!(buffer[(suffix_col, 0)].fg, theme::active().warning);
+        assert_eq!(buffer[(title_col, 0)].fg, theme::active().text_primary);
+    }
+
+    /// A bar too narrow for the full sentence keeps the version and the verb
+    /// rather than clipping the part that says what to do.
+    #[tokio::test]
+    async fn a_narrow_header_uses_the_compact_update_notice() {
+        use crate::app::test_support::app_with_fixture;
+        use crate::version_check::UpdateStatus;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (_dir, mut app) = app_with_fixture();
+        app.handle_event(crate::event::AppEvent::UpdateChecked(
+            UpdateStatus::Installed("9.9.9".into()),
+        ));
+        let full = format!("{} (v9.9.9 ready — restart to update)", app.title());
+        let compact = format!("{} (v9.9.9 — restart)", app.title());
+        let width = (full.width() - 1) as u16;
+        assert!(compact.width() <= width as usize);
+
+        let mut terminal = Terminal::new(TestBackend::new(width, 20)).expect("test terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        assert_eq!(header_row(&terminal).trim(), compact);
+
+        // Exactly wide enough for the full wording: it is used.
+        let mut terminal =
+            Terminal::new(TestBackend::new(full.width() as u16, 20)).expect("test terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        assert_eq!(header_row(&terminal).trim(), full);
+
+        // Too narrow even for the compact form beside the title: the running
+        // version gives way, so "restart" is never the part that gets clipped.
+        let mut terminal = Terminal::new(TestBackend::new((compact.width() - 1) as u16, 20))
+            .expect("test terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        assert_eq!(header_row(&terminal).trim(), "(v9.9.9 — restart)");
+    }
+
+    /// A cargo install cannot replace itself, so its notice names the command
+    /// to run instead of a restart — and is just as sticky.
+    #[tokio::test]
+    async fn a_cargo_install_header_points_at_cargo() {
+        use crate::app::test_support::app_with_fixture;
+        use crate::version_check::UpdateStatus;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (_dir, mut app) = app_with_fixture();
+        app.handle_event(crate::event::AppEvent::UpdateChecked(
+            UpdateStatus::Available("9.9.9".into()),
+        ));
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("test terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        assert_eq!(
+            header_row(&terminal).trim(),
+            format!(
+                "{} (v9.9.9 available — cargo install forestui)",
+                app.title()
+            )
+        );
+    }
 
     /// The toast is drawn over the detail pane, so the frame that draws it has
     /// to claim its cells — otherwise a click there reaches the control beneath.
