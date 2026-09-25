@@ -129,6 +129,11 @@ pub struct App {
     pub meta: DetailMeta,
 
     pub gh_status: String,
+    /// A newer forestui this run has learned about — installed and waiting
+    /// for a restart, or available to `cargo install`. Set once by the startup
+    /// check and never cleared: the running process stays the old build until
+    /// it exits, so the title bar says so for as long as that is true.
+    pub pending_update: Option<crate::version_check::UpdateStatus>,
     pub modals: Vec<Modal>,
     pub notifications: Vec<Notification>,
     pub spinner_index: usize,
@@ -259,6 +264,7 @@ impl App {
             issues: None,
             meta: DetailMeta::default(),
             gh_status: "...".to_string(),
+            pending_update: None,
             modals: Vec::new(),
             notifications: Vec::new(),
             spinner_index: 0,
@@ -301,6 +307,14 @@ impl App {
 
     pub fn title(&self) -> String {
         format!("forestui v{}", self.version)
+    }
+
+    /// What follows the title while a newer version is pending, in the full or
+    /// the `compact` wording; `None` when there is nothing to say.
+    pub fn title_suffix(&self, compact: bool) -> Option<String> {
+        self.pending_update
+            .as_ref()
+            .and_then(|status| status.title_suffix(compact))
     }
 
     /// Quit, unless a removal is still in flight — quitting then would orphan
@@ -620,18 +634,29 @@ impl App {
     ///
     /// Deliberately fire-and-forget on a background task: the UI is already up
     /// by the time this runs, so a slow or unreachable GitHub costs nothing but
-    /// a notification that never arrives. Being offline stays silent — it is
-    /// the common case and not the user's problem to solve mid-session — but a
+    /// a title that never changes. Being offline stays silent — it is the
+    /// common case and not the user's problem to solve mid-session — but a
     /// *persistent* install failure (an unwritable install dir) is theirs to
     /// fix and surfaces once per launch.
     fn check_for_update(&self) {
         let tx = self.tx.clone();
         tokio::spawn(async move {
             let status = crate::version_check::update_if_stale().await;
-            if let Some((message, severity)) = status.notification() {
-                tx.notify(message, severity);
-            }
+            tx.send(AppEvent::UpdateChecked(status));
         });
+    }
+
+    /// Fold the update check's verdict. A failure is a toast; a newer version
+    /// marks the title bar for the rest of the run, the way the Python build
+    /// (and Claude Code) did — a toast times out while the user is looking at
+    /// something else, and "restart to update" stays true until they do.
+    fn apply_update_status(&mut self, status: crate::version_check::UpdateStatus) {
+        if let Some((message, severity)) = status.notification() {
+            self.notify(message, severity);
+        }
+        if status.title_suffix(false).is_some() {
+            self.pending_update = Some(status);
+        }
     }
 
     fn load_gh_status(&self) {
@@ -1156,6 +1181,7 @@ impl App {
                 self.notify(format!("Fetch failed: {error}"), Severity::Error);
             }
             AppEvent::Notify(text, severity) => self.notify(text, severity),
+            AppEvent::UpdateChecked(status) => self.apply_update_status(status),
             AppEvent::WorktreeAdded { repo_id, worktree } => {
                 // The repository can be removed while git runs; dropping the
                 // result beats resurrecting an entry nothing owns.
@@ -3423,6 +3449,79 @@ mod tests {
         app.handle_event(AppEvent::Tick);
         assert!(app.notifications.is_empty());
         assert!(app.redraw, "the expired toast was left on screen");
+    }
+
+    /// A newer version marks the title, not a toast, and the mark is sticky:
+    /// ticks that expire every toast on screen leave it exactly where it was,
+    /// because the process stays the old build until it restarts.
+    #[tokio::test]
+    async fn a_finished_update_marks_the_title_until_restart() {
+        use crate::version_check::UpdateStatus;
+
+        let (_dir, mut app) = app_with_fixture();
+        assert_eq!(app.title_suffix(false), None, "nothing pending at launch");
+        app.redraw = false;
+
+        app.handle_event(AppEvent::UpdateChecked(UpdateStatus::Installed(
+            "9.9.9".into(),
+        )));
+        assert!(app.redraw, "the title changed, so the frame must repaint");
+        assert!(
+            app.notifications.is_empty(),
+            "the title carries the news; a toast on top is noise"
+        );
+        assert_eq!(
+            app.title_suffix(false).as_deref(),
+            Some("(v9.9.9 ready — restart to update)")
+        );
+
+        // Well past any toast's lifetime, with other traffic in between.
+        app.notifications.push(Notification {
+            text: "old".into(),
+            severity: Severity::Information,
+            created: Instant::now() - NOTIFICATION_TTL - Duration::from_secs(1),
+        });
+        for _ in 0..50 {
+            app.handle_event(AppEvent::Tick);
+        }
+        app.handle_key(key(KeyCode::Down));
+        assert!(app.notifications.is_empty());
+        assert_eq!(
+            app.title_suffix(false).as_deref(),
+            Some("(v9.9.9 ready — restart to update)"),
+            "the mark outlived nothing but the toasts should"
+        );
+    }
+
+    /// Only outcomes that leave a newer build to run mark the title. A failed
+    /// install is a toast with its reason, and silence changes nothing.
+    #[tokio::test]
+    async fn only_a_newer_build_marks_the_title() {
+        use crate::version_check::UpdateStatus;
+
+        let (_dir, mut app) = app_with_fixture();
+        app.handle_event(AppEvent::UpdateChecked(UpdateStatus::Silent));
+        assert_eq!(app.title_suffix(false), None);
+        assert!(app.notifications.is_empty());
+
+        app.handle_event(AppEvent::UpdateChecked(UpdateStatus::InstallFailed {
+            version: "9.9.9".into(),
+            reason: "permission denied".into(),
+        }));
+        assert_eq!(app.title_suffix(false), None);
+        assert_eq!(app.notifications.len(), 1);
+        assert_eq!(app.notifications[0].severity, Severity::Error);
+        assert!(app.notifications[0].text.contains("permission denied"));
+
+        let (_dir, mut app) = app_with_fixture();
+        app.handle_event(AppEvent::UpdateChecked(UpdateStatus::Available(
+            "9.9.9".into(),
+        )));
+        assert_eq!(
+            app.title_suffix(false).as_deref(),
+            Some("(v9.9.9 available — cargo install forestui)")
+        );
+        assert!(app.notifications.is_empty());
     }
 
     /// The sidebar's branch column earns its space or does not appear.

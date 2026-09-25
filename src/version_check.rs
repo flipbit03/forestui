@@ -10,8 +10,8 @@
 //!
 //! - It never blocks the UI. The check runs on a background task after the
 //!   terminal is up, on every launch — nothing is cached, so a release is
-//!   picked up as soon as it exists. Success shows one notification; anything
-//!   the network is responsible for stays silent (offline is the common case,
+//!   picked up as soon as it exists. Success marks the title bar until the
+//!   next launch; anything the network is responsible for stays silent (offline is the common case,
 //!   not the user's problem); only a *persistent local* failure — an
 //!   unwritable install dir — surfaces as an error, and is remembered for an
 //!   hour so the download is not re-spent on every launch meanwhile.
@@ -354,22 +354,36 @@ pub enum UpdateStatus {
 
 impl UpdateStatus {
     /// The toast this outcome earns, if any.
+    ///
+    /// Only a failure is a toast. A newer version is a standing fact about
+    /// this process until it restarts, so it lives in the title bar instead
+    /// (`title_suffix`), where it stays put rather than timing out while the
+    /// user is looking at something else.
     pub fn notification(&self) -> Option<(String, crate::event::Severity)> {
         use crate::event::Severity;
         match self {
-            UpdateStatus::Silent => None,
-            UpdateStatus::Installed(version) => Some((
-                format!("forestui v{version} installed — restart to use it"),
-                Severity::Information,
-            )),
-            UpdateStatus::Available(version) => Some((
-                format!("forestui v{version} is available — `cargo install forestui`"),
-                Severity::Information,
-            )),
             UpdateStatus::InstallFailed { version, reason } => Some((
                 format!("forestui v{version} is available but could not be installed: {reason}"),
                 Severity::Error,
             )),
+            UpdateStatus::Silent | UpdateStatus::Installed(_) | UpdateStatus::Available(_) => None,
+        }
+    }
+
+    /// What the title bar appends to `forestui v<current>` for the rest of
+    /// this run, if anything. `compact` is the form for a bar too narrow to
+    /// hold the full one: it keeps the version and the one thing to do.
+    pub fn title_suffix(&self, compact: bool) -> Option<String> {
+        match (self, compact) {
+            (UpdateStatus::Installed(version), false) => {
+                Some(format!("(v{version} ready — restart to update)"))
+            }
+            (UpdateStatus::Installed(version), true) => Some(format!("(v{version} — restart)")),
+            (UpdateStatus::Available(version), false) => {
+                Some(format!("(v{version} available — cargo install forestui)"))
+            }
+            (UpdateStatus::Available(version), true) => Some(format!("(v{version} available)")),
+            (UpdateStatus::Silent | UpdateStatus::InstallFailed { .. }, _) => None,
         }
     }
 }
@@ -415,6 +429,17 @@ fn standing_failure(memo: Option<&UpdateMemo>, latest: &str, now: u64) -> Option
         .filter(|f| f.version == latest && now.saturating_sub(f.failed_at) < INSTALL_RETRY_SECS)
 }
 
+/// Whether a running executable that no longer exists at its own path was
+/// replaced rather than removed: Linux reports a replaced binary as
+/// `<path> (deleted)`, and the replacement sits at `<path>`.
+#[cfg(any(feature = "binary-release", test))]
+fn replaced_in_place(current: &std::path::Path) -> bool {
+    current
+        .to_str()
+        .and_then(|path| path.strip_suffix(" (deleted)"))
+        .is_some_and(|original| std::path::Path::new(original).is_file())
+}
+
 #[cfg(feature = "binary-release")]
 async fn install_update(latest: &str) -> UpdateStatus {
     // One read, threaded through the guard and the writes below: the file is
@@ -434,9 +459,12 @@ async fn install_update(latest: &str) -> UpdateStatus {
         // On Linux `/proc/self/exe` reads "<path> (deleted)" once another
         // instance's update has replaced the binary under this process. The
         // new build is already in place; installing to that literal name would
-        // only strand a copy beside it.
+        // only strand a copy beside it. This process is still the old build,
+        // though, so it is just as much "restart to update" as if it had done
+        // the install itself — provided something really does stand at the
+        // original path, rather than the binary having been uninstalled.
         if !current.exists() {
-            return Ok(false);
+            return Ok(replaced_in_place(&current));
         }
         install_from(&release_asset_url(latest)?, &current)
             .await
@@ -727,40 +755,77 @@ mod tests {
         assert_eq!(std::fs::read(&target).expect("read back"), payload);
     }
 
-    /// The notification is part of the module's contract with the app: every
-    /// outcome maps to exactly the toast the user should see.
+    /// The toast and the title suffix are the module's contract with the app:
+    /// a newer version marks the title for the rest of the run and raises no
+    /// toast; only a failed install, which carries a reason to read, is one.
     #[test]
-    fn every_outcome_maps_to_its_notification() {
+    fn every_outcome_maps_to_its_toast_and_title() {
         use crate::event::Severity;
 
-        assert!(UpdateStatus::Silent.notification().is_none());
+        let silent = UpdateStatus::Silent;
+        assert!(silent.notification().is_none());
+        assert!(silent.title_suffix(false).is_none());
+        assert!(silent.title_suffix(true).is_none());
 
-        let (message, severity) = UpdateStatus::Installed("2.0.0".into())
-            .notification()
-            .expect("installed notifies");
+        let installed = UpdateStatus::Installed("2.0.0".into());
         assert!(
-            message.contains("v2.0.0") && message.contains("restart"),
-            "{message}"
+            installed.notification().is_none(),
+            "a finished install is the title's to announce, not a toast's"
         );
-        assert!(matches!(severity, Severity::Information));
+        assert_eq!(
+            installed.title_suffix(false).as_deref(),
+            Some("(v2.0.0 ready — restart to update)")
+        );
+        assert_eq!(
+            installed.title_suffix(true).as_deref(),
+            Some("(v2.0.0 — restart)")
+        );
 
-        let (message, severity) = UpdateStatus::Available("2.0.0".into())
-            .notification()
-            .expect("available notifies");
-        assert!(message.contains("cargo install"), "{message}");
-        assert!(matches!(severity, Severity::Information));
+        let available = UpdateStatus::Available("2.0.0".into());
+        assert!(available.notification().is_none());
+        assert_eq!(
+            available.title_suffix(false).as_deref(),
+            Some("(v2.0.0 available — cargo install forestui)")
+        );
+        assert_eq!(
+            available.title_suffix(true).as_deref(),
+            Some("(v2.0.0 available)")
+        );
 
-        let (message, severity) = UpdateStatus::InstallFailed {
+        let failed = UpdateStatus::InstallFailed {
             version: "2.0.0".into(),
             reason: "permission denied".into(),
-        }
-        .notification()
-        .expect("failure notifies");
+        };
+        let (message, severity) = failed.notification().expect("failure notifies");
         assert!(
             message.contains("could not be installed") && message.contains("permission denied"),
             "{message}"
         );
         assert!(matches!(severity, Severity::Error));
+        assert!(
+            failed.title_suffix(false).is_none(),
+            "nothing was installed, so there is nothing to restart into"
+        );
+    }
+
+    /// Another instance's update replaces the binary under this one; that is
+    /// still a build waiting for a restart. An uninstalled binary is not.
+    #[test]
+    fn a_binary_replaced_under_the_process_counts_as_installed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let exe = dir.path().join("forestui");
+        let deleted = std::path::PathBuf::from(format!("{} (deleted)", exe.display()));
+
+        assert!(
+            !replaced_in_place(&deleted),
+            "nothing stands at the path yet"
+        );
+        std::fs::write(&exe, b"new build").expect("write replacement");
+        assert!(replaced_in_place(&deleted));
+        assert!(
+            !replaced_in_place(&exe),
+            "only the kernel's deleted marker means replaced"
+        );
     }
 
     /// Network failures and unverifiable downloads retry silently; only local

@@ -60,23 +60,24 @@ anywhere. Intel Macs and every other platform build from source with
 ### Updating
 
 forestui keeps itself up to date. It checks for a new release in the background
-after the UI is up — never blocking startup — and tells you once a newer version
-is in place:
+after the UI is up — never blocking startup — and once a newer version is in
+place, the title bar says so until you restart:
 
 ```
-forestui v2.0.1 installed — restart to use it
+forestui v2.0.0 (v2.0.1 ready — restart to update)
 ```
+
+Quit and reopen forestui to pick it up; your tmux windows are untouched.
 
 A binary installed from a release replaces itself. One installed with
-`cargo install` reports the new version instead of recompiling underneath you,
-so you can update when it suits:
+`cargo install` reports the new version in the title instead of recompiling
+underneath you, so you can update when it suits:
 
 ```bash
 cargo install forestui --locked
 ```
 
-Pass `--no-self-update` to skip the check entirely. The result is cached for a
-day, so this is not a network call on every launch, and a build from source
+Pass `--no-self-update` to skip the check entirely. A build from source
 (version `0.0.0`) never updates itself at all.
 
 ## The Claude integration
