@@ -88,30 +88,38 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     // that cannot be pressed is worse than no button. Deliberately dropped, so
     // this bar is one of the few places the Rust build does not match the
     // Textual frame — the committed `baseline/python` frames still show it.
-    // The title keeps its position: it is centred on the whole bar either way.
+    // The title is centred on the whole bar either way.
     //
-    // A pending update rides along until the process exits, in the compact
-    // wording when the full one would not fit — the version and "restart"
-    // matter more than the rest of the sentence, and a clipped suffix would
-    // lose exactly the part that says what to do.
+    // A pending update rides along until the process exits, and the title
+    // and notice are centred together as one piece. The notice falls back to
+    // its compact wording when the full one would not fit, and past that the
+    // running version gives way to it — the new version and "restart" matter
+    // more than the rest, and a clipped notice would lose exactly the part
+    // that says what to do.
     let title = app.title();
     let width = area.width as usize;
-    let suffix = app.title_suffix(false).and_then(|full| {
-        if title.width() + 1 + full.width() <= width {
-            Some(full)
-        } else {
-            app.title_suffix(true)
+    let fits = |notice: &str| title.width() + 1 + notice.width() <= width;
+    let (title, notice) = match (app.title_suffix(false), app.title_suffix(true)) {
+        (Some(full), _) if fits(&full) => (Some(title), Some(full)),
+        (_, Some(compact)) if fits(&compact) => (Some(title), Some(compact)),
+        (_, Some(compact)) => (None, Some(compact)),
+        _ => (Some(title), None),
+    };
+    let text = [title.as_deref(), notice.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let indent = width.saturating_sub(text.width()) / 2;
+    let mut spans = vec![Span::raw(" ".repeat(indent))];
+    if let Some(title) = title {
+        spans.push(Span::styled(title, theme::title()));
+    }
+    if let Some(notice) = notice {
+        if spans.len() > 1 {
+            spans.push(Span::raw(" "));
         }
-    });
-    let text_width = title.width() + suffix.as_ref().map_or(0, |s| 1 + s.width());
-    let indent = width.saturating_sub(text_width) / 2;
-    let mut spans = vec![
-        Span::raw(" ".repeat(indent)),
-        Span::styled(title, theme::title()),
-    ];
-    if let Some(suffix) = suffix {
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(suffix, theme::title_notice()));
+        spans.push(Span::styled(notice, theme::title_notice()));
     }
     let line = Line::from(spans);
     frame.render_widget(
@@ -347,6 +355,37 @@ mod tests {
             Terminal::new(TestBackend::new(full.width() as u16, 20)).expect("test terminal");
         terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
         assert_eq!(header_row(&terminal).trim(), full);
+
+        // Too narrow even for the compact form beside the title: the running
+        // version gives way, so "restart" is never the part that gets clipped.
+        let mut terminal = Terminal::new(TestBackend::new((compact.width() - 1) as u16, 20))
+            .expect("test terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        assert_eq!(header_row(&terminal).trim(), "(v9.9.9 — restart)");
+    }
+
+    /// A cargo install cannot replace itself, so its notice names the command
+    /// to run instead of a restart — and is just as sticky.
+    #[tokio::test]
+    async fn a_cargo_install_header_points_at_cargo() {
+        use crate::app::test_support::app_with_fixture;
+        use crate::version_check::UpdateStatus;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (_dir, mut app) = app_with_fixture();
+        app.handle_event(crate::event::AppEvent::UpdateChecked(
+            UpdateStatus::Available("9.9.9".into()),
+        ));
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("test terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        assert_eq!(
+            header_row(&terminal).trim(),
+            format!(
+                "{} (v9.9.9 available — cargo install forestui)",
+                app.title()
+            )
+        );
     }
 
     /// The toast is drawn over the detail pane, so the frame that draws it has

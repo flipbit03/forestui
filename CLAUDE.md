@@ -426,14 +426,17 @@ right way round.
 forestui keeps itself current the way the Python build did — automatically, on
 launch — but never on the UI thread. `App::check_for_update` spawns the check
 once the terminal is up and sends its verdict back as `AppEvent::UpdateChecked`.
-Success is **not a toast**: once the new version is in place (or, for a cargo
-install, known to exist), `App::pending_update` is set and the title bar reads
+Success is **not a toast**: once the new version is in place,
+`App::pending_update` is set and the title bar reads
 `forestui v<current> (v<new> ready — restart to update)` for the rest of the
 run — the running process *is* the old build until it exits, so the notice
 stays true until then, and a toast would time out while the user looked
-elsewhere. A too-narrow bar gets the compact `(v<new> — restart)`. An instance
-whose binary another instance already replaced (Linux reports `<exe> (deleted)`)
-counts as installed too. Network failures (offline, a download that dropped, a
+elsewhere. A too-narrow bar gets the compact `(v<new> — restart)`, and one too
+narrow even for that drops the running version rather than clip "restart". An
+instance whose binary another instance already replaced (Linux reports
+`<exe> (deleted)`) counts as installed too. A `cargo install` build, which does
+not replace itself, marks the title `(v<new> available — cargo install
+forestui)` instead; that one returns on every launch until the user updates. Network failures (offline, a download that dropped, a
 release whose assets have not finished uploading) stay silent and retry next
 launch. Only a *persistent local* failure — an unwritable install dir — shows
 an error notification, and is remembered for an hour in

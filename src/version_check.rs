@@ -10,9 +10,10 @@
 //!
 //! - It never blocks the UI. The check runs on a background task after the
 //!   terminal is up, on every launch — nothing is cached, so a release is
-//!   picked up as soon as it exists. Success marks the title bar until the
-//!   next launch; anything the network is responsible for stays silent (offline is the common case,
-//!   not the user's problem); only a *persistent local* failure — an
+//!   picked up as soon as it exists. A newer version marks the title bar for
+//!   the rest of the run rather than raising a toast; anything the network is
+//!   responsible for stays silent (offline is the common case, not the user's
+//!   problem); only a *persistent local* failure — an
 //!   unwritable install dir — surfaces as an error, and is remembered for an
 //!   hour so the download is not re-spent on every launch meanwhile.
 //! - It only ever replaces a binary that came from a release. A `cargo install`
@@ -432,12 +433,31 @@ fn standing_failure(memo: Option<&UpdateMemo>, latest: &str, now: u64) -> Option
 /// Whether a running executable that no longer exists at its own path was
 /// replaced rather than removed: Linux reports a replaced binary as
 /// `<path> (deleted)`, and the replacement sits at `<path>`.
+///
+/// What it was replaced *with* is not checked. The window this can happen in
+/// is the seconds between launch and the check finishing, and what lands in
+/// it is another instance's install of the same `latest` this one just
+/// looked up — so reporting that version is a guess, but a safe one.
+/// Compared as bytes so an install path that is not UTF-8 is still seen.
 #[cfg(any(feature = "binary-release", test))]
 fn replaced_in_place(current: &std::path::Path) -> bool {
-    current
-        .to_str()
-        .and_then(|path| path.strip_suffix(" (deleted)"))
-        .is_some_and(|original| std::path::Path::new(original).is_file())
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        current
+            .as_os_str()
+            .as_bytes()
+            .strip_suffix(b" (deleted)")
+            .is_some_and(|original| {
+                std::path::Path::new(std::ffi::OsStr::from_bytes(original)).is_file()
+            })
+    }
+    // Only Linux reports a replaced executable this way.
+    #[cfg(not(unix))]
+    {
+        let _ = current;
+        false
+    }
 }
 
 #[cfg(feature = "binary-release")]
@@ -826,6 +846,19 @@ mod tests {
             !replaced_in_place(&exe),
             "only the kernel's deleted marker means replaced"
         );
+
+        // An install path that is not UTF-8 is still recognised.
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let odd = dir
+                .path()
+                .join(std::ffi::OsStr::from_bytes(b"forest\xffui"));
+            std::fs::write(&odd, b"new build").expect("write replacement");
+            let mut deleted = odd.into_os_string();
+            deleted.push(" (deleted)");
+            assert!(replaced_in_place(std::path::Path::new(&deleted)));
+        }
     }
 
     /// Network failures and unverifiable downloads retry silently; only local

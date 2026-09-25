@@ -132,7 +132,9 @@ pub struct App {
     /// A newer forestui this run has learned about — installed and waiting
     /// for a restart, or available to `cargo install`. Set once by the startup
     /// check and never cleared: the running process stays the old build until
-    /// it exits, so the title bar says so for as long as that is true.
+    /// it exits, so the title bar says so for as long as that is true. (A
+    /// cargo install's notice comes back on the next launch too, until the
+    /// user runs `cargo install` — that is still true as well.)
     pub pending_update: Option<crate::version_check::UpdateStatus>,
     pub modals: Vec<Modal>,
     pub notifications: Vec<Notification>,
