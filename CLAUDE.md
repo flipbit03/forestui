@@ -393,7 +393,15 @@ Three things in the generated file are load-bearing:
   fast-starting Claude can beat to its first hook.
 - **The command is pushed into the shell's history** (`print -s`, `history -s`)
   where the shell has a builtin for it. Typing it used to do that for free, and
-  after an accidental Ctrl-C the up arrow is the shortest way back.
+  after an accidental Ctrl-C the up arrow is the shortest way back. *When* it
+  is pushed is load-bearing for zsh: zsh reads `HISTFILE` only after its
+  startup files, and Claude runs inside this one, so a line pushed from it
+  lands under the whole loaded file — with `share_history`, the up arrow then
+  found another window's line and resumed a different conversation. zsh
+  pushes from a one-shot `precmd` hook instead, at the first prompt after
+  Claude exits or is suspended. bash reads its history before the rc file and
+  needs no hook. `the_remembered_line_is_the_newest_history_entry` drives both
+  real shells to hold this.
 
 A shell with no hook we have tested — fish, nushell — falls back to typing the
 line into a plain shell with `send-keys`. That path is a real fallback, not a

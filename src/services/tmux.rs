@@ -669,8 +669,25 @@ fn startup_for(
     // state an up-arrow rerun happens in. The caller hands the resume form
     // instead, so the up arrow goes back into the same conversation rather
     // than into an error.
+    //
+    // When it is remembered matters as much. zsh reads `HISTFILE` only after
+    // its startup files, and Claude runs *inside* this one — so a line pushed
+    // from here lands under the whole loaded file, and under `share_history`
+    // the up arrow instead finds whatever line another window's shell wrote
+    // last: a different conversation that looks like the right one. zsh
+    // therefore pushes from a one-shot `precmd` hook, at the first prompt
+    // after Claude exits or is suspended, once the file is loaded. bash reads
+    // its history before the rc file, so its line is already on top.
     let remembered = match base {
-        "zsh" => format!("print -s -- {}\n", sh_quote(remembered_line)),
+        "zsh" => format!(
+            "__forestui_remember() {{\n\
+             \x20 print -s -- {}\n\
+             \x20 precmd_functions=(${{precmd_functions:#__forestui_remember}})\n\
+             \x20 unfunction __forestui_remember\n\
+             }}\n\
+             precmd_functions+=(__forestui_remember)\n",
+            sh_quote(remembered_line)
+        ),
         "bash" => format!("history -s {}\n", sh_quote(remembered_line)),
         _ => String::new(),
     };
@@ -1381,7 +1398,7 @@ mod tests {
         // and what is remembered is the *resume* form, because a fresh
         // session's `--session-id` refuses to run a second time and the up
         // arrow exists precisely for the second run.
-        let expected_zsh = format!("print -s -- {}", sh_quote("claude -r 'sess-1'"));
+        let expected_zsh = format!("  print -s -- {}\n", sh_quote("claude -r 'sess-1'"));
         let expected_bash = format!("history -s {}", sh_quote("claude -r 'sess-1'"));
         assert!(zsh.files[1].1.contains(&expected_zsh), "{}", zsh.files[1].1);
         assert!(
@@ -1407,6 +1424,126 @@ mod tests {
         )
         .expect("sh is known");
         assert!(sh.files[0].1.contains("'/home/u/.shinit'"));
+    }
+
+    /// The remembered line has to be the *first* thing the up arrow finds once
+    /// Claude is gone — above the history file the shell loads, and above a
+    /// line another window's shell wrote while this session ran. zsh reads its
+    /// history file only after the startup file that runs Claude, which buried
+    /// the line under the whole file and let the up arrow resume a different
+    /// conversation. Driven through the real shells, since the order is the
+    /// shell's doing, not ours; a shell that is not installed is skipped.
+    #[test]
+    fn the_remembered_line_is_the_newest_history_entry() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        for shell in ["zsh", "bash"] {
+            let Some(path) = std::env::var_os("PATH").and_then(|paths| {
+                std::env::split_paths(&paths)
+                    .map(|dir| dir.join(shell))
+                    .find(|candidate| candidate.is_file())
+            }) else {
+                eprintln!("{shell} is not installed; skipping");
+                continue;
+            };
+            let home = tempfile::tempdir().expect("tempdir");
+            let root = home.path();
+            // The startup file stamps the window through tmux. A stub answers
+            // instead, so this can never reach a real server.
+            let bin = root.join("bin");
+            std::fs::create_dir(&bin).expect("bin dir");
+            let stub = bin.join("tmux");
+            std::fs::write(&stub, "#!/bin/sh\nexit 0\n").expect("tmux stub");
+            let mut mode = std::fs::metadata(&stub).expect("stub").permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
+            std::fs::set_permissions(&stub, mode).expect("chmod");
+
+            let (history, rc, old, other) = if shell == "zsh" {
+                (
+                    root.join(".zsh_history"),
+                    (
+                        root.join(".zshrc"),
+                        "HISTFILE=$HOME/.zsh_history; HISTSIZE=100; SAVEHIST=100\n\
+                         setopt share_history extended_history hist_ignore_space\n",
+                    ),
+                    ": 1:0;echo old\n",
+                    ": 3:0;claude -r OTHER",
+                )
+            } else {
+                (
+                    root.join(".bash_history"),
+                    (
+                        root.join(".bashrc"),
+                        "HISTFILE=$HOME/.bash_history; HISTSIZE=100; HISTCONTROL=ignorespace\n",
+                    ),
+                    "echo old\n",
+                    "claude -r OTHER",
+                )
+            };
+            std::fs::write(&history, old).expect("history");
+            std::fs::write(&rc.0, rc.1).expect("rc");
+
+            // Claude's stand-in: another window's shell exits mid-session and
+            // appends its own line to the shared history file.
+            let running = format!(
+                "printf '%s\\n' {} >> {}",
+                sh_quote(other),
+                sh_quote(history.to_str().expect("utf-8"))
+            );
+            let launch = root.join("launch");
+            let home_env = ShellHome {
+                home: root.to_str().expect("utf-8").into(),
+                zdotdir: None,
+                env_file: None,
+            };
+            let startup = startup_for(
+                path.to_str().expect("utf-8"),
+                &launch,
+                &home_env,
+                "claude:wt",
+                "sess-1",
+                &running,
+                "claude -r 'MINE'",
+            )
+            .expect("a known shell");
+            std::fs::create_dir(&launch).expect("launch dir");
+            for (file, contents) in &startup.files {
+                std::fs::write(file, contents).expect("startup file");
+            }
+
+            let mut child = Command::new("/bin/sh")
+                .arg("-c")
+                .arg(&startup.command)
+                .env_clear()
+                .env("HOME", root)
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .env("TMUX_TMPDIR", root)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("the shell starts");
+            // Leading space: the query itself stays out of the history.
+            child
+                .stdin
+                .take()
+                .expect("stdin")
+                .write_all(b" fc -ln 1\n exit\n")
+                .expect("commands");
+            let out = child.wait_with_output().expect("the shell exits");
+            let listed = String::from_utf8_lossy(&out.stdout);
+            let entries: Vec<&str> = listed
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect();
+            assert_eq!(
+                entries.last(),
+                Some(&"claude -r 'MINE'"),
+                "{shell}: the up arrow would not find this window's line first: {entries:?}"
+            );
+        }
     }
 
     /// Every generated file removes itself once the shell has it, so a session
