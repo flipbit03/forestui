@@ -74,8 +74,17 @@ done
 # invisible in a screenshot — a build that stopped writing it would render an
 # identical frame. Read with show-options rather than a #{@...} format: a
 # server-scoped value of the same name shadows the window's one in formats.
+#
+# forestui also runs `claude --help` once at startup, to learn whether this
+# Claude knows `--remote-control`. The stub answers it like a current Claude
+# and exits: recording it would put the app's own window first in birth.txt,
+# and sleeping would hold the probe until its timeout.
 cat > "$ROOT/bin/claude" <<STUB
 #!/bin/sh
+if [ "\$1" = "--help" ]; then
+  echo "  --remote-control [name]  Start an interactive session with Remote Control enabled"
+  exit 0
+fi
 echo "claude stub \$*"
 printf '%s\t%s\n' \
   "\$(tmux display-message -p '#{window_name}' 2>/dev/null)" \
@@ -168,6 +177,9 @@ SESSION
 # a 70-row screen, and the rename flow then clicks on nothing.
 seed_sessions "$ROOT/src/alpha" 3
 
+# Written the way an older build left it, retired `default_terminal` and
+# `theme` keys included: they must not stop the file loading — the custom
+# button below would vanish from every frame if they did.
 cat > "$ROOT/home/.config/forestui/settings.json" <<'EOF'
 {"default_editor":"vim","default_terminal":"","branch_prefix":"feat/","theme":"system",
  "custom_buttons":[{"label":"Opus","prefix":"opus","command":"claude --model opus"}]}

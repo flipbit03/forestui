@@ -56,8 +56,8 @@ acceptance playbook.
 - **clap** (derive) for the CLI
 
 Git and tmux are driven by shelling out to the real binaries, not through
-bindings. That keeps the argv identical to the Python build and avoids a
-libgit2 build dependency.
+bindings. That keeps the commands inspectable and avoids a libgit2 build
+dependency.
 
 ## Project Structure
 
@@ -305,6 +305,25 @@ window instead.
 There is deliberately no off switch, per window or global. Installed means the
 two names agree; not wanting that is an uninstall.
 
+**Remote Control rides on the same name, so it is passed bare.** The Settings
+checkbox (`remote_control`, on by default — a settings file without the key
+loads it *on*, so updates pick it up; only an explicit `false` is off) adds
+`--remote-control` to every launch
+`claude_command_line` builds — both built-in buttons, custom buttons, resumes,
+and the history line — and never gives it a value. With no value, Claude names
+the remote session after the session itself: the `-n` name on a fresh launch,
+the stored title on a resume, and it follows `/rename`; all three were checked
+against the phone app. A value could only disagree with that, and on a resume
+it would be the window's name — the `:2`-suffixed one the missing `-n` exists
+to keep away. The value is optional (`--remote-control [name]`), so the flag is
+always followed by `-r` or `-n`, never a bare word it could take as its name;
+a test holds that line for built-in and custom launches alike. A custom command
+that already asks for it (`--remote-control` or Claude's `--rc` alias, bare or
+`=name`) is left alone — Claude reads `--remote-control` first, so ours would
+override the button's name. A Claude too old to know the flag would refuse
+every launch, so `services/claude_cli.rs` asks `claude --help` once at startup
+and drops the flag only on a definite no; a probe that could not run keeps it.
+
 ### Terminal input modes
 
 forestui asks the terminal for five DEC private modes (`src/terminal.rs`):
@@ -374,7 +393,15 @@ Three things in the generated file are load-bearing:
   fast-starting Claude can beat to its first hook.
 - **The command is pushed into the shell's history** (`print -s`, `history -s`)
   where the shell has a builtin for it. Typing it used to do that for free, and
-  after an accidental Ctrl-C the up arrow is the shortest way back.
+  after an accidental Ctrl-C the up arrow is the shortest way back. *When* it
+  is pushed is load-bearing for zsh: zsh reads `HISTFILE` only after its
+  startup files, and Claude runs inside this one, so a line pushed from it
+  lands under the whole loaded file — with `share_history`, the up arrow then
+  found another window's line and resumed a different conversation. zsh
+  pushes from a one-shot `precmd` hook instead, at the first prompt after
+  Claude exits or is suspended. bash reads its history before the rc file and
+  needs no hook. `the_remembered_line_is_the_newest_history_entry` drives both
+  real shells to hold this.
 
 A shell with no hook we have tested — fish, nushell — falls back to typing the
 line into a plain shell with `send-keys`. That path is a real fallback, not a
@@ -451,10 +478,21 @@ both. Forests separate which *repositories* you look at, not worktree
 ownership — git owns that.
 
 ### Config Compatibility
-`.forestui-config.json` and `~/.config/forestui/settings.json` keep the exact
-filenames and JSON schemas the Python build used, so a user can move between
-builds without losing state. Every field is `#[serde(default)]` so partial and
-older files load cleanly. **Do not rename or restructure these fields.**
+forestui updates itself on launch, so the builds that matter are the newest
+release and the one before it (`n-1`) — the Python build is history, not a
+constraint. `.forestui-config.json` and `~/.config/forestui/settings.json` must
+load in both directions across that one-release gap:
+
+- **Add** fields with a `#[serde(default)]` (or `default = "…"`), so a file
+  written by `n-1` loads here. `n-1` ignores the key it does not know — and
+  drops it on its next save, so a new field's default must be a value that
+  is fine to fall back to.
+- **Remove** a field by deleting it: unknown keys are ignored on load
+  (never add `deny_unknown_fields`) and vanish on the next save.
+- **Rename** a field only across two releases, reading both names in the
+  first, or `n-1` and `n` silently lose the value to each other.
+
+Partial files load cleanly because every field is defaulted.
 
 Both files are written via `util::write_atomically` (sibling temp file +
 rename). A corrupt config deliberately loads as *empty* state so a bad byte

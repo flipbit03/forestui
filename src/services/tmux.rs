@@ -494,6 +494,40 @@ fn single_line(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).collect()
 }
 
+/// Whether a custom command turns Remote Control on by itself — by the long
+/// name or by Claude's `--rc` alias, bare or with `=name`. Adding ours on top
+/// is not harmless: Claude reads `--remote-control` ahead of `--rc`, so a
+/// button's `--rc 'Build box'` would lose its name to our bare flag.
+///
+/// Whole words, not substrings: `--remote-control-session-name-prefix` only
+/// names remote sessions, and a button using it alone still needs the flag.
+fn asks_for_remote_control(command: &str) -> bool {
+    command.split_whitespace().any(|word| {
+        ["--remote-control", "--rc"].iter().any(|flag| {
+            word == *flag || word.strip_prefix(flag).is_some_and(|v| v.starts_with('='))
+        })
+    })
+}
+
+/// What a Claude launch asks for, apart from the window it lands in.
+///
+/// One value rather than a row of positional arguments: most of these are
+/// `bool` or `Option<&str>`, and a row of them is one transposition away from
+/// a YOLO launch nobody asked for.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClaudeLaunch<'a> {
+    /// The session to resume; `None` starts a fresh one.
+    pub resume_session_id: Option<&'a str>,
+    /// The built-in YOLO button. Ignored for a custom button.
+    pub yolo: bool,
+    /// A custom button's command, in place of `claude`.
+    pub custom_command: Option<&'a str>,
+    /// A custom button's window-name prefix.
+    pub custom_prefix: Option<&'a str>,
+    /// Start with Remote Control on (the Settings checkbox).
+    pub remote_control: bool,
+}
+
 /// The command line a Claude window runs.
 ///
 /// It runs as a job of the window's own interactive shell rather than as the
@@ -504,19 +538,28 @@ fn single_line(text: &str) -> String {
 /// Running Claude as a job makes both land at a prompt, where `fg` resumes and
 /// the up arrow restarts.
 pub fn claude_command_line(
-    resume_session_id: Option<&str>,
-    yolo: bool,
-    custom_command: Option<&str>,
-    custom_prefix: Option<&str>,
+    launch: &ClaudeLaunch<'_>,
     window_name: &str,
     new_session_id: Option<&str>,
 ) -> String {
-    let mut cmd = custom_command.unwrap_or("claude").to_string();
+    let mut cmd = launch.custom_command.unwrap_or("claude").to_string();
     // The YOLO flag belongs to the built-in YOLO button only, never to a custom one.
-    if yolo && custom_prefix.is_none() {
+    if launch.yolo && launch.custom_prefix.is_none() {
         cmd.push_str(" --dangerously-skip-permissions");
     }
-    if let Some(id) = resume_session_id {
+    // Bare on purpose: with no name, Claude titles the Remote Control session
+    // after the session itself — the `-n` name on a fresh launch, the stored
+    // title on a resume — and carries `/rename` across. Passing the window's
+    // name here would put back the bug the missing `-n` on resume avoids: a
+    // `:2` from uniquifying overwriting the real name, remotely this time.
+    //
+    // The value is optional, so the flag must be followed by another flag,
+    // never by a word it could take as its name; `-r` or `-n` always follows.
+    // A custom command that asks for it already is left alone.
+    if launch.remote_control && !launch.custom_command.is_some_and(asks_for_remote_control) {
+        cmd.push_str(" --remote-control");
+    }
+    if let Some(id) = launch.resume_session_id {
         // No -n here on purpose. A resumed session already carries the name it
         // was given, and passing one would overwrite it — with the *window's*
         // name, which may have picked up a `:2` from uniquifying against a
@@ -626,8 +669,25 @@ fn startup_for(
     // state an up-arrow rerun happens in. The caller hands the resume form
     // instead, so the up arrow goes back into the same conversation rather
     // than into an error.
+    //
+    // When it is remembered matters as much. zsh reads `HISTFILE` only after
+    // its startup files, and Claude runs *inside* this one — so a line pushed
+    // from here lands under the whole loaded file, and under `share_history`
+    // the up arrow instead finds whatever line another window's shell wrote
+    // last: a different conversation that looks like the right one. zsh
+    // therefore pushes from a one-shot `precmd` hook, at the first prompt
+    // after Claude exits or is suspended, once the file is loaded. bash reads
+    // its history before the rc file, so its line is already on top.
     let remembered = match base {
-        "zsh" => format!("print -s -- {}\n", sh_quote(remembered_line)),
+        "zsh" => format!(
+            "__forestui_remember() {{\n\
+             \x20 print -s -- {}\n\
+             \x20 precmd_functions=(${{precmd_functions:#__forestui_remember}})\n\
+             \x20 unfunction __forestui_remember\n\
+             }}\n\
+             precmd_functions+=(__forestui_remember)\n",
+            sh_quote(remembered_line)
+        ),
         "bash" => format!("history -s {}\n", sh_quote(remembered_line)),
         _ => String::new(),
     };
@@ -767,15 +827,42 @@ pub fn opening_window_name(
     }
 }
 
+/// The line a Claude window runs, and the line its shell history remembers.
+///
+/// For a resume the two are the same line. For a fresh session the history
+/// gets the resume form of the same id, because `--session-id` refuses to run
+/// once the session exists and the up arrow exists for the second run — see
+/// `startup_for`. Everything else rides along, Remote Control included: the up
+/// arrow after a Ctrl-C should bring the session back as it was, reachable
+/// from the phone.
+fn launch_lines(
+    launch: &ClaudeLaunch<'_>,
+    window_name: &str,
+    session_id: &str,
+) -> (String, String) {
+    let line = claude_command_line(
+        launch,
+        window_name,
+        launch.resume_session_id.is_none().then_some(session_id),
+    );
+    let remembered = claude_command_line(
+        &ClaudeLaunch {
+            resume_session_id: Some(session_id),
+            ..*launch
+        },
+        window_name,
+        None,
+    );
+    (line, remembered)
+}
+
 /// Create a tmux window running Claude Code. Returns the window name.
 pub fn create_claude_window(
     base_name: &str,
     path: &str,
-    resume_session_id: Option<&str>,
-    yolo: bool,
-    custom_command: Option<&str>,
-    custom_prefix: Option<&str>,
+    launch: ClaudeLaunch<'_>,
 ) -> Option<String> {
+    let resume_session_id = launch.resume_session_id;
     current_session()?;
 
     // The window knows its session from birth, both ways round: a fresh
@@ -792,24 +879,7 @@ pub fn create_claude_window(
     };
 
     let window_name = find_unique_window_name(base_name);
-    let line = claude_command_line(
-        resume_session_id,
-        yolo,
-        custom_command,
-        custom_prefix,
-        &window_name,
-        resume_session_id.is_none().then_some(session_id),
-    );
-    // The history entry: for a resume it is the line itself, for a fresh
-    // session the resume form of the same id — see `startup_for`.
-    let remembered = claude_command_line(
-        Some(session_id),
-        yolo,
-        custom_command,
-        custom_prefix,
-        &window_name,
-        None,
-    );
+    let (line, remembered) = launch_lines(&launch, &window_name, session_id);
 
     match prepare_startup(&window_name, session_id, &line, &remembered) {
         // The window's command is the user's shell, interactive, reading a
@@ -912,7 +982,7 @@ mod tests {
         assert!(!select_window("@0"));
         assert!(list_claude_windows().is_empty());
         assert!(
-            create_claude_window("forestui-test-probe", "/tmp", None, false, None, None).is_none()
+            create_claude_window("forestui-test-probe", "/tmp", ClaudeLaunch::default()).is_none()
         );
     }
 
@@ -949,8 +1019,18 @@ mod tests {
 
     #[test]
     fn claude_command_building() {
-        let build = |resume, yolo, cmd, prefix| {
-            claude_command_line(resume, yolo, cmd, prefix, "claude:wt", None)
+        let build = |resume_session_id, yolo, custom_command, custom_prefix| {
+            claude_command_line(
+                &ClaudeLaunch {
+                    resume_session_id,
+                    yolo,
+                    custom_command,
+                    custom_prefix,
+                    remote_control: false,
+                },
+                "claude:wt",
+                None,
+            )
         };
 
         // A fresh session is named at launch; a resumed one keeps its own name.
@@ -984,12 +1064,192 @@ mod tests {
     #[test]
     fn a_preminted_session_id_reaches_fresh_sessions_only() {
         assert_eq!(
-            claude_command_line(None, false, None, None, "claude:wt", Some("id-123")),
+            claude_command_line(&ClaudeLaunch::default(), "claude:wt", Some("id-123")),
             "claude -n 'claude:wt' --session-id 'id-123'"
         );
+        let resume = ClaudeLaunch {
+            resume_session_id: Some("abc"),
+            ..ClaudeLaunch::default()
+        };
         assert_eq!(
-            claude_command_line(Some("abc"), false, None, None, "claude:wt", Some("id-123")),
+            claude_command_line(&resume, "claude:wt", Some("id-123")),
             "claude -r 'abc'"
+        );
+    }
+
+    /// Remote Control is passed bare, never with a name. Claude titles the
+    /// remote session after the session itself — verified against a phone for
+    /// a fresh `-n` launch, a resume with no `-n`, and a `/rename` — so a name
+    /// here could only disagree with it, and on a resume would be the window's
+    /// possibly `:2`-suffixed name.
+    #[test]
+    fn remote_control_is_passed_bare_on_every_built_in_launch() {
+        let rc = ClaudeLaunch {
+            remote_control: true,
+            ..ClaudeLaunch::default()
+        };
+        assert_eq!(
+            claude_command_line(&rc, "claude:wt", Some("id-1")),
+            "claude --remote-control -n 'claude:wt' --session-id 'id-1'"
+        );
+        assert_eq!(
+            claude_command_line(&ClaudeLaunch { yolo: true, ..rc }, "yolo:wt", None),
+            "claude --dangerously-skip-permissions --remote-control -n 'yolo:wt'"
+        );
+        let resume = ClaudeLaunch {
+            resume_session_id: Some("abc"),
+            ..rc
+        };
+        assert_eq!(
+            claude_command_line(&resume, "claude:wt:2", None),
+            "claude --remote-control -r 'abc'"
+        );
+        assert_eq!(
+            claude_command_line(
+                &ClaudeLaunch {
+                    yolo: true,
+                    ..resume
+                },
+                "yolo:wt",
+                None
+            ),
+            "claude --dangerously-skip-permissions --remote-control -r 'abc'"
+        );
+
+        // Off means absent, not `--remote-control=false` or similar.
+        assert!(
+            !claude_command_line(&ClaudeLaunch::default(), "claude:wt", None)
+                .contains("remote-control")
+        );
+    }
+
+    /// `--remote-control [name]` takes an optional value, so whatever follows
+    /// the flag is at risk of becoming the remote session's name. It must
+    /// always be followed by another flag.
+    #[test]
+    fn remote_control_is_never_followed_by_a_bare_word() {
+        let custom = [None, Some(("claude --model opus", "opus"))];
+        for resume_session_id in [None, Some("abc")] {
+            for (yolo, custom) in [false, true]
+                .into_iter()
+                .flat_map(|y| custom.map(|c| (y, c)))
+            {
+                let launch = ClaudeLaunch {
+                    resume_session_id,
+                    yolo,
+                    custom_command: custom.map(|(command, _)| command),
+                    custom_prefix: custom.map(|(_, prefix)| prefix),
+                    remote_control: true,
+                };
+                let line = claude_command_line(&launch, "claude:wt", Some("id-1"));
+                let words: Vec<&str> = line.split(' ').collect();
+                let at = words
+                    .iter()
+                    .position(|w| *w == "--remote-control")
+                    .expect("the flag is there");
+                assert!(
+                    words.get(at + 1).is_some_and(|next| next.starts_with('-')),
+                    "{line:?}: the flag could take the next word as its name"
+                );
+            }
+        }
+    }
+
+    /// The history line is how a session comes back after a Ctrl-C, so it
+    /// must come back with Remote Control still on — otherwise the one restart
+    /// the user did not plan is the one that leaves the phone unable to reach it.
+    #[test]
+    fn the_history_line_keeps_remote_control() {
+        let fresh = ClaudeLaunch {
+            yolo: true,
+            remote_control: true,
+            ..ClaudeLaunch::default()
+        };
+        let (line, remembered) = launch_lines(&fresh, "yolo:wt", "id-1");
+        assert_eq!(
+            line,
+            "claude --dangerously-skip-permissions --remote-control -n 'yolo:wt' --session-id 'id-1'"
+        );
+        assert_eq!(
+            remembered,
+            "claude --dangerously-skip-permissions --remote-control -r 'id-1'"
+        );
+
+        let resume = ClaudeLaunch {
+            resume_session_id: Some("id-2"),
+            remote_control: true,
+            ..ClaudeLaunch::default()
+        };
+        let (line, remembered) = launch_lines(&resume, "claude:wt", "id-2");
+        assert_eq!(line, "claude --remote-control -r 'id-2'");
+        assert_eq!(remembered, line);
+    }
+
+    /// A custom button is Claude too — it already gets `-n`, `-r` and
+    /// `--session-id` appended — so it gets Remote Control with the rest. A
+    /// command that asks for it already is not handed it twice.
+    #[test]
+    fn custom_buttons_get_remote_control_once() {
+        let custom = ClaudeLaunch {
+            custom_command: Some("claude --model opus"),
+            custom_prefix: Some("opus"),
+            remote_control: true,
+            ..ClaudeLaunch::default()
+        };
+        assert_eq!(
+            claude_command_line(&custom, "opus:wt", None),
+            "claude --model opus --remote-control -n 'opus:wt'"
+        );
+
+        let already = ClaudeLaunch {
+            custom_command: Some("claude --remote-control --model opus"),
+            ..custom
+        };
+        assert_eq!(
+            claude_command_line(&already, "opus:wt", None),
+            "claude --remote-control --model opus -n 'opus:wt'"
+        );
+
+        // Asking by another spelling counts too; `--rc` is Claude's alias, and
+        // a second flag would override the name the button gave it.
+        for asked in [
+            "claude --rc 'Build box'",
+            "claude --rc",
+            "claude --rc=box",
+            "claude --remote-control=box",
+        ] {
+            let launch = ClaudeLaunch {
+                custom_command: Some(asked),
+                ..custom
+            };
+            assert_eq!(
+                claude_command_line(&launch, "opus:wt", None),
+                format!("{asked} -n 'opus:wt'"),
+                "{asked:?} was handed a second flag"
+            );
+        }
+
+        // Naming the remote sessions is not asking for Remote Control.
+        let prefix_only = ClaudeLaunch {
+            custom_command: Some("claude --remote-control-session-name-prefix box"),
+            ..custom
+        };
+        assert_eq!(
+            claude_command_line(&prefix_only, "opus:wt", None),
+            "claude --remote-control-session-name-prefix box --remote-control -n 'opus:wt'"
+        );
+
+        // The YOLO flag still stays off a custom button, Remote Control or not.
+        assert_eq!(
+            claude_command_line(
+                &ClaudeLaunch {
+                    yolo: true,
+                    ..custom
+                },
+                "opus:wt",
+                None
+            ),
+            "claude --model opus --remote-control -n 'opus:wt'"
         );
     }
 
@@ -1053,7 +1313,7 @@ mod tests {
 
         // And the name is still literal in the line the window is given.
         assert_eq!(
-            claude_command_line(None, false, None, None, "$(id); rm -rf /", None),
+            claude_command_line(&ClaudeLaunch::default(), "$(id); rm -rf /", None),
             "claude -n '$(id); rm -rf /'"
         );
     }
@@ -1064,7 +1324,7 @@ mod tests {
     /// never survive that far.
     #[test]
     fn a_newline_in_a_name_cannot_smuggle_a_command() {
-        let built = claude_command_line(None, false, None, None, "wt'\nrm -rf /\n#", None);
+        let built = claude_command_line(&ClaudeLaunch::default(), "wt'\nrm -rf /\n#", None);
         assert!(!built.contains('\n'), "a newline survived: {built:?}");
         assert_eq!(built, "claude -n 'wt'\\''rm -rf /#'");
     }
@@ -1138,7 +1398,7 @@ mod tests {
         // and what is remembered is the *resume* form, because a fresh
         // session's `--session-id` refuses to run a second time and the up
         // arrow exists precisely for the second run.
-        let expected_zsh = format!("print -s -- {}", sh_quote("claude -r 'sess-1'"));
+        let expected_zsh = format!("  print -s -- {}\n", sh_quote("claude -r 'sess-1'"));
         let expected_bash = format!("history -s {}", sh_quote("claude -r 'sess-1'"));
         assert!(zsh.files[1].1.contains(&expected_zsh), "{}", zsh.files[1].1);
         assert!(
@@ -1164,6 +1424,126 @@ mod tests {
         )
         .expect("sh is known");
         assert!(sh.files[0].1.contains("'/home/u/.shinit'"));
+    }
+
+    /// The remembered line has to be the *first* thing the up arrow finds once
+    /// Claude is gone — above the history file the shell loads, and above a
+    /// line another window's shell wrote while this session ran. zsh reads its
+    /// history file only after the startup file that runs Claude, which buried
+    /// the line under the whole file and let the up arrow resume a different
+    /// conversation. Driven through the real shells, since the order is the
+    /// shell's doing, not ours; a shell that is not installed is skipped.
+    #[test]
+    fn the_remembered_line_is_the_newest_history_entry() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        for shell in ["zsh", "bash"] {
+            let Some(path) = std::env::var_os("PATH").and_then(|paths| {
+                std::env::split_paths(&paths)
+                    .map(|dir| dir.join(shell))
+                    .find(|candidate| candidate.is_file())
+            }) else {
+                eprintln!("{shell} is not installed; skipping");
+                continue;
+            };
+            let home = tempfile::tempdir().expect("tempdir");
+            let root = home.path();
+            // The startup file stamps the window through tmux. A stub answers
+            // instead, so this can never reach a real server.
+            let bin = root.join("bin");
+            std::fs::create_dir(&bin).expect("bin dir");
+            let stub = bin.join("tmux");
+            std::fs::write(&stub, "#!/bin/sh\nexit 0\n").expect("tmux stub");
+            let mut mode = std::fs::metadata(&stub).expect("stub").permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
+            std::fs::set_permissions(&stub, mode).expect("chmod");
+
+            let (history, rc, old, other) = if shell == "zsh" {
+                (
+                    root.join(".zsh_history"),
+                    (
+                        root.join(".zshrc"),
+                        "HISTFILE=$HOME/.zsh_history; HISTSIZE=100; SAVEHIST=100\n\
+                         setopt share_history extended_history hist_ignore_space\n",
+                    ),
+                    ": 1:0;echo old\n",
+                    ": 3:0;claude -r OTHER",
+                )
+            } else {
+                (
+                    root.join(".bash_history"),
+                    (
+                        root.join(".bashrc"),
+                        "HISTFILE=$HOME/.bash_history; HISTSIZE=100; HISTCONTROL=ignorespace\n",
+                    ),
+                    "echo old\n",
+                    "claude -r OTHER",
+                )
+            };
+            std::fs::write(&history, old).expect("history");
+            std::fs::write(&rc.0, rc.1).expect("rc");
+
+            // Claude's stand-in: another window's shell exits mid-session and
+            // appends its own line to the shared history file.
+            let running = format!(
+                "printf '%s\\n' {} >> {}",
+                sh_quote(other),
+                sh_quote(history.to_str().expect("utf-8"))
+            );
+            let launch = root.join("launch");
+            let home_env = ShellHome {
+                home: root.to_str().expect("utf-8").into(),
+                zdotdir: None,
+                env_file: None,
+            };
+            let startup = startup_for(
+                path.to_str().expect("utf-8"),
+                &launch,
+                &home_env,
+                "claude:wt",
+                "sess-1",
+                &running,
+                "claude -r 'MINE'",
+            )
+            .expect("a known shell");
+            std::fs::create_dir(&launch).expect("launch dir");
+            for (file, contents) in &startup.files {
+                std::fs::write(file, contents).expect("startup file");
+            }
+
+            let mut child = Command::new("/bin/sh")
+                .arg("-c")
+                .arg(&startup.command)
+                .env_clear()
+                .env("HOME", root)
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .env("TMUX_TMPDIR", root)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("the shell starts");
+            // Leading space: the query itself stays out of the history.
+            child
+                .stdin
+                .take()
+                .expect("stdin")
+                .write_all(b" fc -ln 1\n exit\n")
+                .expect("commands");
+            let out = child.wait_with_output().expect("the shell exits");
+            let listed = String::from_utf8_lossy(&out.stdout);
+            let entries: Vec<&str> = listed
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect();
+            assert_eq!(
+                entries.last(),
+                Some(&"claude -r 'MINE'"),
+                "{shell}: the up arrow would not find this window's line first: {entries:?}"
+            );
+        }
     }
 
     /// Every generated file removes itself once the shell has it, so a session

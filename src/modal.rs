@@ -851,11 +851,10 @@ pub struct SettingsModal {
     pub theme_slug: &'static str,
     /// What was active when the dialog opened, for the Cancel path.
     opened_with_theme: &'static str,
-    /// The Python build's inert theme value, written back untouched — its
-    /// Settings dialog crashes on anything outside its own option list.
-    legacy_theme: String,
     pub branch_prefix: TextInput,
     pub custom_buttons: Vec<CustomClaudeButton>,
+    /// Start Claude sessions with `--remote-control`.
+    pub remote_control: bool,
     /// Snapshot, not a live read. The renderer runs on every frame, and asking
     /// on each one meant three file reads and three digests per repaint — I/O
     /// in a draw path, which stutters visibly on a slow or networked home.
@@ -873,8 +872,9 @@ impl SettingsModal {
     pub const FOCUS_THEME: usize = 2;
     pub const FOCUS_MANAGE: usize = 3;
     pub const FOCUS_INTEGRATION: usize = 4;
-    pub const FOCUS_SAVE: usize = 5;
-    pub const FOCUS_CANCEL: usize = 6;
+    pub const FOCUS_REMOTE_CONTROL: usize = 5;
+    pub const FOCUS_SAVE: usize = 6;
+    pub const FOCUS_CANCEL: usize = 7;
     pub const FIELDS: usize = Self::FOCUS_CANCEL + 1;
 
     pub fn new(settings: &Settings) -> Self {
@@ -890,9 +890,9 @@ impl SettingsModal {
                 .unwrap_or(0),
             opened_with_theme: theme_slug,
             theme_slug,
-            legacy_theme: settings.legacy_theme.clone(),
             branch_prefix: TextInput::new(settings.branch_prefix.clone()).with_placeholder("feat/"),
             custom_buttons: settings.custom_buttons.clone(),
+            remote_control: settings.remote_control,
             integration_status: crate::services::claude_plugin::status(),
             focus: Self::FOCUS_EDITOR,
         }
@@ -909,11 +909,10 @@ impl SettingsModal {
     fn to_settings(&self) -> Settings {
         Settings {
             default_editor: EDITORS[self.editor_index].1.to_string(),
-            default_terminal: String::new(),
             branch_prefix: self.branch_prefix.value().to_string(),
-            legacy_theme: self.legacy_theme.clone(),
             theme_name: self.theme_slug.to_string(),
             custom_buttons: self.custom_buttons.clone(),
+            remote_control: self.remote_control,
         }
     }
 
@@ -949,6 +948,12 @@ impl SettingsModal {
         }
 
         match (self.focus, key.code) {
+            // Enter toggles rather than saves: it is what a click sends, and a
+            // click on a checkbox that closed the dialog would be a surprise.
+            (Self::FOCUS_REMOTE_CONTROL, KeyCode::Enter | KeyCode::Char(' ')) => {
+                self.remote_control = !self.remote_control;
+                ModalOutcome::None
+            }
             (Self::FOCUS_THEME, KeyCode::Enter) => {
                 ModalOutcome::Push(Box::new(Modal::ThemePicker(ThemePickerModal::new())))
             }
@@ -1094,10 +1099,8 @@ impl CustomButtonsModal {
             KeyCode::Up => {
                 self.selected = self.selected.saturating_sub(1);
             }
-            KeyCode::Down => {
-                if len > 0 {
-                    self.selected = (self.selected + 1).min(len - 1);
-                }
+            KeyCode::Down if len > 0 => {
+                self.selected = (self.selected + 1).min(len - 1);
             }
             KeyCode::Char('a') => {
                 self.editing = None;
@@ -1105,23 +1108,19 @@ impl CustomButtonsModal {
                     EditButtonModal::new(None, &self.buttons, None),
                 ))));
             }
-            KeyCode::Enter | KeyCode::Char('e') => {
-                if self.selected < len {
-                    self.editing = Some(self.selected);
-                    return ModalOutcome::Push(Box::new(Modal::EditButton(Box::new(
-                        EditButtonModal::new(
-                            Some(self.buttons[self.selected].clone()),
-                            &self.buttons,
-                            Some(self.selected),
-                        ),
-                    ))));
-                }
+            KeyCode::Enter | KeyCode::Char('e') if self.selected < len => {
+                self.editing = Some(self.selected);
+                return ModalOutcome::Push(Box::new(Modal::EditButton(Box::new(
+                    EditButtonModal::new(
+                        Some(self.buttons[self.selected].clone()),
+                        &self.buttons,
+                        Some(self.selected),
+                    ),
+                ))));
             }
-            KeyCode::Char('d') | KeyCode::Delete => {
-                if self.selected < len {
-                    self.buttons.remove(self.selected);
-                    self.selected = self.selected.min(self.buttons.len().saturating_sub(1));
-                }
+            KeyCode::Char('d') | KeyCode::Delete if self.selected < len => {
+                self.buttons.remove(self.selected);
+                self.selected = self.selected.min(self.buttons.len().saturating_sub(1));
             }
             KeyCode::Char('K') => self.swap(self.selected, -1),
             KeyCode::Char('J') => self.swap(self.selected, 1),
@@ -1269,19 +1268,15 @@ impl EditButtonModal {
         }
 
         match self.focus {
-            Self::FOCUS_LABEL => {
-                if edit_input(&mut self.label, key) {
-                    if self.follows {
-                        self.prefix.set_value(derive_prefix(self.label.value()));
-                    }
-                    return ModalOutcome::None;
+            Self::FOCUS_LABEL if edit_input(&mut self.label, key) => {
+                if self.follows {
+                    self.prefix.set_value(derive_prefix(self.label.value()));
                 }
+                return ModalOutcome::None;
             }
-            Self::FOCUS_PREFIX => {
-                if edit_input(&mut self.prefix, key) {
-                    self.follows = self.prefix.value() == derive_prefix(self.label.value());
-                    return ModalOutcome::None;
-                }
+            Self::FOCUS_PREFIX if edit_input(&mut self.prefix, key) => {
+                self.follows = self.prefix.value() == derive_prefix(self.label.value());
+                return ModalOutcome::None;
             }
             Self::FOCUS_COMMAND if edit_input(&mut self.command, key) => return ModalOutcome::None,
             _ => {}
@@ -1851,6 +1846,39 @@ mod tests {
         }
     }
 
+    /// The Remote Control checkbox opens showing the stored value, toggles on
+    /// Space and on Enter (a click sends Enter, and must not save and close),
+    /// and Save carries whatever it shows.
+    #[test]
+    fn settings_toggles_and_saves_remote_control() {
+        let mut modal = SettingsModal::new(&Settings::default());
+        assert!(modal.remote_control, "on unless the user turns it off");
+
+        modal.focus = SettingsModal::FOCUS_REMOTE_CONTROL;
+        assert!(matches!(
+            modal.handle_key(key(KeyCode::Char(' '))),
+            ModalOutcome::None
+        ));
+        assert!(!modal.remote_control);
+        assert!(matches!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::None
+        ));
+        assert!(modal.remote_control, "Enter toggles, it does not submit");
+        modal.handle_key(key(KeyCode::Enter));
+
+        modal.focus = SettingsModal::FOCUS_SAVE;
+        let ModalOutcome::Submit(ModalResult::SettingsSaved(saved)) =
+            modal.handle_key(key(KeyCode::Enter))
+        else {
+            panic!("Save must submit the settings");
+        };
+        assert!(!saved.remote_control);
+
+        let reopened = SettingsModal::new(&saved);
+        assert!(!reopened.remote_control, "the dialog shows what was stored");
+    }
+
     /// The rename dialog refuses what cannot become a name — empty, or text
     /// with control characters, which would end a startup-file line — and
     /// carries the live window through so the submit knows its mechanism.
@@ -2012,9 +2040,6 @@ mod tests {
             panic!("Save must submit the settings");
         };
         assert_eq!(saved.theme_name, "nord");
-        // The legacy field is written back untouched — the Python build's
-        // Settings dialog crashes on values outside System/Dark/Light.
-        assert_eq!(saved.legacy_theme, "system");
     }
 
     /// An unknown stored slug resolves to the default when the dialog opens,

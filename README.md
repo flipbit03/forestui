@@ -79,11 +79,6 @@ Pass `--no-self-update` to skip the check entirely. The result is cached for a
 day, so this is not a network call on every launch, and a build from source
 (version `0.0.0`) never updates itself at all.
 
-> **Migrating from the Python build.** forestui was a Python/Textual
-> application through v0.9.x. The Rust rewrite reads the same config files, so
-> your repositories, worktrees, and settings carry over untouched. Remove the
-> old install so the new binary wins: `uv tool uninstall forestui`.
-
 ## The Claude integration
 
 One installable plugin gives forestui two abilities: shared names and
@@ -118,6 +113,20 @@ This installs a Claude Code plugin as its own directory. Your
 `~/.claude/settings.json` is not modified and your existing hooks are
 untouched. Only windows forestui opened are affected — a `claude` you start
 yourself, in or out of tmux, is left alone.
+
+### Remote Control
+
+Every session forestui opens — `Claude`, `YOLO`, custom buttons, and resumes
+from a session card — starts with `--remote-control`, so it can be picked up
+from claude.ai or the Claude app without remembering to `/rc` first. The
+remote session carries the same name as the session and its tmux tab, and
+follows `/rename`. It is on by default, including for an existing install
+after an update; untick Settings → *Start sessions with Remote Control*
+to turn it off. Windows already open keep whatever they started with.
+
+Claude Code has its own *Enable Remote Control for all sessions* in
+`/config`; that one reaches every `claude` on the machine, this one only the
+sessions forestui starts.
 
 ## Usage
 
@@ -228,9 +237,7 @@ Gruvbox, Solarized, the Catppuccin and Rosé Pine and Tokyo Night families,
 GitHub, SynthWave '84, and more — with the app behind the dialog live-previewing the
 highlighted theme. Enter applies, Esc reverts, Save persists. The default,
 Forest Dark, is the palette forestui has always had. The chosen theme is
-stored in `theme_name`; the legacy `theme` field (the old inert
-System/Dark/Light choice) is preserved untouched so the settings file keeps
-working in the Python build too.
+stored in `theme_name`.
 
 ## Configuration
 
@@ -239,9 +246,7 @@ Settings are stored in `~/.config/forestui/settings.json`:
 ```json
 {
   "default_editor": "nvim",
-  "default_terminal": "",
   "branch_prefix": "feat/",
-  "theme": "system",
   "theme_name": "forest-dark",
   "custom_buttons": [
     {
@@ -249,7 +254,8 @@ Settings are stored in `~/.config/forestui/settings.json`:
       "prefix": "opus",
       "command": "claude --model opus"
     }
-  ]
+  ],
+  "remote_control": true
 }
 ```
 

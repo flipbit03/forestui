@@ -757,15 +757,26 @@ fn settings(frame: &mut Frame, modal: &SettingsModal, area: Rect, hits: &mut Hit
     column.gap();
     column.line(frame, widgets::section("CLAUDE CODE INTEGRATION"));
     column.text(frame, modal.integration_status.label(), theme::muted());
+    // The Remote Control checkbox shares this row rather than taking a
+    // section of its own: five more rows pushed the dialog past a 40-row
+    // terminal's 95%, painting its lower controls over one another.
     column.controls(
         frame,
         hits,
-        vec![control(
-            "Manage Integration...",
-            modal.focus == SettingsModal::FOCUS_INTEGRATION,
-            theme::Variant::Normal,
-            SettingsModal::FOCUS_INTEGRATION,
-        )],
+        vec![
+            control(
+                "Manage Integration...",
+                modal.focus == SettingsModal::FOCUS_INTEGRATION,
+                theme::Variant::Normal,
+                SettingsModal::FOCUS_INTEGRATION,
+            ),
+            checkbox(
+                "Start sessions with Remote Control",
+                modal.remote_control,
+                modal.focus == SettingsModal::FOCUS_REMOTE_CONTROL,
+                SettingsModal::FOCUS_REMOTE_CONTROL,
+            ),
+        ],
         false,
     );
     column.gap();
@@ -1535,6 +1546,10 @@ mod tests {
                 "│ Manage Integration... │",
                 SettingsModal::FOCUS_INTEGRATION,
             ),
+            (
+                "│ [x] Start sessions with Remote Control │",
+                SettingsModal::FOCUS_REMOTE_CONTROL,
+            ),
             // Short labels are padded out to Textual's `min-width: 10`.
             ("│  Save  │", SettingsModal::FOCUS_SAVE),
             ("│ Cancel │", SettingsModal::FOCUS_CANCEL),
@@ -1545,6 +1560,18 @@ mod tests {
                 "{needle} in:\n{screen}"
             );
         }
+
+        // The checkbox shares the integration row, so it must still fit whole —
+        // and still answer the mouse — on a plain 80-column terminal.
+        let (narrow, narrow_hits) = render_with_hits(&settings, 80, 40);
+        assert_eq!(
+            index_at(
+                &narrow_hits,
+                cell_of(&narrow, "│ [x] Start sessions with Remote Control │")
+            ),
+            Some(SettingsModal::FOCUS_REMOTE_CONTROL),
+            "{narrow}"
+        );
 
         // A button is three rows tall, and every one of them has to answer the
         // mouse — its border is part of the button.

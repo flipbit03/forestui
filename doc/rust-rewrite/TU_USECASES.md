@@ -843,7 +843,10 @@ THEME               [ Forest Dark… ]
 CUSTOM CLAUDE BUTTONS
 No custom buttons configured
 [ Manage Custom Buttons... ]
-[ Cancel ]  [ Save ]
+CLAUDE CODE INTEGRATION
+<install status>
+[ Manage Integration... ]  [ [x] Start sessions with Remote Control ]
+[ Save ]  [ Cancel ]
 ```
 Editor dropdown options, in order: `VS Code, Cursor, Neovim (tmux), Vim (tmux),
 Helix (tmux), Emacs TUI (tmux), PyCharm, Sublime Text, Nano (tmux), Micro (tmux)`.
@@ -858,16 +861,19 @@ dialog abandons an applied-but-unsaved theme. The Textual build offered
 ```json
 {
   "default_editor": "vim",
-  "default_terminal": "",
   "branch_prefix": "feat/",
-  "theme": "system",
-  "custom_buttons": []
+  "theme_name": "forest-dark",
+  "custom_buttons": [],
+  "remote_control": true
 }
 ```
-**Fails if:** a key is dropped or renamed, `custom_buttons` is omitted, or the file
-is written somewhere other than `$HOME/.config/forestui/settings.json`.
-`default_terminal` is vestigial (never read) but **must still be serialised** or the
-Python build's config round-trip breaks.
+(Rust drift: the Python build's `default_terminal` and inert `theme` keys are
+retired — ignored when an older file has them, dropped on the next save.
+Remote Control is ticked on a fresh install, and a file without the key loads
+it ticked too.)
+
+**Fails if:** a key above is dropped or renamed, `custom_buttons` is omitted, or
+the file is written somewhere other than `$HOME/.config/forestui/settings.json`.
 
 ---
 
