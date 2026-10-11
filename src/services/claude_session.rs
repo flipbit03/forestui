@@ -1,7 +1,9 @@
 //! Reading and relocating Claude Code session history.
 //!
 //! Claude Code stores one JSONL file per session under
-//! `~/.claude/projects/<path-with-slashes-replaced-by-dashes>/`.
+//! `~/.claude/projects/<folder>/`, where `<folder>` is the session's working
+//! directory with every character that is not an ASCII letter or digit
+//! replaced by a dash (see [`path_to_claude_folder`]).
 
 use crate::models::{ClaudeSession, SessionTurn, Speaker, TokenUsage};
 use chrono::{DateTime, TimeZone, Utc};
@@ -77,9 +79,65 @@ fn fingerprint(sessions_dir: &Path) -> Fingerprint {
 }
 
 /// Convert a filesystem path to Claude's folder naming convention.
+///
+/// This must match Claude Code byte for byte, or a repository's sessions are
+/// simply never found — replacing only slashes missed every path with an
+/// underscore, a dot or a space in it.
 pub fn path_to_claude_folder(path: &str) -> String {
     let resolved = crate::util::expand_and_resolve(path);
-    resolved.to_string_lossy().replace('/', "-")
+    claude_folder_name(&resolved.to_string_lossy())
+}
+
+/// Claude names a folder longer than this by its prefix plus a hash.
+const MAX_FOLDER_LEN: usize = 200;
+
+/// Claude Code's own rule: `path.replace(/[^a-zA-Z0-9]/g, "-")`, and past
+/// [`MAX_FOLDER_LEN`] the first 200 characters, a dash, and a hash of the
+/// *unsanitised* path in base 36.
+///
+/// The regex has no `u` flag, so it matches UTF-16 code units: a character
+/// outside the BMP becomes two dashes, not one.
+fn claude_folder_name(path: &str) -> String {
+    let mut folder = String::with_capacity(path.len());
+    for c in path.chars() {
+        if c.is_ascii_alphanumeric() {
+            folder.push(c);
+        } else {
+            folder.extend(std::iter::repeat_n('-', c.len_utf16()));
+        }
+    }
+    if folder.len() <= MAX_FOLDER_LEN {
+        return folder;
+    }
+    // Every character is ASCII by now, so a byte slice is a character slice.
+    folder.truncate(MAX_FOLDER_LEN);
+    folder.push('-');
+    folder.push_str(&to_base36(u64::from(js_string_hash(path).unsigned_abs())));
+    folder
+}
+
+/// `h = (h << 5) - h + charCode | 0` over UTF-16 code units — JavaScript's
+/// 32-bit wrapping arithmetic, which is what Claude hashes long paths with.
+fn js_string_hash(s: &str) -> i32 {
+    s.encode_utf16().fold(0i32, |h, unit| {
+        h.wrapping_shl(5)
+            .wrapping_sub(h)
+            .wrapping_add(i32::from(unit))
+    })
+}
+
+fn to_base36(mut n: u64) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut out = Vec::new();
+    loop {
+        out.push(DIGITS[(n % 36) as usize]);
+        n /= 36;
+        if n == 0 {
+            break;
+        }
+    }
+    out.reverse();
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 pub fn claude_projects_dir() -> PathBuf {
@@ -671,11 +729,130 @@ mod tests {
         assert!(peek_sessions(path, 50).is_none());
     }
 
+    /// The wrapper resolves before it encodes: `~` expands and symlinks are
+    /// followed, because Claude names the folder after its `getcwd()`, which
+    /// is always the real path.
     #[test]
-    fn folder_naming_replaces_slashes() {
-        let folder = path_to_claude_folder("/tmp");
-        assert!(!folder.contains('/'));
-        assert!(folder.starts_with('-') || folder.contains("tmp"));
+    fn folder_naming_encodes_the_resolved_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("my_infra");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link.to");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let canonical = std::fs::canonicalize(&real).unwrap();
+        let expected = claude_folder_name(&canonical.to_string_lossy());
+        assert!(expected.ends_with("-my-infra"), "{expected}");
+        assert_eq!(path_to_claude_folder(&real.to_string_lossy()), expected);
+        assert_eq!(path_to_claude_folder(&link.to_string_lossy()), expected);
+
+        let home = crate::util::home_dir().join("forestui-no-such_dir");
+        assert_eq!(
+            path_to_claude_folder("~/forestui-no-such_dir"),
+            claude_folder_name(&home.to_string_lossy())
+        );
+    }
+
+    /// Claude replaces every non-alphanumeric character, not just slashes: a
+    /// repository called `my_infra` lives in `...-my-infra`, and looking for
+    /// `...-my_infra` found no sessions at all.
+    ///
+    /// Every expected value here was produced by running Claude Code's own
+    /// function (2.1.296) on the same input under node. The regex has no `u`
+    /// flag, so it counts UTF-16 code units, not characters or bytes.
+    #[test]
+    fn folder_naming_matches_claude() {
+        let cases = [
+            ("/home/cadu/w/cadu/my_infra", "-home-cadu-w-cadu-my-infra"),
+            (
+                "/home/u/forest/my.repo/feat x",
+                "-home-u-forest-my-repo-feat-x",
+            ),
+            (
+                "/home/u/a~b@c+d#e%f(g)h[i]j'k\"l",
+                "-home-u-a-b-c-d-e-f-g-h-i-j-k-l",
+            ),
+            ("/home/u/MiXeD/Case09", "-home-u-MiXeD-Case09"),
+            // Precomposed accents: one unit each.
+            ("/home/u/projeto/a\u{e7}\u{e3}o", "-home-u-projeto-a--o"),
+            // A combining accent is a unit of its own; the base letter stays.
+            ("/home/u/cafe\u{301}", "-home-u-cafe-"),
+            // CJK and Cyrillic: one unit each.
+            (
+                "/home/u/\u{65e5}\u{672c}\u{8a9e}/\u{440}\u{435}\u{43f}\u{43e}",
+                "-home-u---------",
+            ),
+            // Outside the BMP: a surrogate pair, two dashes.
+            ("/home/u/\u{1f332}", "-home-u---"),
+            // ZWJ family: three pairs and two joiners.
+            (
+                "/home/u/\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}",
+                "-home-u---------",
+            ),
+            // Flag: two regional indicators, each a pair.
+            ("/home/u/\u{1f1e7}\u{1f1f7}", "-home-u-----"),
+            // Keycap: the digit, then VS16 and the combining keycap.
+            ("/home/u/1\u{fe0f}\u{20e3}", "-home-u-1--"),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(claude_folder_name(path), expected, "{path:?}");
+        }
+    }
+
+    /// Past 200 units Claude keeps the first 200 and appends a hash of the
+    /// *original* path in base 36. Expected values from Claude's own function,
+    /// as above.
+    #[test]
+    fn long_folder_names_are_truncated_and_hashed_like_claude() {
+        let a = |n| "a".repeat(n);
+        // Hashes with a known source path: one constructed so the hash is
+        // exactly i32::MIN, where JavaScript's Math.abs does not overflow.
+        const MIN: &str = "hgke85q0r9ssanz1ne69fyoohnl180zn5d3i5s4vbg55pgro4qwp3vvnu132f0j9qcrtilbk4yjxchvrwt8mvniuf23oldx4cd7mi3y46vpvpbkt8o3mwsd3uscsoeq6a5ft62r6ok2a4clvgkepxtmfxx9yyg3qqzpyfhpb6sbfd5sr4ejfq16euoq0fu4pk4vr7wwq";
+        let cases = [
+            // Exactly 200: left alone.
+            (format!("/home/u/{}", a(192)), format!("-home-u-{}", a(192))),
+            // 201: hashed.
+            (
+                format!("/home/u/{}", a(193)),
+                format!("-home-u-{}-eyl4qu", a(192)),
+            ),
+            // 200 characters but 201 units, because the emoji is a pair.
+            (
+                format!("/home/u/{}\u{1f332}", a(191)),
+                format!("-home-u-{}--ezn2jg", a(191)),
+            ),
+            // 200 characters and 200 units: é is one.
+            (
+                format!("/home/u/{}\u{e9}", a(191)),
+                format!("-home-u-{}-", a(191)),
+            ),
+            // Negative hashes (b, c) and a positive one (d).
+            (
+                format!("/home/u/{}", "b".repeat(250)),
+                format!("-home-u-{}-aq2nlx", "b".repeat(192)),
+            ),
+            (
+                format!("/home/u/{}", "c".repeat(250)),
+                format!("-home-u-{}-x11eud", "c".repeat(192)),
+            ),
+            (
+                format!("/home/u/{}", "d".repeat(250)),
+                format!("-home-u-{}-fp3vwb", "d".repeat(192)),
+            ),
+            // Non-ASCII feeds the hash as UTF-16 units.
+            (
+                format!("/home/u/{}", "\u{65e5}\u{672c}\u{8a9e}".repeat(80)),
+                format!("-home-u-{}-yy18cl", "-".repeat(192)),
+            ),
+            (
+                format!("/home/u/{MIN}\u{c056}"),
+                format!("-home-u-{}-zik0zk", &MIN[..192]),
+            ),
+        ];
+        for (path, expected) in &cases {
+            assert_eq!(&claude_folder_name(path), expected, "{path:?}");
+        }
+        assert_eq!(js_string_hash(&cases[8].0), i32::MIN);
     }
 
     /// The session list is only useful if it shows the name the user gave the
