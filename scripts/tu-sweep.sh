@@ -164,7 +164,8 @@ seed_sessions() {
   resolved="$(cd "$target" && pwd -P)"
   # Claude's own folder rule: every non-alphanumeric becomes a dash, not just
   # '/'. The mktemp root has a dot in it, so slash-only seeds a folder the app
-  # never reads.
+  # never reads. This is byte-wise and never truncates, unlike Claude (UTF-16
+  # units, hashed past 200): right for an ASCII mktemp root, not in general.
   folder="$(printf '%s' "$resolved" | LC_ALL=C sed 's/[^a-zA-Z0-9]/-/g')"
   local dir="$ROOT/home/.claude/projects/$folder"
   mkdir -p "$dir"
