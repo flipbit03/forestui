@@ -769,6 +769,7 @@ mod tests {
             git_branch: None,
             tokens: Default::default(),
             model: None,
+            cwd: None,
         }
     }
 

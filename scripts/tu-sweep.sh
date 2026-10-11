@@ -162,7 +162,11 @@ seed_sessions() {
   # turns /var/... into /private/var/..., so seed against the resolved path.
   local resolved folder
   resolved="$(cd "$target" && pwd -P)"
-  folder="$(printf '%s' "$resolved" | tr '/' '-')"
+  # Claude's own folder rule: every non-alphanumeric becomes a dash, not just
+  # '/'. The mktemp root has a dot in it, so slash-only seeds a folder the app
+  # never reads. This is byte-wise and never truncates, unlike Claude (UTF-16
+  # units, hashed past 200): right for an ASCII mktemp root, not in general.
+  folder="$(printf '%s' "$resolved" | LC_ALL=C sed 's/[^a-zA-Z0-9]/-/g')"
   local dir="$ROOT/home/.claude/projects/$folder"
   mkdir -p "$dir"
   for i in $(seq 1 "$count"); do
@@ -307,6 +311,7 @@ tu kill --name "$SESS" >/dev/null 2>&1
 tu run --name "$SESS" --size 140x44 \
   --env TMUX_TMPDIR="$TMUXDIR" \
   --env HOME="$ROOT/home" \
+  --env CLAUDE_CONFIG_DIR="$ROOT/home/.claude" \
   --env PATH="$CMD_DIR:$ROOT/bin:$(dirname "$(command -v tmux)"):/usr/bin:/bin:/usr/sbin:/sbin" \
   --env FORESTUI_NO_AUTO_UPDATE=1 \
   --env SHELL=/bin/sh \
@@ -548,6 +553,7 @@ tu kill --name "$SESS2" >/dev/null 2>&1
 tu run --name "$SESS2" --size 140x44 \
   --env TMUX_TMPDIR="$TMUXDIR" \
   --env HOME="$ROOT/home" \
+  --env CLAUDE_CONFIG_DIR="$ROOT/home/.claude" \
   --env PATH="$CMD_DIR:$ROOT/bin:$(dirname "$(command -v tmux)"):/usr/bin:/bin:/usr/sbin:/sbin" \
   --env FORESTUI_NO_AUTO_UPDATE=1 \
   --env SHELL=/bin/sh \
@@ -590,6 +596,7 @@ tu kill --name "$SESS3" >/dev/null 2>&1
 tu run --name "$SESS3" --size 140x44 \
   --env TMUX_TMPDIR="$TMUXDIR" \
   --env HOME="$ROOT/home" \
+  --env CLAUDE_CONFIG_DIR="$ROOT/home/.claude" \
   --env PATH="$CMD_DIR:$ROOT/bin:$(dirname "$(command -v tmux)"):/usr/bin:/bin:/usr/sbin:/sbin" \
   --env FORESTUI_NO_AUTO_UPDATE=1 \
   --env SHELL=/bin/sh \

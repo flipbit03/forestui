@@ -1,7 +1,11 @@
 //! Reading and relocating Claude Code session history.
 //!
 //! Claude Code stores one JSONL file per session under
-//! `~/.claude/projects/<path-with-slashes-replaced-by-dashes>/`.
+//! `<config dir>/projects/<folder>/`, where `<folder>` is the session's
+//! working directory with every character that is not an ASCII letter or
+//! digit replaced by a dash (see [`claude_folder_name`]). Different
+//! directories can share a folder, so each transcript's recorded `cwd` is what
+//! finally says whose it is (see [`recorded_elsewhere`]).
 
 use crate::models::{ClaudeSession, SessionTurn, Speaker, TokenUsage};
 use chrono::{DateTime, TimeZone, Utc};
@@ -28,7 +32,15 @@ type SessionCacheKey = (String, usize);
 /// anything.
 type Fingerprint = (usize, Option<std::time::SystemTime>);
 
-type CacheEntry = (Fingerprint, Vec<ClaudeSession>);
+#[derive(Clone)]
+struct CacheEntry {
+    fingerprint: Fingerprint,
+    sessions: Vec<ClaudeSession>,
+    /// Recorded directories whose transcripts were left out because they
+    /// exist elsewhere. Their existence is part of the answer, so a hit
+    /// re-checks them.
+    elsewhere: Vec<String>,
+}
 
 fn cache() -> &'static Mutex<HashMap<SessionCacheKey, CacheEntry>> {
     static CACHE: OnceLock<Mutex<HashMap<SessionCacheKey, CacheEntry>>> = OnceLock::new();
@@ -42,7 +54,7 @@ pub fn peek_sessions(path: &str, limit: usize) -> Option<Vec<ClaudeSession>> {
         .lock()
         .ok()?
         .get(&(path.to_string(), limit))
-        .map(|(_, sessions)| sessions.clone())
+        .map(|entry| entry.sessions.clone())
 }
 
 /// Count of transcripts and the newest mtime among them. Agent transcripts are
@@ -76,14 +88,315 @@ fn fingerprint(sessions_dir: &Path) -> Fingerprint {
     (count, newest)
 }
 
-/// Convert a filesystem path to Claude's folder naming convention.
-pub fn path_to_claude_folder(path: &str) -> String {
-    let resolved = crate::util::expand_and_resolve(path);
-    resolved.to_string_lossy().replace('/', "-")
+/// Claude names a folder longer than this by its prefix plus a hash.
+const MAX_FOLDER_LEN: usize = 200;
+
+/// The folder Claude files a resolved path's sessions under. This must match
+/// Claude Code byte for byte, or a repository's sessions are simply never
+/// found — replacing only slashes missed every path with an underscore, a dot
+/// or a space in it.
+///
+/// Claude Code's own rule: `path.replace(/[^a-zA-Z0-9]/g, "-")`, and past
+/// [`MAX_FOLDER_LEN`] the first 200 characters, a dash, and a hash of the
+/// *unsanitised* path in base 36.
+///
+/// The regex has no `u` flag, so it matches UTF-16 code units: a character
+/// outside the BMP becomes two dashes, not one.
+fn claude_folder_name(path: &str) -> String {
+    let mut folder = claude_slug(path);
+    if folder.len() <= MAX_FOLDER_LEN {
+        return folder;
+    }
+    // Every character is ASCII by now, so a byte slice is a character slice.
+    folder.truncate(MAX_FOLDER_LEN);
+    folder.push('-');
+    folder.push_str(&to_base36(js_string_hash(path).unsigned_abs()));
+    folder
+}
+
+/// The untruncated form of [`claude_folder_name`]. Claude compares paths by
+/// this, not by the folder name, when it asks whether two directories collide.
+fn claude_slug(path: &str) -> String {
+    let mut slug = String::with_capacity(path.len());
+    for c in path.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c);
+        } else {
+            slug.extend(std::iter::repeat_n('-', c.len_utf16()));
+        }
+    }
+    slug
+}
+
+/// `h = (h << 5) - h + charCode | 0` over UTF-16 code units — JavaScript's
+/// 32-bit wrapping arithmetic, which is what Claude hashes long paths with.
+fn js_string_hash(s: &str) -> i32 {
+    s.encode_utf16().fold(0i32, |h, unit| {
+        h.wrapping_shl(5)
+            .wrapping_sub(h)
+            .wrapping_add(i32::from(unit))
+    })
+}
+
+fn to_base36(mut n: u32) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut out = Vec::new();
+    loop {
+        out.push(char::from(DIGITS[(n % 36) as usize]));
+        n /= 36;
+        if n == 0 {
+            break;
+        }
+    }
+    out.iter().rev().collect()
 }
 
 pub fn claude_projects_dir() -> PathBuf {
-    crate::util::home_dir().join(".claude").join("projects")
+    crate::services::claude_plugin::claude_config_dir().join("projects")
+}
+
+/// The folder named after the path: where Claude files its transcripts.
+fn own_dir(base: &Path, resolved: &str) -> PathBuf {
+    base.join(claude_folder_name(resolved))
+}
+
+/// Every sibling of a hashed folder that shares its 200-unit prefix and holds
+/// a transcript recorded at this very path. Always empty for a path short
+/// enough not to be hashed, which costs nothing to find out.
+///
+/// Claude's own resume looks in the same places, because the hash suffix has
+/// not always been the one computed here; a long path's history can sit under
+/// another suffix, and only the recorded `cwd` says whose it is.
+///
+/// Deciding means reading a window of every transcript in every candidate, so
+/// the answer is memoized against the candidates' own mtimes: a folder's mtime
+/// moves whenever a transcript is created or removed in it, and a transcript's
+/// recorded directory is settled when it is created. (A `relocated` record
+/// appended later is the exception, and only matters for the rare long path
+/// with another hash suffix; a restart rescans.)
+fn borrowed_dirs_in(base: &Path, resolved: &str) -> Vec<PathBuf> {
+    let folder = claude_folder_name(resolved);
+    if folder.len() <= MAX_FOLDER_LEN {
+        return Vec::new();
+    }
+    let prefix = format!("{}-", &folder[..MAX_FOLDER_LEN]);
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return Vec::new();
+    };
+    let mut candidates: Vec<(PathBuf, Option<std::time::SystemTime>)> = entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name != folder && name.starts_with(&prefix))
+        })
+        .map(|entry| {
+            let modified = entry.metadata().and_then(|m| m.modified()).ok();
+            (entry.path(), modified)
+        })
+        .collect();
+    candidates.sort();
+
+    let key = (base.to_path_buf(), resolved.to_string());
+    if let Ok(guard) = borrowed_cache().lock()
+        && let Some((seen, borrowed)) = guard.get(&key)
+        && *seen == candidates
+    {
+        return borrowed.clone();
+    }
+
+    let slug = claude_slug(resolved);
+    let borrowed: Vec<PathBuf> = candidates
+        .iter()
+        .filter(|(dir, _)| {
+            std::fs::read_dir(dir).is_ok_and(|files| {
+                files.flatten().any(|file| {
+                    let file = file.path();
+                    is_transcript(&file)
+                        && recorded_cwd(&file).is_some_and(|cwd| claude_slug(&cwd) == slug)
+                })
+            })
+        })
+        .map(|(dir, _)| dir.clone())
+        .collect();
+    // A folder's mtime has the resolution of the kernel's clock tick, so a
+    // transcript created in the same tick as this scan leaves it unchanged
+    // and the memo would never notice. git's index has the same "racy
+    // timestamp" problem and the same answer: an mtime too recent to trust is
+    // not remembered, so the next call scans again.
+    let settled = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+    if candidates
+        .iter()
+        .all(|(_, modified)| modified.is_some_and(|m| m < settled))
+        && let Ok(mut guard) = borrowed_cache().lock()
+    {
+        guard.insert(key, (candidates, borrowed.clone()));
+    }
+    borrowed
+}
+
+type BorrowedCache =
+    HashMap<(PathBuf, String), (Vec<(PathBuf, Option<std::time::SystemTime>)>, Vec<PathBuf>)>;
+
+fn borrowed_cache() -> &'static Mutex<BorrowedCache> {
+    static CACHE: OnceLock<Mutex<BorrowedCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn is_transcript(file: &Path) -> bool {
+    file.extension().and_then(|e| e.to_str()) == Some("jsonl")
+}
+
+/// The canonical form of a project path as a string: what Claude records as
+/// `cwd` (it takes `realpath` of its working directory) and names folders by.
+fn resolved_string(path: &str) -> String {
+    crate::util::expand_and_resolve(path)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Whether the transcript at `file`, recorded in `cwd`, is `resolved`'s to
+/// list, rename, delete or carry along on a worktree rename.
+///
+/// In the path's own folder, everything is unless it was recorded elsewhere.
+/// A borrowed folder was admitted for one transcript recorded at this path;
+/// the rest of it is another long path's history, so there only a transcript
+/// recorded under this path's slug is.
+fn owns(resolved: &str, own: &Path, file: &Path, cwd: Option<&str>) -> bool {
+    if file.parent() != Some(own) && cwd.is_none_or(|cwd| claude_slug(cwd) != claude_slug(resolved))
+    {
+        return false;
+    }
+    !recorded_elsewhere(cwd, resolved)
+}
+
+/// Whether a transcript filed under `resolved`'s folder belongs to a different
+/// directory that only shares its folder name: `my_infra` and `my-infra` both
+/// file under `...-my-infra`, and each must not list, rename or delete the
+/// other's sessions.
+///
+/// This is the test Claude's own resume applies. The recorded directory has
+/// the same slug but is a different string, still exists, and resolves to a
+/// different place. A recorded directory that is gone cannot be told apart, so
+/// it stays — as does a transcript forestui migrated here when it renamed a
+/// worktree, whose recorded slug is the old one. A path with `..` in it is not
+/// resolved at all, as in Claude.
+///
+/// History follows the recorded path, as it does in Claude: rename `feat_x` to
+/// `feat-x` (one folder, so nothing moves) and later create a new `feat_x`,
+/// and the old transcripts go with the new directory.
+fn recorded_elsewhere(cwd: Option<&str>, resolved: &str) -> bool {
+    let Some(cwd) = cwd else {
+        return false;
+    };
+    let slug = claude_slug(resolved);
+    if cwd == resolved || claude_slug(cwd) != slug {
+        return false;
+    }
+    if Path::new(cwd)
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
+        return false;
+    }
+    std::fs::canonicalize(cwd).is_ok_and(|real| {
+        let real = real.to_string_lossy();
+        real != resolved && claude_slug(&real) == slug
+    })
+}
+
+/// How much of each end of a transcript Claude reads to place it. Matching the
+/// window matters, not only the cost: a first record bigger than this (a large
+/// pasted prompt) gives Claude no `cwd` at all, so it never filters that
+/// session out, and neither may forestui.
+const TRANSCRIPT_WINDOW: usize = 65_536;
+
+/// The directory a transcript was recorded in, as Claude reads it: the last
+/// `relocated` record in the final window, else the first `cwd` in the first.
+///
+/// serde_json rejects a few lines `JSON.parse` accepts (nesting past 128
+/// levels, a number like `1e400`, an unpaired `\ud800` escape); such a line
+/// is skipped here where Claude would read it. Claude does not write them.
+fn cwd_in_windows(head: &str, tail: &str) -> Option<String> {
+    let field = |line: &str, key: &str| -> Option<String> {
+        let data = serde_json::from_str::<serde_json::Value>(line).ok()?;
+        Some(data.get(key)?.as_str()?.to_string())
+    };
+    tail.rsplit('\n')
+        .filter(|line| {
+            line.contains("\"relocatedCwd\":") && line.contains("\"type\":\"relocated\"")
+        })
+        .find_map(|line| {
+            let data = serde_json::from_str::<serde_json::Value>(line).ok()?;
+            (data.get("type")?.as_str()? == "relocated")
+                .then(|| field(line, "relocatedCwd"))
+                .flatten()
+        })
+        .or_else(|| {
+            head.split('\n')
+                .filter(|line| line.contains("\"cwd\":"))
+                .find_map(|line| field(line, "cwd"))
+        })
+}
+
+/// [`cwd_in_windows`] over a transcript already in memory.
+fn cwd_in_bytes(raw: &[u8]) -> Option<String> {
+    let head = String::from_utf8_lossy(&raw[..raw.len().min(TRANSCRIPT_WINDOW)]);
+    let tail = String::from_utf8_lossy(&raw[raw.len().saturating_sub(TRANSCRIPT_WINDOW)..]);
+    cwd_in_windows(&head, &tail)
+}
+
+/// [`cwd_in_windows`] read from disk: two reads, however large the file.
+fn recorded_cwd(file: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(file).ok()?;
+    let size = usize::try_from(f.metadata().ok()?.len()).ok()?;
+    let mut head = Vec::with_capacity(size.min(TRANSCRIPT_WINDOW));
+    (&mut f)
+        .take(TRANSCRIPT_WINDOW as u64)
+        .read_to_end(&mut head)
+        .ok()?;
+    if size <= TRANSCRIPT_WINDOW {
+        return cwd_in_bytes(&head);
+    }
+    let mut tail = Vec::with_capacity(TRANSCRIPT_WINDOW);
+    f.seek(SeekFrom::Start((size - TRANSCRIPT_WINDOW) as u64))
+        .ok()?;
+    f.read_to_end(&mut tail).ok()?;
+    cwd_in_windows(
+        &String::from_utf8_lossy(&head),
+        &String::from_utf8_lossy(&tail),
+    )
+}
+
+/// Find a session's transcript: its own folder first, and only when it is not
+/// there the borrowed ones, whose scan is the expensive part. Session ids are
+/// unique, so the first file found is the one.
+fn locate_transcript(base: &Path, resolved: &str, session_id: &str) -> Option<PathBuf> {
+    let name = format!("{session_id}.jsonl");
+    let own = own_dir(base, resolved).join(&name);
+    if own.exists() {
+        return Some(own);
+    }
+    borrowed_dirs_in(base, resolved)
+        .into_iter()
+        .map(|dir| dir.join(&name))
+        .find(|file| file.exists())
+}
+
+/// The transcript of `session_id` if it is `path`'s, for acting on it.
+/// Deleting is permanent, so ownership is checked here against the file
+/// itself rather than trusted from whichever list offered the session.
+fn owned_transcript_in(base: &Path, path: &str, session_id: &str) -> Result<PathBuf, String> {
+    let resolved = resolved_string(path);
+    let file = locate_transcript(base, &resolved, session_id)
+        .ok_or_else(|| "Session transcript no longer exists".to_string())?;
+    let own = own_dir(base, &resolved);
+    if !owns(&resolved, &own, &file, recorded_cwd(&file).as_deref()) {
+        return Err("Session belongs to another directory".to_string());
+    }
+    Ok(file)
 }
 
 /// [`get_sessions_for_path`], plus every pinned session the recency cap would
@@ -125,22 +438,72 @@ pub fn sort_sessions(sessions: &mut [ClaudeSession], pinned: &[String]) {
 
 /// Sessions for a path, newest first, capped at `limit`.
 pub fn get_sessions_for_path(path: &str, limit: usize) -> Vec<ClaudeSession> {
-    let sessions_dir = claude_projects_dir().join(path_to_claude_folder(path));
+    sessions_in(&claude_projects_dir(), path, limit)
+}
+
+/// [`get_sessions_for_path`] under a given projects directory.
+fn sessions_in(base: &Path, path: &str, limit: usize) -> Vec<ClaudeSession> {
+    let resolved = resolved_string(path);
+    let own = own_dir(base, &resolved);
+    let mut dirs = vec![own.clone()];
+    dirs.extend(borrowed_dirs_in(base, &resolved));
     let key = (path.to_string(), limit);
-    let current = fingerprint(&sessions_dir);
+    let current = dirs
+        .iter()
+        .map(|dir| fingerprint(dir))
+        .fold((0, None), |(count, newest): Fingerprint, (more, theirs)| {
+            (count + more, newest.max(theirs))
+        });
 
     // Nothing in the directory has changed since the cached answer was built,
-    // so re-reading every transcript would produce the same list.
-    if let Ok(guard) = cache().lock()
-        && let Some((cached, sessions)) = guard.get(&key)
-        && *cached == current
+    // so re-reading every transcript would produce the same list — unless a
+    // neighbour that shares the folder has appeared or gone since, which
+    // changes whose transcripts are whose without touching any of them. The
+    // per-card refresh re-asks that every tick, so a list that did not would
+    // re-add every ten seconds a card the refresh keeps removing.
+    let cached = cache()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(&key).cloned());
+    // Checked outside the lock: the re-check may stat directories, and
+    // `peek_sessions` takes this lock on the render thread.
+    if let Some(entry) = cached
+        && entry.fingerprint == current
+        && entry
+            .sessions
+            .iter()
+            .all(|s| !recorded_elsewhere(s.cwd.as_deref(), &resolved))
+        && entry
+            .elsewhere
+            .iter()
+            .all(|cwd| recorded_elsewhere(Some(cwd), &resolved))
     {
-        return sessions.clone();
+        return entry.sessions;
     }
 
-    let sessions = read_sessions_dir(&sessions_dir, limit);
+    let elsewhere = std::cell::RefCell::new(Vec::new());
+    let sessions = read_sessions_dirs(&dirs, limit, &|file, session| {
+        let keep = owns(&resolved, &own, file, session.cwd.as_deref());
+        if !keep
+            && let Some(cwd) = &session.cwd
+            && recorded_elsewhere(Some(cwd), &resolved)
+        {
+            elsewhere.borrow_mut().push(cwd.clone());
+        }
+        keep
+    });
+    let mut elsewhere = elsewhere.into_inner();
+    elsewhere.sort();
+    elsewhere.dedup();
     if let Ok(mut guard) = cache().lock() {
-        guard.insert(key, (current, sessions.clone()));
+        guard.insert(
+            key,
+            CacheEntry {
+                fingerprint: current,
+                sessions: sessions.clone(),
+                elsewhere,
+            },
+        );
     }
     sessions
 }
@@ -153,21 +516,43 @@ pub fn get_sessions_for_path(path: &str, limit: usize) -> Vec<ClaudeSession> {
 /// far sooner than one walk of a directory that may hold dozens, and each card
 /// updates the moment its own read lands rather than all of them together.
 pub fn refresh_one(path: &str, session_id: &str) -> Option<ClaudeSession> {
-    let file = claude_projects_dir()
-        .join(path_to_claude_folder(path))
-        .join(format!("{session_id}.jsonl"));
+    refresh_one_in(&claude_projects_dir(), path, session_id)
+}
+
+/// [`refresh_one`] under a given projects directory.
+fn refresh_one_in(base: &Path, path: &str, session_id: &str) -> Option<ClaudeSession> {
+    let resolved = resolved_string(path);
+    let file = locate_transcript(base, &resolved, session_id)?;
     // Through the cache: this runs for every card on screen on a ten-second
     // timer, and a transcript nobody has written to parses to what it did
     // before. One of them is 60 MB.
     let modified = std::fs::metadata(&file).and_then(|m| m.modified()).ok()?;
-    parse_cached(&file, modified)
+    parse_cached(&file, modified).filter(|session| {
+        owns(
+            &resolved,
+            &own_dir(base, &resolved),
+            &file,
+            session.cwd.as_deref(),
+        )
+    })
 }
 
 /// Directory-scoped form of [`get_sessions_for_path`], for testing.
+#[cfg(test)]
 pub fn read_sessions_dir(sessions_dir: &Path, limit: usize) -> Vec<ClaudeSession> {
-    let Ok(entries) = std::fs::read_dir(sessions_dir) else {
-        return Vec::new();
-    };
+    read_sessions_dirs(&[sessions_dir.to_path_buf()], limit, &|_, _| true)
+}
+
+/// The newest `limit` sessions across `dirs` that `keep` accepts.
+fn read_sessions_dirs(
+    dirs: &[PathBuf],
+    limit: usize,
+    keep: &dyn Fn(&Path, &ClaudeSession) -> bool,
+) -> Vec<ClaudeSession> {
+    let entries = dirs
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flatten();
 
     // Stat first, parse second. One real project directory holds 542 MB across
     // 51 transcripts, and parsing all of them to sort by their last message and
@@ -214,7 +599,9 @@ pub fn read_sessions_dir(sessions_dir: &Path, limit: usize) -> Vec<ClaudeSession
         {
             break;
         }
-        if let Some(session) = parse_cached(&file_path, modified) {
+        if let Some(session) = parse_cached(&file_path, modified)
+            && keep(&file_path, &session)
+        {
             sessions.push(session);
             sessions.sort_by_key(|s| std::cmp::Reverse(s.last_timestamp));
             sessions.truncate(limit);
@@ -482,6 +869,7 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
         git_branch,
         tokens,
         model,
+        cwd: cwd_in_bytes(raw.as_bytes()),
     })
 }
 
@@ -502,9 +890,7 @@ pub fn parse_session_file(file_path: &Path) -> Option<ClaudeSession> {
 /// title it compares against the window was already correct, so it never
 /// pushed the runtime rename that would have rewritten the agent name.
 pub fn rename_session(path: &str, session_id: &str, name: &str) -> Result<(), String> {
-    let file = claude_projects_dir()
-        .join(path_to_claude_folder(path))
-        .join(format!("{session_id}.jsonl"));
+    let file = owned_transcript_in(&claude_projects_dir(), path, session_id)?;
     rename_transcript(&file, session_id, name)
 }
 
@@ -523,17 +909,26 @@ pub fn rename_transcript(file: &Path, session_id: &str, name: &str) -> Result<()
         "agentName": name,
         "sessionId": session_id,
     });
+    append_records(file, &[title, agent_name])
+}
+
+/// Append records to a transcript, one per line, the way Claude writes them.
+fn append_records(file: &Path, records: &[serde_json::Value]) -> Result<(), String> {
     use std::io::{Read, Seek, SeekFrom, Write};
+    let mut text = String::new();
+    for record in records {
+        text.push_str(&format!("{record}\n"));
+    }
     std::fs::OpenOptions::new()
         .read(true)
         .append(true)
         .open(file)
         .and_then(|mut f| {
             // A transcript normally ends in a newline, but a torn tail (a
-            // crashed writer) must not swallow the rename: appended straight
+            // crashed writer) must not swallow the records: appended straight
             // onto an unterminated line, the first record and that line both
-            // stop parsing while the second still lands — the exact
-            // title/badge disagreement this function exists to prevent.
+            // stop parsing while the rest still land — for a rename, the exact
+            // title/badge disagreement the record pair exists to prevent.
             let mut needs_newline = false;
             if f.metadata()?.len() > 0 {
                 let mut last = [0u8; 1];
@@ -542,16 +937,19 @@ pub fn rename_transcript(file: &Path, session_id: &str, name: &str) -> Result<()
                 needs_newline = last[0] != b'\n';
             }
             let prefix = if needs_newline { "\n" } else { "" };
-            f.write_all(format!("{prefix}{title}\n{agent_name}\n").as_bytes())
+            f.write_all(format!("{prefix}{text}").as_bytes())
         })
         .map_err(|error| error.to_string())
 }
 
 /// Delete a session's transcript. Permanent — the caller has already asked.
 pub fn delete_session(path: &str, session_id: &str) -> Result<(), String> {
-    let file = claude_projects_dir()
-        .join(path_to_claude_folder(path))
-        .join(format!("{session_id}.jsonl"));
+    delete_session_in(&claude_projects_dir(), path, session_id)
+}
+
+/// [`delete_session`] under a given projects directory.
+fn delete_session_in(base: &Path, path: &str, session_id: &str) -> Result<(), String> {
+    let file = owned_transcript_in(base, path, session_id)?;
     std::fs::remove_file(&file).map_err(|error| error.to_string())
 }
 
@@ -614,15 +1012,99 @@ pub fn fmt_cost(cost: f64) -> String {
 }
 
 /// Move session history from an old worktree path to a new one after a rename.
+///
+/// Runs once the directory has already moved, so the old path no longer
+/// resolves; its parent still does, and resolving that keeps a symlinked
+/// parent from naming the wrong folder.
 pub fn migrate_sessions(old_path: &Path, new_path: &Path) {
-    let base = claude_projects_dir();
-    let old_dir = base.join(path_to_claude_folder(&old_path.to_string_lossy()));
-    let new_dir = base.join(path_to_claude_folder(&new_path.to_string_lossy()));
-    migrate_dirs(&old_dir, &new_dir);
+    migrate_sessions_in(&claude_projects_dir(), old_path, new_path);
 }
 
-/// Directory-scoped form of [`migrate_sessions`], for testing.
-pub fn migrate_dirs(old_dir: &Path, new_dir: &Path) {
+/// [`migrate_sessions`] under a given projects directory.
+fn migrate_sessions_in(base: &Path, old_path: &Path, new_path: &Path) {
+    let old = std::fs::canonicalize(old_path)
+        .ok()
+        .or_else(|| {
+            let parent = std::fs::canonicalize(old_path.parent()?).ok()?;
+            Some(parent.join(old_path.file_name()?))
+        })
+        .unwrap_or_else(|| old_path.to_path_buf());
+    let old = old.to_string_lossy();
+    let new = resolved_string(&new_path.to_string_lossy());
+    let new_dir = base.join(claude_folder_name(&new));
+    let own = own_dir(base, &old);
+    let dirs: Vec<PathBuf> = std::iter::once(own.clone())
+        .chain(borrowed_dirs_in(base, &old))
+        .collect();
+
+    // Everything recorded at the old path is told where it lives now, with
+    // the `relocated` record Claude writes when it moves a session itself.
+    // Without it a transcript's only word on its directory is the old path,
+    // and when the rename keeps the folder (`feat_x` to `feat-x`) that is
+    // indistinguishable from a same-slug neighbour's history: the next rename
+    // would leave it behind, and Claude would resume it in a directory that
+    // no longer exists.
+    let recorded_here: Vec<(PathBuf, std::ffi::OsString)> = dirs
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok().map(|files| (dir, files)))
+        .flat_map(|(dir, files)| {
+            files.flatten().filter_map(|entry| {
+                let file = entry.path();
+                (is_transcript(&file) && recorded_cwd(&file).as_deref() == Some(&*old))
+                    .then(|| (dir.clone(), entry.file_name()))
+            })
+        })
+        .collect();
+
+    let keep = |file: &Path| migrates(&old, &own, file, recorded_cwd(file).as_deref());
+    for old_dir in &dirs {
+        migrate_dirs(old_dir, &new_dir, Some(&keep));
+    }
+
+    for (dir, name) in recorded_here {
+        // Moved unless a transcript of the same name was already there.
+        let stayed = dir.join(&name);
+        let file = if dir != new_dir && stayed.exists() {
+            stayed
+        } else {
+            new_dir.join(&name)
+        };
+        let session_id = Path::new(&name)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let relocated = serde_json::json!({
+            "type": "relocated",
+            "relocatedCwd": new,
+            "sessionId": session_id,
+        });
+        let _ = append_records(&file, &[relocated]);
+    }
+}
+
+/// Whether a worktree rename carries this transcript along. Stricter than
+/// [`owns`], which only mirrors what Claude would show: moving is forestui's
+/// own act, so a transcript recorded at a different path stays put whether or
+/// not that path exists right now. A neighbour that is missing at the moment
+/// of the rename — deleted, unmounted, mid-rename itself — must not lose its
+/// history to us.
+///
+/// What moves: what was recorded here, what cannot be placed, and what an
+/// earlier rename migrated into this folder (recorded under another slug).
+/// The last two only from the path's own folder; a borrowed folder lends
+/// nothing but transcripts recorded at this very path.
+fn migrates(old: &str, own: &Path, file: &Path, cwd: Option<&str>) -> bool {
+    let in_own = file.parent() == Some(own);
+    match cwd {
+        Some(cwd) if cwd == old => true,
+        Some(cwd) => in_own && claude_slug(cwd) != claude_slug(old),
+        None => in_own,
+    }
+}
+
+/// Directory-scoped form of [`migrate_sessions`]. Transcripts `keep` refuses
+/// stay behind: they are another project's history, not this worktree's.
+pub fn migrate_dirs(old_dir: &Path, new_dir: &Path, keep: Option<&dyn Fn(&Path) -> bool>) {
     if !old_dir.exists() {
         return;
     }
@@ -633,16 +1115,20 @@ pub fn migrate_dirs(old_dir: &Path, new_dir: &Path) {
     if let Ok(entries) = std::fs::read_dir(old_dir) {
         for entry in entries.flatten() {
             let src = entry.path();
-            if src.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            if !is_transcript(&src) {
                 continue;
             }
             let Some(name) = src.file_name() else {
                 continue;
             };
             let dest = new_dir.join(name);
-            if !dest.exists() {
-                let _ = std::fs::rename(&src, &dest);
+            // Checked before `keep`, which reads the transcript. This is also
+            // what makes a rename that keeps the folder (`feat_x` to `feat-x`)
+            // a no-op: every destination is its own source.
+            if dest.exists() || keep.is_some_and(|keep| !keep(&src)) {
+                continue;
             }
+            let _ = std::fs::rename(&src, &dest);
         }
     }
 
@@ -671,11 +1157,131 @@ mod tests {
         assert!(peek_sessions(path, 50).is_none());
     }
 
+    /// The wrapper resolves before it encodes: `~` expands and symlinks are
+    /// followed, because Claude names the folder after its `getcwd()`, which
+    /// is always the real path.
     #[test]
-    fn folder_naming_replaces_slashes() {
-        let folder = path_to_claude_folder("/tmp");
-        assert!(!folder.contains('/'));
-        assert!(folder.starts_with('-') || folder.contains("tmp"));
+    fn folder_naming_encodes_the_resolved_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("my_infra");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link.to");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let canonical = std::fs::canonicalize(&real).unwrap();
+        let expected = claude_folder_name(&canonical.to_string_lossy());
+        assert!(expected.ends_with("-my-infra"), "{expected}");
+        let folder = |path: &Path| claude_folder_name(&resolved_string(&path.to_string_lossy()));
+        assert_eq!(folder(&real), expected);
+        assert_eq!(folder(&link), expected);
+
+        let home = crate::util::home_dir().join("forestui-no-such_dir");
+        assert_eq!(
+            claude_folder_name(&resolved_string("~/forestui-no-such_dir")),
+            claude_folder_name(&home.to_string_lossy())
+        );
+    }
+
+    /// Claude replaces every non-alphanumeric character, not just slashes: a
+    /// repository called `my_infra` lives in `...-my-infra`, and looking for
+    /// `...-my_infra` found no sessions at all.
+    ///
+    /// Every expected value here was produced by running Claude Code's own
+    /// function (2.1.296) on the same input under node. The regex has no `u`
+    /// flag, so it counts UTF-16 code units, not characters or bytes.
+    #[test]
+    fn folder_naming_matches_claude() {
+        let cases = [
+            ("/home/cadu/w/cadu/my_infra", "-home-cadu-w-cadu-my-infra"),
+            (
+                "/home/u/forest/my.repo/feat x",
+                "-home-u-forest-my-repo-feat-x",
+            ),
+            (
+                "/home/u/a~b@c+d#e%f(g)h[i]j'k\"l",
+                "-home-u-a-b-c-d-e-f-g-h-i-j-k-l",
+            ),
+            ("/home/u/MiXeD/Case09", "-home-u-MiXeD-Case09"),
+            // Precomposed accents: one unit each.
+            ("/home/u/projeto/a\u{e7}\u{e3}o", "-home-u-projeto-a--o"),
+            // A combining accent is a unit of its own; the base letter stays.
+            ("/home/u/cafe\u{301}", "-home-u-cafe-"),
+            // CJK and Cyrillic: one unit each.
+            (
+                "/home/u/\u{65e5}\u{672c}\u{8a9e}/\u{440}\u{435}\u{43f}\u{43e}",
+                "-home-u---------",
+            ),
+            // Outside the BMP: a surrogate pair, two dashes.
+            ("/home/u/\u{1f332}", "-home-u---"),
+            // ZWJ family: three pairs and two joiners.
+            (
+                "/home/u/\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}",
+                "-home-u---------",
+            ),
+            // Flag: two regional indicators, each a pair.
+            ("/home/u/\u{1f1e7}\u{1f1f7}", "-home-u-----"),
+            // Keycap: the digit, then VS16 and the combining keycap.
+            ("/home/u/1\u{fe0f}\u{20e3}", "-home-u-1--"),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(claude_folder_name(path), expected, "{path:?}");
+        }
+    }
+
+    /// Past 200 units Claude keeps the first 200 and appends a hash of the
+    /// *original* path in base 36. Expected values from Claude's own function,
+    /// as above.
+    #[test]
+    fn long_folder_names_are_truncated_and_hashed_like_claude() {
+        let a = |n| "a".repeat(n);
+        // Hashes with a known source path: one constructed so the hash is
+        // exactly i32::MIN, where JavaScript's Math.abs does not overflow.
+        const MIN: &str = "hgke85q0r9ssanz1ne69fyoohnl180zn5d3i5s4vbg55pgro4qwp3vvnu132f0j9qcrtilbk4yjxchvrwt8mvniuf23oldx4cd7mi3y46vpvpbkt8o3mwsd3uscsoeq6a5ft62r6ok2a4clvgkepxtmfxx9yyg3qqzpyfhpb6sbfd5sr4ejfq16euoq0fu4pk4vr7wwq";
+        let cases = [
+            // Exactly 200: left alone.
+            (format!("/home/u/{}", a(192)), format!("-home-u-{}", a(192))),
+            // 201: hashed.
+            (
+                format!("/home/u/{}", a(193)),
+                format!("-home-u-{}-eyl4qu", a(192)),
+            ),
+            // 200 characters but 201 units, because the emoji is a pair.
+            (
+                format!("/home/u/{}\u{1f332}", a(191)),
+                format!("-home-u-{}--ezn2jg", a(191)),
+            ),
+            // 200 characters and 200 units: é is one.
+            (
+                format!("/home/u/{}\u{e9}", a(191)),
+                format!("-home-u-{}-", a(191)),
+            ),
+            // Negative hashes (b, c) and a positive one (d).
+            (
+                format!("/home/u/{}", "b".repeat(250)),
+                format!("-home-u-{}-aq2nlx", "b".repeat(192)),
+            ),
+            (
+                format!("/home/u/{}", "c".repeat(250)),
+                format!("-home-u-{}-x11eud", "c".repeat(192)),
+            ),
+            (
+                format!("/home/u/{}", "d".repeat(250)),
+                format!("-home-u-{}-fp3vwb", "d".repeat(192)),
+            ),
+            // Non-ASCII feeds the hash as UTF-16 units.
+            (
+                format!("/home/u/{}", "\u{65e5}\u{672c}\u{8a9e}".repeat(80)),
+                format!("-home-u-{}-yy18cl", "-".repeat(192)),
+            ),
+            (
+                format!("/home/u/{MIN}\u{c056}"),
+                format!("-home-u-{}-zik0zk", &MIN[..192]),
+            ),
+        ];
+        for (path, expected) in &cases {
+            assert_eq!(&claude_folder_name(path), expected, "{path:?}");
+        }
+        assert_eq!(js_string_hash(&cases[8].0), i32::MIN);
     }
 
     /// The session list is only useful if it shows the name the user gave the
@@ -1110,6 +1716,7 @@ mod tests {
             git_branch: None,
             tokens: TokenUsage::default(),
             model: None,
+            cwd: None,
         };
         let mut sessions = vec![mk("new", 1), mk("mid", 5), mk("old", 20), mk("ancient", 90)];
         let pinned = vec!["old".to_string(), "mid".to_string()];
@@ -1164,8 +1771,390 @@ mod tests {
         std::fs::create_dir_all(&old).unwrap();
         std::fs::write(old.join("a.jsonl"), "{}").unwrap();
 
-        migrate_dirs(&old, &new);
+        migrate_dirs(&old, &new, None);
         assert!(new.join("a.jsonl").exists());
         assert!(!old.exists());
+    }
+
+    fn transcript(dir: &Path, id: &str, cwd: &str) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let file = dir.join(format!("{id}.jsonl"));
+        let record = serde_json::json!({
+            "type": "user",
+            "timestamp": "2026-08-01T10:00:00Z",
+            "cwd": cwd,
+            "sessionId": id,
+            "message": {"content": format!("hello from {id}")},
+        });
+        std::fs::write(&file, format!("{record}\n")).unwrap();
+        file
+    }
+
+    fn ids(sessions: Vec<ClaudeSession>) -> Vec<String> {
+        let mut ids: Vec<String> = sessions.into_iter().map(|s| s.id).collect();
+        ids.sort();
+        ids
+    }
+
+    /// `my_infra` and `my-infra` side by side under a canonical temp root,
+    /// with an empty projects dir next to them.
+    fn neighbours() -> (tempfile::TempDir, PathBuf, String, String) {
+        let root = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(root.path()).unwrap();
+        let underscore = real.join("my_infra");
+        let dash = real.join("my-infra");
+        std::fs::create_dir(&underscore).unwrap();
+        std::fs::create_dir(&dash).unwrap();
+        (
+            root,
+            real.join("projects"),
+            underscore.to_string_lossy().into_owned(),
+            dash.to_string_lossy().into_owned(),
+        )
+    }
+
+    /// The two share Claude's folder. Each lists, refreshes and deletes only
+    /// its own transcripts, through the same functions the app calls.
+    #[test]
+    fn a_shared_folder_is_split_by_recorded_cwd() {
+        let (_root, base, underscore, dash) = neighbours();
+        assert_eq!(claude_folder_name(&underscore), claude_folder_name(&dash));
+        let shared = base.join(claude_folder_name(&underscore));
+        transcript(&shared, "mine", &underscore);
+        transcript(&shared, "theirs", &dash);
+
+        assert_eq!(ids(sessions_in(&base, &underscore, 10)), ["mine"]);
+        assert_eq!(ids(sessions_in(&base, &dash, 10)), ["theirs"]);
+        assert!(refresh_one_in(&base, &underscore, "mine").is_some());
+        assert!(refresh_one_in(&base, &underscore, "theirs").is_none());
+
+        // Deleting is permanent, so it re-checks the file, not the list.
+        assert!(delete_session_in(&base, &underscore, "theirs").is_err());
+        assert!(shared.join("theirs.jsonl").exists());
+        delete_session_in(&base, &underscore, "mine").unwrap();
+        assert!(!shared.join("mine.jsonl").exists());
+    }
+
+    /// Only a recorded directory that exists and resolves elsewhere is
+    /// someone else's. Unknown, gone, or a different slug altogether (a
+    /// transcript migrated in from a renamed worktree) stays.
+    #[test]
+    fn what_cannot_be_told_apart_stays() {
+        let (_root, _base, underscore, _dash) = neighbours();
+        let root = Path::new(&underscore).parent().unwrap();
+        assert!(!recorded_elsewhere(None, &underscore));
+        let gone = root.join("my.infra").to_string_lossy().into_owned();
+        assert!(!recorded_elsewhere(Some(&gone), &underscore));
+        let renamed_from = root.join("old_name");
+        std::fs::create_dir(&renamed_from).unwrap();
+        assert!(!recorded_elsewhere(
+            Some(&renamed_from.to_string_lossy()),
+            &underscore
+        ));
+    }
+
+    /// A symlinked recorded `cwd` that resolves to the project itself is the
+    /// project, not a neighbour.
+    #[test]
+    fn a_recorded_symlink_to_the_project_is_the_project() {
+        let root = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        let real = root.join("my_infra");
+        std::fs::create_dir(&real).unwrap();
+        let link = root.join("my-infra");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(!recorded_elsewhere(
+            Some(&link.to_string_lossy()),
+            &real.to_string_lossy()
+        ));
+    }
+
+    /// Claude places a transcript from its first and last 64 KiB: the first
+    /// `cwd` in the head, unless the tail holds a `relocated` record. Anything
+    /// outside those windows does not count, for either reader.
+    #[test]
+    fn the_recorded_cwd_is_read_as_claude_reads_it() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let both = |file: &Path| {
+            let cheap = recorded_cwd(file);
+            assert_eq!(cheap, parse_session_file(file).and_then(|s| s.cwd));
+            cheap
+        };
+        let append = |file: &Path, line: &str| {
+            let mut f = std::fs::OpenOptions::new().append(true).open(file).unwrap();
+            writeln!(f, "{line}").unwrap();
+        };
+
+        let file = transcript(dir.path(), "s", "/first");
+        assert_eq!(both(&file).as_deref(), Some("/first"));
+        append(&file, r#"{"type":"user","cwd":"/later","sessionId":"s"}"#);
+        assert_eq!(both(&file).as_deref(), Some("/first"));
+        append(
+            &file,
+            r#"{"type":"relocated","relocatedCwd":"/moved","sessionId":"s"}"#,
+        );
+        assert_eq!(both(&file).as_deref(), Some("/moved"));
+
+        // A relocation scrolled out of the tail window is no longer seen.
+        let filler = format!(r#"{{"type":"progress","data":"{}"}}"#, "z".repeat(1000));
+        for _ in 0..80 {
+            append(&file, &filler);
+        }
+        assert_eq!(both(&file).as_deref(), Some("/first"));
+
+        // A first record bigger than the window gives Claude no cwd at all.
+        let big = dir.path().join("big.jsonl");
+        let record = serde_json::json!({
+            "type": "user",
+            "timestamp": "2026-08-01T10:00:00Z",
+            "message": {"content": "p".repeat(70_000)},
+            "cwd": "/x",
+        });
+        std::fs::write(&big, format!("{record}\n")).unwrap();
+        assert_eq!(both(&big), None);
+    }
+
+    /// Renaming `my_infra` carries its own history and whatever cannot be
+    /// placed, and leaves `my-infra`'s in the folder they share.
+    #[test]
+    fn migration_leaves_a_neighbours_transcripts_behind() {
+        let (_root, base, underscore, dash) = neighbours();
+        let shared = base.join(claude_folder_name(&underscore));
+        transcript(&shared, "mine", &underscore);
+        transcript(&shared, "theirs", &dash);
+        std::fs::write(shared.join("unknown.jsonl"), "{}").unwrap();
+
+        let renamed = Path::new(&underscore).with_file_name("renamed");
+        std::fs::rename(&underscore, &renamed).unwrap();
+        migrate_sessions_in(&base, Path::new(&underscore), &renamed);
+
+        let moved_to = base.join(claude_folder_name(&renamed.to_string_lossy()));
+        assert!(moved_to.join("mine.jsonl").exists());
+        assert!(moved_to.join("unknown.jsonl").exists());
+        assert!(shared.join("theirs.jsonl").exists());
+        assert!(!moved_to.join("theirs.jsonl").exists());
+    }
+
+    /// `feat_x` to `feat-x` keeps the folder; nothing is touched.
+    #[test]
+    fn a_rename_that_keeps_the_folder_moves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = transcript(dir.path(), "s", "/feat_x");
+        migrate_dirs(dir.path(), dir.path(), None);
+        assert!(file.exists());
+    }
+
+    /// Two long paths whose names differ only in punctuation hash to two
+    /// folders with the same prefix, so each borrows the other's. A borrowed
+    /// folder lends only transcripts recorded at the borrower's slug — and of
+    /// those, not one recorded at the neighbour itself.
+    #[test]
+    fn long_paths_borrow_only_their_own_transcripts() {
+        let root = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        let long = root.join("x".repeat(220));
+        let (a, b) = (long.join("my_infra"), long.join("my-infra"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let (a, b) = (
+            a.to_string_lossy().into_owned(),
+            b.to_string_lossy().into_owned(),
+        );
+        let old_b = long.join("old_b").to_string_lossy().into_owned();
+        let base = root.join("projects");
+        let (folder_a, folder_b) = (claude_folder_name(&a), claude_folder_name(&b));
+        assert_ne!(folder_a, folder_b);
+        let prefix = &folder_a[..MAX_FOLDER_LEN];
+
+        transcript(&base.join(&folder_a), "a1", &a);
+        transcript(&base.join(format!("{prefix}-oldhash")), "a_old", &a);
+        transcript(&base.join(&folder_b), "b1", &b);
+        // What an earlier rename of B left behind: B's, by a different slug.
+        transcript(&base.join(&folder_b), "b_old", &old_b);
+        transcript(&base.join("-unrelated"), "stray", &a);
+
+        assert_eq!(own_dir(&base, &a), base.join(&folder_a));
+        let mut borrowed: Vec<String> = borrowed_dirs_in(&base, &a)
+            .iter()
+            .map(|d| d.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        borrowed.sort();
+        let mut expected = [folder_b.clone(), format!("{prefix}-oldhash")];
+        expected.sort();
+        assert_eq!(borrowed, expected);
+
+        assert_eq!(ids(sessions_in(&base, &a, 10)), ["a1", "a_old"]);
+        assert_eq!(ids(sessions_in(&base, &b, 10)), ["b1", "b_old"]);
+        // Found in a borrowed folder, not only listed from it.
+        assert!(refresh_one_in(&base, &a, "a_old").is_some());
+        assert!(refresh_one_in(&base, &a, "b_old").is_none());
+        assert!(delete_session_in(&base, &a, "b_old").is_err());
+
+        let renamed = long.join("renamed");
+        std::fs::rename(&a, &renamed).unwrap();
+        migrate_sessions_in(&base, Path::new(&a), &renamed);
+        let moved_to = base.join(claude_folder_name(&renamed.to_string_lossy()));
+        assert!(moved_to.join("a1.jsonl").exists());
+        assert!(moved_to.join("a_old.jsonl").exists());
+        assert!(base.join(&folder_b).join("b1.jsonl").exists());
+        assert!(base.join(&folder_b).join("b_old.jsonl").exists());
+
+        // A short path never scans: its folder name is exact.
+        assert!(borrowed_dirs_in(&base, "/home/u/short").is_empty());
+    }
+
+    /// A neighbour missing at the moment of a rename keeps its history: what
+    /// was recorded at another path is not ours to move, existing or not.
+    #[test]
+    fn migration_leaves_an_absent_neighbours_transcripts_behind() {
+        let (_root, base, underscore, dash) = neighbours();
+        std::fs::remove_dir(&dash).unwrap();
+        let shared = base.join(claude_folder_name(&underscore));
+        transcript(&shared, "mine", &underscore);
+        transcript(&shared, "theirs", &dash);
+        // Earlier migrated here from another name: ours.
+        transcript(&shared, "inherited", "/somewhere/older_name");
+
+        let renamed = Path::new(&underscore).with_file_name("renamed");
+        std::fs::rename(&underscore, &renamed).unwrap();
+        migrate_sessions_in(&base, Path::new(&underscore), &renamed);
+
+        let moved_to = base.join(claude_folder_name(&renamed.to_string_lossy()));
+        assert!(moved_to.join("mine.jsonl").exists());
+        assert!(moved_to.join("inherited.jsonl").exists());
+        assert!(shared.join("theirs.jsonl").exists());
+    }
+
+    /// Whose a transcript is can change without any transcript changing: a
+    /// neighbour directory appearing or going. The cached list follows, or it
+    /// would disagree with the per-card refresh every tick.
+    #[test]
+    fn the_cached_list_follows_a_neighbour_appearing_and_going() {
+        let (_root, base, underscore, dash) = neighbours();
+        std::fs::remove_dir(&dash).unwrap();
+        let shared = base.join(claude_folder_name(&underscore));
+        transcript(&shared, "mine", &underscore);
+        transcript(&shared, "theirs", &dash);
+
+        // Nothing says otherwise yet, so it is listed — as Claude would.
+        assert_eq!(ids(sessions_in(&base, &underscore, 10)), ["mine", "theirs"]);
+        std::fs::create_dir(&dash).unwrap();
+        assert_eq!(ids(sessions_in(&base, &underscore, 10)), ["mine"]);
+        assert!(refresh_one_in(&base, &underscore, "theirs").is_none());
+        std::fs::remove_dir(&dash).unwrap();
+        assert_eq!(ids(sessions_in(&base, &underscore, 10)), ["mine", "theirs"]);
+    }
+
+    /// A recorded path with `..` is never resolved, as in Claude. Built so it
+    /// would otherwise count: the same slug as the project, resolving (via a
+    /// symlink) to a real directory with that slug too.
+    #[test]
+    fn a_recorded_parent_dir_is_not_resolved() {
+        let root = tempfile::tempdir().unwrap();
+        let r = std::fs::canonicalize(root.path()).unwrap();
+        std::fs::create_dir_all(r.join("x.__").join("d")).unwrap();
+        std::fs::create_dir_all(r.join("x.__").join("y")).unwrap();
+        std::os::unix::fs::symlink(r.join("x.__").join("d"), r.join("x")).unwrap();
+        let project = r.join("x_.._y");
+        std::fs::create_dir(&project).unwrap();
+        let project = project.to_string_lossy().into_owned();
+        let cwd = format!("{}/x/../y", r.display());
+        let real = std::fs::canonicalize(&cwd).unwrap();
+        assert_eq!(claude_slug(&cwd), claude_slug(&project));
+        assert_eq!(claude_slug(&real.to_string_lossy()), claude_slug(&project));
+
+        assert!(!recorded_elsewhere(Some(&cwd), &project));
+        // The same directory named without `..` does count.
+        assert!(recorded_elsewhere(Some(&real.to_string_lossy()), &project));
+    }
+
+    /// A transcript already at the destination is never overwritten.
+    #[test]
+    fn migration_never_overwrites() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = (root.path().join("old"), root.path().join("new"));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join("s.jsonl"), "old").unwrap();
+        std::fs::write(new.join("s.jsonl"), "new").unwrap();
+        migrate_dirs(&old, &new, None);
+        assert_eq!(std::fs::read_to_string(new.join("s.jsonl")).unwrap(), "new");
+        assert!(old.join("s.jsonl").exists());
+    }
+
+    /// `feat_x` to `feat-x` keeps the folder, so nothing moves — but the
+    /// transcripts are told where they live now, or the next rename could not
+    /// tell them from a same-slug neighbour's and would leave them behind.
+    #[test]
+    fn a_rename_that_keeps_the_folder_still_relocates() {
+        let root = tempfile::tempdir().unwrap();
+        let r = std::fs::canonicalize(root.path()).unwrap();
+        let base = r.join("projects");
+        let (first, second, third) = (r.join("feat_x"), r.join("feat-x"), r.join("other"));
+        std::fs::create_dir(&first).unwrap();
+        transcript(
+            &base.join(claude_folder_name(&first.to_string_lossy())),
+            "s",
+            &first.to_string_lossy(),
+        );
+
+        std::fs::rename(&first, &second).unwrap();
+        migrate_sessions_in(&base, &first, &second);
+        let folder = base.join(claude_folder_name(&second.to_string_lossy()));
+        assert_eq!(
+            recorded_cwd(&folder.join("s.jsonl")).as_deref(),
+            Some(&*second.to_string_lossy())
+        );
+        assert_eq!(
+            ids(sessions_in(&base, &second.to_string_lossy(), 10)),
+            ["s"]
+        );
+
+        std::fs::rename(&second, &third).unwrap();
+        migrate_sessions_in(&base, &second, &third);
+        assert_eq!(ids(sessions_in(&base, &third.to_string_lossy(), 10)), ["s"]);
+        assert!(!folder.join("s.jsonl").exists());
+    }
+
+    /// The borrowed-folder memo is checked against folder mtimes, which only
+    /// move once per clock tick. A folder still inside the racy window is
+    /// never remembered, so a transcript landing in the same tick is seen.
+    #[test]
+    fn the_borrowed_memo_never_trusts_a_racy_mtime() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().join("projects");
+        let path = format!("/home/u/{}/mine", "x".repeat(250));
+        let prefix = claude_folder_name(&path)[..MAX_FOLDER_LEN].to_string();
+        let sibling = base.join(format!("{prefix}-other"));
+        transcript(&sibling, "unrelated", "/elsewhere");
+
+        assert!(borrowed_dirs_in(&base, &path).is_empty());
+        // Same tick, most likely: the folder's mtime does not move.
+        transcript(&sibling, "mine", &path);
+        assert_eq!(borrowed_dirs_in(&base, &path), [sibling]);
+    }
+
+    /// Once a folder's mtime has settled, the memo is used — and still
+    /// notices the folder gaining a transcript, which moves its mtime.
+    #[test]
+    fn the_borrowed_memo_follows_a_settled_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().join("projects");
+        let path = format!("/home/u/{}/mine", "x".repeat(250));
+        let prefix = claude_folder_name(&path)[..MAX_FOLDER_LEN].to_string();
+        let sibling = base.join(format!("{prefix}-other"));
+        transcript(&sibling, "unrelated", "/elsewhere");
+        let an_hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::open(&sibling)
+            .unwrap()
+            .set_modified(an_hour_ago)
+            .unwrap();
+
+        assert!(borrowed_dirs_in(&base, &path).is_empty());
+        let memo = (base.clone(), path.clone());
+        assert!(borrowed_cache().lock().unwrap().contains_key(&memo));
+        transcript(&sibling, "mine", &path);
+        assert_eq!(borrowed_dirs_in(&base, &path), [sibling]);
     }
 }

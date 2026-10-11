@@ -3550,6 +3550,9 @@ Numbered, testable assertions the Rust port must satisfy. Each cites the enforci
 84. **Session files MUST be read from `~/.claude/projects/<abs-resolved-path with '/' replaced by
     '-'>/*.jsonl`, non-recursively, skipping files whose name starts with `agent-`.**
     (`claude_session.py:22-49`)
+    *Rust build: superseded.* Replacing only `/` was a bug — Claude replaces every character
+    that is not an ASCII letter or digit, so a path with `_`, `.` or a space found nothing. See
+    `claude_folder_name` in `src/services/claude_session.rs`.
 85. **A session file with zero user-role records MUST be discarded.** (`claude_session.py:138-139`)
 86. **`title` MUST be the first user message that is non-empty and does not start with `<`,
     truncated to 100 characters; `last_message` MUST be the last such message, also truncated to
