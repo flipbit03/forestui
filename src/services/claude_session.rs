@@ -32,6 +32,7 @@ type SessionCacheKey = (String, usize);
 /// anything.
 type Fingerprint = (usize, Option<std::time::SystemTime>);
 
+#[derive(Clone)]
 struct CacheEntry {
     fingerprint: Fingerprint,
     sessions: Vec<ClaudeSession>,
@@ -170,7 +171,9 @@ fn own_dir(base: &Path, resolved: &str) -> PathBuf {
 /// Deciding means reading a window of every transcript in every candidate, so
 /// the answer is memoized against the candidates' own mtimes: a folder's mtime
 /// moves whenever a transcript is created or removed in it, and a transcript's
-/// recorded directory is settled when it is created.
+/// recorded directory is settled when it is created. (A `relocated` record
+/// appended later is the exception, and only matters for the rare long path
+/// with another hash suffix; a restart rescans.)
 fn borrowed_dirs_in(base: &Path, resolved: &str) -> Vec<PathBuf> {
     let folder = claude_folder_name(resolved);
     if folder.len() <= MAX_FOLDER_LEN {
@@ -217,7 +220,17 @@ fn borrowed_dirs_in(base: &Path, resolved: &str) -> Vec<PathBuf> {
         })
         .map(|(dir, _)| dir.clone())
         .collect();
-    if let Ok(mut guard) = borrowed_cache().lock() {
+    // A folder's mtime has the resolution of the kernel's clock tick, so a
+    // transcript created in the same tick as this scan leaves it unchanged
+    // and the memo would never notice. git's index has the same "racy
+    // timestamp" problem and the same answer: an mtime too recent to trust is
+    // not remembered, so the next call scans again.
+    let settled = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+    if candidates
+        .iter()
+        .all(|(_, modified)| modified.is_some_and(|m| m < settled))
+        && let Ok(mut guard) = borrowed_cache().lock()
+    {
         guard.insert(key, (candidates, borrowed.clone()));
     }
     borrowed
@@ -448,8 +461,13 @@ fn sessions_in(base: &Path, path: &str, limit: usize) -> Vec<ClaudeSession> {
     // changes whose transcripts are whose without touching any of them. The
     // per-card refresh re-asks that every tick, so a list that did not would
     // re-add every ten seconds a card the refresh keeps removing.
-    if let Ok(guard) = cache().lock()
-        && let Some(entry) = guard.get(&key)
+    let cached = cache()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(&key).cloned());
+    // Checked outside the lock: the re-check may stat directories, and
+    // `peek_sessions` takes this lock on the render thread.
+    if let Some(entry) = cached
         && entry.fingerprint == current
         && entry
             .sessions
@@ -460,7 +478,7 @@ fn sessions_in(base: &Path, path: &str, limit: usize) -> Vec<ClaudeSession> {
             .iter()
             .all(|cwd| recorded_elsewhere(Some(cwd), &resolved))
     {
-        return entry.sessions.clone();
+        return entry.sessions;
     }
 
     let elsewhere = std::cell::RefCell::new(Vec::new());
@@ -891,17 +909,26 @@ pub fn rename_transcript(file: &Path, session_id: &str, name: &str) -> Result<()
         "agentName": name,
         "sessionId": session_id,
     });
+    append_records(file, &[title, agent_name])
+}
+
+/// Append records to a transcript, one per line, the way Claude writes them.
+fn append_records(file: &Path, records: &[serde_json::Value]) -> Result<(), String> {
     use std::io::{Read, Seek, SeekFrom, Write};
+    let mut text = String::new();
+    for record in records {
+        text.push_str(&format!("{record}\n"));
+    }
     std::fs::OpenOptions::new()
         .read(true)
         .append(true)
         .open(file)
         .and_then(|mut f| {
             // A transcript normally ends in a newline, but a torn tail (a
-            // crashed writer) must not swallow the rename: appended straight
+            // crashed writer) must not swallow the records: appended straight
             // onto an unterminated line, the first record and that line both
-            // stop parsing while the second still lands — the exact
-            // title/badge disagreement this function exists to prevent.
+            // stop parsing while the rest still land — for a rename, the exact
+            // title/badge disagreement the record pair exists to prevent.
             let mut needs_newline = false;
             if f.metadata()?.len() > 0 {
                 let mut last = [0u8; 1];
@@ -910,7 +937,7 @@ pub fn rename_transcript(file: &Path, session_id: &str, name: &str) -> Result<()
                 needs_newline = last[0] != b'\n';
             }
             let prefix = if needs_newline { "\n" } else { "" };
-            f.write_all(format!("{prefix}{title}\n{agent_name}\n").as_bytes())
+            f.write_all(format!("{prefix}{text}").as_bytes())
         })
         .map_err(|error| error.to_string())
 }
@@ -1003,13 +1030,55 @@ fn migrate_sessions_in(base: &Path, old_path: &Path, new_path: &Path) {
         })
         .unwrap_or_else(|| old_path.to_path_buf());
     let old = old.to_string_lossy();
-    let new_dir = base.join(claude_folder_name(&resolved_string(
-        &new_path.to_string_lossy(),
-    )));
+    let new = resolved_string(&new_path.to_string_lossy());
+    let new_dir = base.join(claude_folder_name(&new));
     let own = own_dir(base, &old);
+    let dirs: Vec<PathBuf> = std::iter::once(own.clone())
+        .chain(borrowed_dirs_in(base, &old))
+        .collect();
+
+    // Everything recorded at the old path is told where it lives now, with
+    // the `relocated` record Claude writes when it moves a session itself.
+    // Without it a transcript's only word on its directory is the old path,
+    // and when the rename keeps the folder (`feat_x` to `feat-x`) that is
+    // indistinguishable from a same-slug neighbour's history: the next rename
+    // would leave it behind, and Claude would resume it in a directory that
+    // no longer exists.
+    let recorded_here: Vec<(PathBuf, std::ffi::OsString)> = dirs
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok().map(|files| (dir, files)))
+        .flat_map(|(dir, files)| {
+            files.flatten().filter_map(|entry| {
+                let file = entry.path();
+                (is_transcript(&file) && recorded_cwd(&file).as_deref() == Some(&*old))
+                    .then(|| (dir.clone(), entry.file_name()))
+            })
+        })
+        .collect();
+
     let keep = |file: &Path| migrates(&old, &own, file, recorded_cwd(file).as_deref());
-    for old_dir in std::iter::once(own.clone()).chain(borrowed_dirs_in(base, &old)) {
-        migrate_dirs(&old_dir, &new_dir, Some(&keep));
+    for old_dir in &dirs {
+        migrate_dirs(old_dir, &new_dir, Some(&keep));
+    }
+
+    for (dir, name) in recorded_here {
+        // Moved unless a transcript of the same name was already there.
+        let stayed = dir.join(&name);
+        let file = if dir != new_dir && stayed.exists() {
+            stayed
+        } else {
+            new_dir.join(&name)
+        };
+        let session_id = Path::new(&name)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let relocated = serde_json::json!({
+            "type": "relocated",
+            "relocatedCwd": new,
+            "sessionId": session_id,
+        });
+        let _ = append_records(&file, &[relocated]);
     }
 }
 
@@ -1933,10 +2002,6 @@ mod tests {
 
         // A short path never scans: its folder name is exact.
         assert!(borrowed_dirs_in(&base, "/home/u/short").is_empty());
-
-        // The memo notices a folder gaining a transcript recorded here.
-        transcript(&base.join(format!("{prefix}-late")), "late", &a);
-        assert_eq!(borrowed_dirs_in(&base, &a).len(), 3);
     }
 
     /// A neighbour missing at the moment of a rename keeps its history: what
@@ -2016,5 +2081,80 @@ mod tests {
         migrate_dirs(&old, &new, None);
         assert_eq!(std::fs::read_to_string(new.join("s.jsonl")).unwrap(), "new");
         assert!(old.join("s.jsonl").exists());
+    }
+
+    /// `feat_x` to `feat-x` keeps the folder, so nothing moves — but the
+    /// transcripts are told where they live now, or the next rename could not
+    /// tell them from a same-slug neighbour's and would leave them behind.
+    #[test]
+    fn a_rename_that_keeps_the_folder_still_relocates() {
+        let root = tempfile::tempdir().unwrap();
+        let r = std::fs::canonicalize(root.path()).unwrap();
+        let base = r.join("projects");
+        let (first, second, third) = (r.join("feat_x"), r.join("feat-x"), r.join("other"));
+        std::fs::create_dir(&first).unwrap();
+        transcript(
+            &base.join(claude_folder_name(&first.to_string_lossy())),
+            "s",
+            &first.to_string_lossy(),
+        );
+
+        std::fs::rename(&first, &second).unwrap();
+        migrate_sessions_in(&base, &first, &second);
+        let folder = base.join(claude_folder_name(&second.to_string_lossy()));
+        assert_eq!(
+            recorded_cwd(&folder.join("s.jsonl")).as_deref(),
+            Some(&*second.to_string_lossy())
+        );
+        assert_eq!(
+            ids(sessions_in(&base, &second.to_string_lossy(), 10)),
+            ["s"]
+        );
+
+        std::fs::rename(&second, &third).unwrap();
+        migrate_sessions_in(&base, &second, &third);
+        assert_eq!(ids(sessions_in(&base, &third.to_string_lossy(), 10)), ["s"]);
+        assert!(!folder.join("s.jsonl").exists());
+    }
+
+    /// The borrowed-folder memo is checked against folder mtimes, which only
+    /// move once per clock tick. A folder still inside the racy window is
+    /// never remembered, so a transcript landing in the same tick is seen.
+    #[test]
+    fn the_borrowed_memo_never_trusts_a_racy_mtime() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().join("projects");
+        let path = format!("/home/u/{}/mine", "x".repeat(250));
+        let prefix = claude_folder_name(&path)[..MAX_FOLDER_LEN].to_string();
+        let sibling = base.join(format!("{prefix}-other"));
+        transcript(&sibling, "unrelated", "/elsewhere");
+
+        assert!(borrowed_dirs_in(&base, &path).is_empty());
+        // Same tick, most likely: the folder's mtime does not move.
+        transcript(&sibling, "mine", &path);
+        assert_eq!(borrowed_dirs_in(&base, &path), [sibling]);
+    }
+
+    /// Once a folder's mtime has settled, the memo is used — and still
+    /// notices the folder gaining a transcript, which moves its mtime.
+    #[test]
+    fn the_borrowed_memo_follows_a_settled_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().join("projects");
+        let path = format!("/home/u/{}/mine", "x".repeat(250));
+        let prefix = claude_folder_name(&path)[..MAX_FOLDER_LEN].to_string();
+        let sibling = base.join(format!("{prefix}-other"));
+        transcript(&sibling, "unrelated", "/elsewhere");
+        let an_hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::open(&sibling)
+            .unwrap()
+            .set_modified(an_hour_ago)
+            .unwrap();
+
+        assert!(borrowed_dirs_in(&base, &path).is_empty());
+        let memo = (base.clone(), path.clone());
+        assert!(borrowed_cache().lock().unwrap().contains_key(&memo));
+        transcript(&sibling, "mine", &path);
+        assert_eq!(borrowed_dirs_in(&base, &path), [sibling]);
     }
 }
