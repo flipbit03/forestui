@@ -242,6 +242,10 @@ pub struct ClaudeSession {
     pub tokens: TokenUsage,
     /// The model of the last assistant record, for the cost estimate.
     pub model: Option<String>,
+    /// The directory the session was recorded in. Two directories can share a
+    /// Claude project folder (`my_infra`, `my-infra`), and this is how their
+    /// transcripts are told apart.
+    pub cwd: Option<String>,
 }
 
 /// Token counts as the API reports them, summed across a transcript.

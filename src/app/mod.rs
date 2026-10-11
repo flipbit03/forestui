@@ -1596,6 +1596,7 @@ mod tests {
             git_branch: None,
             tokens: Default::default(),
             model: None,
+            cwd: None,
         }]);
         // Resume + YOLO + one per custom button + Rename + Pin + Del.
         assert_eq!(app.detail_items().len(), baseline + 1 + 6);
@@ -2183,6 +2184,7 @@ mod tests {
             git_branch: None,
             tokens: Default::default(),
             model: None,
+            cwd: None,
         }
     }
 
